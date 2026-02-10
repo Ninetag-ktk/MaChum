@@ -52,15 +52,10 @@ import io.github.vinceglb.filekit.nameWithoutExtension
 import io.github.vinceglb.filekit.path
 import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
-import java.net.URLDecoder
-import java.nio.charset.StandardCharsets
 
 class AndroidVaultPickerUI : VaultPickerUI {
     @Composable
-    override fun Show(
-        asPopup: Boolean,
-        reset: () -> Unit,
-    ) {
+    override fun Show(reset: () -> Unit) {
         var isCreating by remember { mutableStateOf(false) }
 
         Box(modifier = Modifier.fillMaxSize()) {
@@ -91,7 +86,7 @@ private fun Menu(
 ) {
     val fileManager = koinInject<FileManager>()
     val scope = rememberCoroutineScope()
-    val bookmarks = fileManager.bookmarks.collectAsState()
+    val bookmark = fileManager.bookmarks.collectAsState()
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -100,14 +95,14 @@ private fun Menu(
     ) {
         Spacer(modifier = Modifier.height(48.dp))
         Text(
-            text = bookmarks.value?.vaultData?.nameWithoutExtension ?: "맞춤",
+            text = bookmark.value?.vaultData?.nameWithoutExtension ?: "맞춤",
             fontSize = 48.sp,
             fontWeight = FontWeight.SemiBold,
         )
         Text(
-            text = bookmarks.value?.vaultData?.path ?: "글쓰기 앱",
+            text = bookmark.value?.vaultData?.path ?: "글쓰기 앱",
             fontSize = 16.sp,
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.5f),
         )
         Spacer(modifier = Modifier.height(48.dp))
         HorizontalDivider()
@@ -161,7 +156,7 @@ private fun Create(
     val scope = rememberCoroutineScope()
 
     var parentDirectory by remember {mutableStateOf<PlatformFile?>(null)}
-    var vaultName by remember {mutableStateOf<String>("")}
+    var vaultName by remember {mutableStateOf("")}
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -205,9 +200,7 @@ private fun Create(
                 .height(56.dp)
                 .clickable {
                     scope.launch {
-                        scope.launch {
-                            FileKit.openDirectoryPicker()?.let{parentDirectory = it}
-                        }
+                        FileKit.openDirectoryPicker()?.let{parentDirectory = it}
                     }
                 },
             shape = RoundedCornerShape(16.dp),
@@ -219,7 +212,7 @@ private fun Create(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = parentDirectory?.path?.let{ URLDecoder.decode(it, StandardCharsets.UTF_8)}?:"Tap for Vault Directory",
+                    text = parentDirectory?.path?:"Tap for Vault Directory",
                     color = parentDirectory?.let{ MaterialTheme.colorScheme.onBackground }?:run{ MaterialTheme.colorScheme.onSurfaceVariant },
                     textAlign = TextAlign.Center,
                     overflow = StartEllipsis,

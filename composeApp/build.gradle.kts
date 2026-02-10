@@ -41,7 +41,6 @@ kotlin {
         implementation(libs.androidx.lifecycle.viewmodelCompose)
         implementation(libs.androidx.lifecycle.runtimeCompose)
         implementation(libs.androidx.datastore)
-        implementation(libs.androidx.documentfile)
         implementation(libs.koin.core)
         implementation(libs.koin.compose)
 
@@ -57,6 +56,14 @@ kotlin {
                 optIn("kotlin.time.ExperimentalTime")
             }
         }
+        val androidMain by getting {
+            dependencies {
+                implementation(libs.androidx.documentfile)
+            }
+        }
+//        val desktopMain by getting {
+//            dependencies {}
+//        }
     }
 }
 

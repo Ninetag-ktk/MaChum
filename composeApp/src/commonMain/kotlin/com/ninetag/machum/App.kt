@@ -22,7 +22,6 @@ import org.koin.compose.koinInject
 fun App() {
     val fileManager = koinInject<FileManager>()
     val bookmark by fileManager.bookmarks.collectAsState()
-    val scope = rememberCoroutineScope()
 
     var showVaultPicker by remember { mutableStateOf(false) }
 
@@ -50,11 +49,11 @@ fun App() {
 //                }
 //            }
 //                TestScreen()
-//                Text("확인: 북마크=${bookmark!=null}, Vault=${bookmark?.vaultData != null}, show=${showVaultPicker}")
+//            Text("확인: 북마크=${bookmark!=null}, Vault=${bookmark?.vaultData != null}, Project=${bookmark?.projectData != null}, File=${bookmark?.fileData != null}")
             bookmark?.let {
                 when {
                     it.vaultData == null || showVaultPicker -> { VaultSelectionScreen(reset = { showVaultPicker = false }) }
-//                        it.projectData == null -> { ProjectSelectionScreen() }
+//                    it.projectData == null -> { ProjectSelectionScreen() }
 //                        it.fileData == null -> { scope.launch { fileManager.pickProject(it.projectData) } }
                     else -> {
                         TestScreen()

@@ -4,10 +4,7 @@ import androidx.compose.runtime.Composable
 
 interface VaultPickerUI {
     @Composable
-    fun Show(
-        asPopup: Boolean = false,
-        reset: () -> Unit,
-    )
+    fun Show(reset: () -> Unit)
 }
 
 @Composable
