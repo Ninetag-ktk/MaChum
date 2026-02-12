@@ -3,7 +3,7 @@ agp = "8.12.3"
 android-compileSdk = "36"
 android-minSdk = "24"
 android-targetSdk = "36"
-androidx-activity = "1.12.3"
+androidx-activity = "1.12.4"
 androidx-appcompat = "1.7.1"
 androidx-core = "1.17.0"
 androidx-espresso = "3.7.0"
@@ -15,7 +15,7 @@ composeHotReload = "1.0.0"
 composeMultiplatform = "1.10.0"
 material3 = "1.10.0-alpha05"
 junit = "4.13.2"
-kotlin = "2.3.0"
+kotlin = "2.3.10"
 kotlinx-coroutines = "1.10.2"
 koin = "4.1.1"
 fileKit = "0.12.0"
@@ -37,11 +37,12 @@ androidx-documentfile = { module = "androidx.documentfile:documentfile", version
 compose-uiTooling = { module = "org.jetbrains.compose.ui:ui-tooling", version.ref = "composeMultiplatform" }
 compose-runtime = { module = "org.jetbrains.compose.runtime:runtime", version.ref = "composeMultiplatform" }
 compose-material3 = { module = "org.jetbrains.compose.material3:material3", version.ref = "material3" }
+compose-material-icon = { module = "org.jetbrains.compose.material:material-icons-extended", version = "1.7.3" }
 compose-foundation = { module = "org.jetbrains.compose.foundation:foundation", version.ref = "composeMultiplatform" }
 compose-ui = { module = "org.jetbrains.compose.ui:ui", version.ref = "composeMultiplatform" }
 compose-components-resources = { module = "org.jetbrains.compose.components:components-resources", version.ref = "composeMultiplatform" }
 compose-uiToolingPreview = { module = "org.jetbrains.compose.ui:ui-tooling-preview", version.ref = "composeMultiplatform" }
-compose-material-icon = { module = "org.jetbrains.compose.material:material-icons-extended", version = "1.7.3" }
+compose-serialization = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "composeMultiplatform" }
 kotlinx-coroutinesSwing = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-swing", version.ref = "kotlinx-coroutines" }
 koin-core = {module = "io.insert-koin:koin-core", version.ref = "koin"}
 koin-compose = {module = "io.insert-koin:koin-compose", version.ref = "koin"}

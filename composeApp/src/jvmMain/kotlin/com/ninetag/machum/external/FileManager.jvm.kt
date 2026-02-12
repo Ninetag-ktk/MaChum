@@ -14,11 +14,12 @@ internal actual suspend fun FileManager.createFolder(
 ): PlatformFile? = withContext(Dispatchers.IO) {
     try {
         val directory = PlatformFile(parentDirectory, name)
+        if (directory.exists()) return@withContext directory
         directory.createDirectories()
         directory
     } catch (e: Exception) {
         println("폴더 생성 실패: $e")
-        null
+        throw e
     }
 }
 
@@ -29,6 +30,7 @@ internal actual suspend fun FileManager.createFile(
     try {
         if (!parentDirectory.exists()) return@withContext null
         val newFile = parentDirectory / "$name.md"
+        if (newFile.exists()) return@withContext newFile
         newFile.writeString("")
         newFile
     } catch (e: Exception) {
@@ -36,3 +38,22 @@ internal actual suspend fun FileManager.createFile(
         null
     }
 }
+
+internal actual suspend fun FileManager.createConfig(
+    parentDirectory: PlatformFile
+): PlatformFile? = withContext(Dispatchers.IO) {
+    try {
+        if (!parentDirectory.exists()) return@withContext null
+        val newFile = parentDirectory / ".machum.json"
+        if (newFile.exists()) return@withContext newFile
+        newFile.writeString("")
+        newFile
+    } catch (e: Exception) {
+        println("Config 생성 실패: $e")
+        throw e
+    }
+}
+
+internal actual suspend fun FileManager.validPermission(file: PlatformFile): Boolean = true
+
+internal actual fun String.forPlatformFile(): String = this

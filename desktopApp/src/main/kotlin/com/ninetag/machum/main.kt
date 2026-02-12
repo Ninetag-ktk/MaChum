@@ -24,30 +24,33 @@ fun main() {
     FileKit.init(appId = "MaChum")
     application {
         val fileManager = koinInject<FileManager>()
+        val bookmark by fileManager.bookmarks.collectAsState()
         val vaultData by remember {fileManager.bookmarks.map { it?.vaultData }}.collectAsState(null)
 
-        when (vaultData) {
-            null -> {
-                // Vault 선택 팝업
-                Window(
-                    onCloseRequest = ::exitApplication,
-                    state = rememberWindowState(
-                        width = 420.dp,
-                        height = 560.dp,
-                        position = WindowPosition(Alignment.Center),
-                    ),
-                    title = "맞춤",
-                    resizable = false,
-                ) {
-                    DesktopVaultPickerContainer(reset = {})
+        bookmark?.let {
+            when (vaultData) {
+                null -> {
+                    // Vault 선택 팝업
+                    Window(
+                        onCloseRequest = ::exitApplication,
+                        state = rememberWindowState(
+                            width = 420.dp,
+                            height = 560.dp,
+                            position = WindowPosition(Alignment.Center),
+                        ),
+                        title = "맞춤",
+                        resizable = false,
+                    ) {
+                        DesktopVaultPickerContainer(reset = {})
+                    }
                 }
-            }
-            else -> {
-                Window(
-                    onCloseRequest = ::exitApplication,
-                    title = "맞춤",
-                ) {
-                    App()
+                else -> {
+                    Window(
+                        onCloseRequest = ::exitApplication,
+                        title = "맞춤",
+                    ) {
+                        App()
+                    }
                 }
             }
         }

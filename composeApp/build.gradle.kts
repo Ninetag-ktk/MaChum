@@ -38,6 +38,7 @@ kotlin {
         implementation(libs.compose.ui)
         implementation(libs.compose.components.resources)
         implementation(libs.compose.uiToolingPreview)
+        implementation(libs.compose.serialization)
         implementation(libs.androidx.lifecycle.viewmodelCompose)
         implementation(libs.androidx.lifecycle.runtimeCompose)
         implementation(libs.androidx.datastore)
@@ -56,14 +57,10 @@ kotlin {
                 optIn("kotlin.time.ExperimentalTime")
             }
         }
-        val androidMain by getting {
-            dependencies {
-                implementation(libs.androidx.documentfile)
-            }
+        androidMain.dependencies {
+            implementation(libs.androidx.documentfile)
         }
-//        val desktopMain by getting {
-//            dependencies {}
-//        }
+        jvmMain.dependencies {}
     }
 }
 

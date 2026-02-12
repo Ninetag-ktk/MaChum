@@ -4,6 +4,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.byteArrayPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import io.github.vinceglb.filekit.FileKit
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.bookmarkData
@@ -17,6 +18,7 @@ import io.github.vinceglb.filekit.fromBookmarkData
 import io.github.vinceglb.filekit.isDirectory
 import io.github.vinceglb.filekit.list
 import io.github.vinceglb.filekit.name
+import io.github.vinceglb.filekit.path
 import io.github.vinceglb.filekit.readString
 import io.github.vinceglb.filekit.writeString
 import kotlinx.coroutines.CoroutineScope
@@ -29,37 +31,55 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
 
 class FileManager(private val dataStore: DataStore<Preferences>) {
     companion object {
         private val BOOKMARK_VAULT = byteArrayPreferencesKey("bookmark_vault")
         private val BOOKMARK_PROJECT = byteArrayPreferencesKey("bookmark_project")
-        private val BOOKMARK_FILE = byteArrayPreferencesKey("bookmark_file")
+        private val BOOKMARK_FILE = stringPreferencesKey("bookmark_file")
     }
 
-    suspend fun setPreferences(bookmark: Bookmarks) {
+    // ToDo 테스트 이후 private 으로 변경
+    suspend fun setPreferences(bookmark: Bookmarks): Bookmarks {
         dataStore.edit { pref ->
             bookmark.vaultData?.let { pref[BOOKMARK_VAULT] = it.bookmarkData().bytes }
             bookmark.projectData?.let { pref[BOOKMARK_PROJECT] = it.bookmarkData().bytes }?:pref.remove(BOOKMARK_PROJECT)
-            bookmark.fileData?.let { pref[BOOKMARK_FILE] = it.bookmarkData().bytes }?:pref.remove(BOOKMARK_FILE)
+            bookmark.fileData?.let { pref[BOOKMARK_FILE] = it.name }?:pref.remove(BOOKMARK_FILE)
         }
         _bookmarks.value = bookmark
+        return bookmark
     }
 
+    // ToDo 테스트 이후 private 으로 변경
     suspend fun getPreferences(): Bookmarks {
         return dataStore.data.first().let{ pref ->
+            val vault = pref[BOOKMARK_VAULT]?.let { PlatformFile.fromBookmarkDataWithValidate(it) }
+            val project = pref[BOOKMARK_PROJECT]?.let { PlatformFile.fromBookmarkDataWithValidate(it) }
+            val file = project?.let { pref[BOOKMARK_FILE]?.let{
+                PlatformFile(project.path + "/$it".forPlatformFile())
+            } }
             Bookmarks(
-                vaultData = pref[BOOKMARK_VAULT]?.let { PlatformFile.fromBookmarkDataWithValidate(it) },
-                projectData = pref[BOOKMARK_PROJECT]?.let { PlatformFile.fromBookmarkDataWithValidate(it) },
-                fileData = pref[BOOKMARK_FILE]?.let { PlatformFile.fromBookmarkDataWithValidate(it) },
+                vaultData = vault,
+                projectData = project,
+                fileData = file,
             )
         }
     }
 
-
-    suspend fun clearPreferences() {
+    private suspend fun clearPreferences() {
         dataStore.edit { pref ->
             pref.remove(BOOKMARK_VAULT)
+            pref.remove(BOOKMARK_PROJECT)
+            pref.remove(BOOKMARK_FILE)
+        }
+        _bookmarks.value = getPreferences()
+    }
+
+    // ToDo 테스트 이후 삭제
+    suspend fun clearPreferencesTest() {
+        dataStore.edit { pref ->
+//            pref.remove(BOOKMARK_VAULT)
             pref.remove(BOOKMARK_PROJECT)
             pref.remove(BOOKMARK_FILE)
         }
@@ -71,6 +91,12 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
 
     init {
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            val preferences = getPreferences()
+            preferences.vaultData?.let {
+                if (!validPermission(it)) {
+                    clearPreferences()
+                }
+            }
             _bookmarks.value = getPreferences()
         }
     }
@@ -86,11 +112,12 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                 title = "폴더 선택",
                 directory = initVault,
             )
-            vault?.let{ setPreferences(Bookmarks(vaultData = it)) }
-            vault
+            vault?.let{
+                createFolder(vault, ".workflow")
+                setPreferences(Bookmarks(vaultData = it)).vaultData
+            }
         } catch (e: Exception) {
-            println(e.message)
-            null
+            throw e
         }
     }
 
@@ -101,9 +128,11 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * @return 해당 프로젝트 폴더의 마지막 마크다운 파일
      */
     suspend fun pickProject(project: PlatformFile): PlatformFile? = withContext(Dispatchers.IO) {
-        val file = listFile(project).lastOrNull()
-        setPreferences(getPreferences().copy(projectData = project, fileData = file))
-        file
+        try {
+            setPreferences(getPreferences().copy(projectData = project)).projectData
+        } catch (e: Exception) {
+            throw e
+        }
     }
 
     /**
@@ -113,8 +142,13 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * @return 선택한 마크다운 파일
      */
     suspend fun pickFile(file: PlatformFile): PlatformFile = withContext(Dispatchers.IO) {
-        setPreferences(getPreferences().copy(fileData = file))
-        file
+        setPreferences(getPreferences().copy(fileData = file)).fileData!!
+    }
+
+
+    suspend fun getWorkFlow(workflow: String): PlatformFile? = withContext(Dispatchers.IO) {
+        val file = PlatformFile(_bookmarks.value!!.vaultData!!.path + "/.workflow/".forPlatformFile() + "$workflow.md")
+        if (file.exists()) file else null
     }
 
     suspend fun pickFileTest(): PlatformFile? {
@@ -146,7 +180,9 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * @return 프로젝트 폴더 목록
      */
     suspend fun listProject(vault: PlatformFile): List<PlatformFile> = withContext(Dispatchers.IO) {
-        vault.list().filter { it.isDirectory() }
+        vault.list()
+            .filter { it.isDirectory() && !it.name.startsWith(".") }
+            .sortedBy { it.name }
     }
 
     /**
@@ -155,7 +191,9 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * @return 마크다운 파일 목록
      */
     suspend fun listFile(project: PlatformFile): List<PlatformFile> = withContext(Dispatchers.IO) {
-        project.list().filter { it.name.endsWith(".md") }
+        project.list()
+            .filter { it.name.endsWith(".md") }
+            .sortedBy { it.name }
     }
 
     /**
@@ -182,14 +220,32 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             file.delete()
             true
         } catch (e: Exception) {
-            println(e)
-            false
+            throw e
         }
     }
 
-    suspend fun setVault(parentDirectory: PlatformFile, name: String): PlatformFile? = withContext(Dispatchers.IO) { createFolder(parentDirectory, name) }
+    suspend fun setVault(parentDirectory: PlatformFile, name: String): PlatformFile? = withContext(Dispatchers.IO) {
+        createFolder(parentDirectory, name)?.let{
+            setPreferences(getPreferences().copy(vaultData = it)).vaultData
+        }
+    }
+
+    suspend fun setFile(project: PlatformFile): PlatformFile = withContext(Dispatchers.IO) {
+        try {
+            listFile(project).lastOrNull()
+                ?.let{ setPreferences(getPreferences().copy(fileData = it)).fileData }
+                ?:run{
+                    createFile(project, "name")
+                        ?.let { setPreferences(getPreferences().copy(fileData = it)).fileData }
+                        ?:throw Exception()
+                }
+        } catch (e: Exception) {
+            throw e
+        }
+    }
 
     suspend fun createProject(name: String): PlatformFile? = withContext(Dispatchers.IO) { createFolder(_bookmarks.value!!.vaultData!!, name) }
+    suspend fun createNextFile(name: String): PlatformFile? = withContext(Dispatchers.IO) { createFile(_bookmarks.value!!.projectData!!, name) }
 }
 
 /**
@@ -202,6 +258,12 @@ internal expect suspend fun FileManager.createFolder(parentDirectory: PlatformFi
 
 internal expect suspend fun FileManager.createFile(parentDirectory: PlatformFile, name: String): PlatformFile?
 
+internal expect suspend fun FileManager.createConfig(parentDirectory: PlatformFile): PlatformFile?
+
+internal expect suspend fun FileManager.validPermission(file: PlatformFile): Boolean
+
+internal expect fun String.forPlatformFile(): String
+
 fun PlatformFile.Companion.fromBookmarkDataWithValidate(bytes: ByteArray): PlatformFile? {
     val data = PlatformFile.fromBookmarkData(bytes)
     return if (data.exists()) data else null
@@ -211,4 +273,9 @@ data class Bookmarks(
     val vaultData: PlatformFile? = null,
     val projectData: PlatformFile? = null,
     val fileData: PlatformFile? = null,
+)
+
+@Serializable
+data class Config(
+    val workflow: String,
 )

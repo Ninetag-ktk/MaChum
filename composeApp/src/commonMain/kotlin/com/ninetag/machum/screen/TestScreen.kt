@@ -1,28 +1,15 @@
 package com.ninetag.machum.screen
 
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.wrapContentHeight
-import androidx.compose.foundation.layout.wrapContentWidth
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Cancel
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -33,23 +20,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow.Companion.StartEllipsis
 import androidx.compose.ui.unit.dp
 import com.ninetag.machum.external.FileManager
-import com.ninetag.machum.external.createFile
-import io.github.vinceglb.filekit.FileKit
 import io.github.vinceglb.filekit.PlatformFile
-import io.github.vinceglb.filekit.dialogs.openDirectoryPicker
 import io.github.vinceglb.filekit.name
-import io.github.vinceglb.filekit.path
 import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
-import java.net.URLDecoder
-import java.nio.charset.StandardCharsets
 
 @Suppress("NewApi")
 @Composable
@@ -60,55 +37,29 @@ fun TestScreen() {
     var currentFile by remember { mutableStateOf<PlatformFile?>(null) }
     var content by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("") }
-    var list by remember { mutableStateOf<List<PlatformFile>?>(null) }
-    val bookmarks by fileManager.bookmarks.collectAsState()
-
-    var parentDirectory by remember {mutableStateOf<PlatformFile?>(null)}
-    var vaultName by remember {mutableStateOf<String>("")}
+    val bookmark by fileManager.bookmarks.collectAsState()
 
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
-        val bookmarks = fileManager.getPreferences()
-        message = "북마크 불러옴: dir=${bookmarks.vaultData != null}, prj=${bookmarks.projectData != null}, file=${bookmarks.fileData != null}"
-        bookmarks.vaultData?.let {
-            currentDirectory = it
-            list = fileManager.listProject(currentDirectory!!)
-        }
-        bookmarks.projectData?.let {
-            currentProject = it
-        }
-        bookmarks.fileData?.let {
-            currentFile = it
-            content = fileManager.read(currentFile!!)
+        bookmark?.let{
+            message = "북마크 불러옴: dir=${it.vaultData != null}, prj=${it.projectData != null}, file=${it.fileData != null}"
+            it.vaultData?.let { vault ->
+                currentDirectory = vault
+            }
+            it.projectData?.let { project ->
+                currentProject = project
+            }
+            it.fileData?.let { file ->
+                currentFile = file
+                content = fileManager.read(file)
+            }
         }
     }
 
-    Column (modifier = Modifier.fillMaxSize()) {
+    Column (modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Text(text = message)
         HorizontalDivider()
-        Text("현재 디렉토리: ${currentDirectory?.name ?: "없음"}")
-
-        // 폴더 선택 버튼
-        Button(
-            onClick = {
-                scope.launch {
-                    val directory = fileManager.pickVault()
-                    if (directory != null) {
-                        currentDirectory = directory
-                        message = "폴더 선택됨: ${directory.name}"
-                    } else {
-                        message = "폴더 선택 취소"
-                    }
-                }
-            },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("폴더 선택")
-        }
-
-        HorizontalDivider()
-
         // 현재 파일
         Text("현재 파일: ${currentFile?.name ?: "없음"}")
 
@@ -182,11 +133,11 @@ fun TestScreen() {
             Text("북마크 확인")
         }
 
-        // 북마크 전체 삭제
+        // 북마크 삭제
         OutlinedButton(
             onClick = {
                 scope.launch {
-                    fileManager.clearPreferences()
+                    fileManager.clearPreferencesTest()
                     currentDirectory = null
                     currentFile = null
                     content = ""
@@ -199,87 +150,17 @@ fun TestScreen() {
         }
 
         Spacer(modifier = Modifier.height(16.dp))
-        Column(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            OutlinedTextField(
-                value = vaultName,
-                onValueChange = { vaultName = it },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Vault Name") },
-                placeholder = { Text("Enter vaultName") },
-                trailingIcon = {
-                    IconButton(
-                        onClick = { vaultName = "" }) {
-                        Icon(
-                            imageVector = Icons.Filled.Cancel,
-                            contentDescription = "CancelValue",
-                        )
-                    }
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(16.dp),
-            )
-            OutlinedCard(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp)
-                    .clickable {
-                        scope.launch {
-                            scope.launch {
-                                FileKit.openDirectoryPicker()?.let{parentDirectory = it}
-                            }
-                        }
-                    },
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.outlinedCardColors(containerColor = Color.Transparent),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-            ) {
-                Box(
-                    modifier = Modifier.fillMaxSize().padding(16.dp, 8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = parentDirectory?.path?.let{ URLDecoder.decode(it, StandardCharsets.UTF_8)}?:"Tap for Vault Directory",
-                        color = parentDirectory?.let{ MaterialTheme.colorScheme.onBackground }?:run{ MaterialTheme.colorScheme.onSurfaceVariant },
-                        textAlign = TextAlign.Center,
-                        overflow = StartEllipsis,
-                        maxLines = 1,
-                    )
-                }
-            }
-            Button(
-                onClick = {
-                    scope.launch {
-                        fileManager.createFile(parentDirectory!!, vaultName)
-                    }
-                },
-                modifier = Modifier.wrapContentWidth(),
-                enabled = parentDirectory != null && vaultName.isNotBlank(),
-            ) {
-                Text("Create")
-            }
-        }
-        Spacer(modifier = Modifier.height(16.dp))
 
         // 에디터
-        Text("파일 위치: ${bookmarks?.fileData?.path}")
         Text("파일 내용:")
         OutlinedTextField(
             value = content,
             onValueChange = { content = it },
             modifier = Modifier
                 .fillMaxWidth()
-                .wrapContentHeight()
-                .weight(1f),
+                .height(300.dp),
             enabled = currentFile != null,
             placeholder = { Text("파일을 열어주세요") }
         )
-        Spacer(modifier = Modifier.height(16.dp))
-        list?.forEach { file ->
-            Text(text = file.name)
-        }
     }
 }

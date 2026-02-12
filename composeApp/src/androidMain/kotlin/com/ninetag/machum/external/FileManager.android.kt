@@ -18,12 +18,17 @@ internal actual suspend fun FileManager.createFolder(
         val koin = object : KoinComponent {
             val context: Context by inject()
         }
-        val parentDoc = DocumentFile.fromTreeUri(koin.context, parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"))?:return@withContext null
-        val newDir = parentDoc.createDirectory(name)?:return@withContext null
+        val parentDoc = DocumentFile.fromTreeUri(
+            koin.context,
+            parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"))
+            ?:return@withContext null
+        val existing = parentDoc.findFile(name)
+        if (existing != null && existing.isDirectory) return@withContext  PlatformFile(existing.uri)
+        val newDir = parentDoc.createDirectory(name)?:return@withContext  null
         PlatformFile(newDir.uri)
     } catch (e: Exception) {
         println("폴더 생성 실패: $e")
-        null
+        throw e
     }
 }
 
@@ -35,13 +40,55 @@ internal actual suspend fun FileManager.createFile(
         val koin = object : KoinComponent {
             val context: Context by inject()
         }
-        val parentDoc = DocumentFile.fromTreeUri(koin.context, parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"))?:return@withContext null
+        val parentDoc = DocumentFile.fromTreeUri(
+            koin.context,
+            parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"))
+            ?:return@withContext null
         val existing = parentDoc.findFile("${name}.md")
         if (existing != null && existing.isFile) return@withContext PlatformFile(existing.uri)
         val newFile = parentDoc.createFile("text/markdown", "${name}.md")?:return@withContext null
         PlatformFile(newFile.uri)
     } catch (e: Exception) {
         println("파일 생성 실패: $e")
-        null
+        throw e
     }
 }
+
+internal actual suspend fun FileManager.createConfig(
+    parentDirectory: PlatformFile
+): PlatformFile? = withContext(Dispatchers.IO) {
+    try {
+        val koin = object : KoinComponent {
+            val context: Context by inject()
+        }
+        val parentDoc = DocumentFile.fromTreeUri(
+            koin.context,
+            parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"))
+            ?:return@withContext null
+        val existing = parentDoc.findFile(".machum.json")
+        if (existing != null && existing.isFile) return@withContext PlatformFile(existing.uri)
+        val newFile = parentDoc.createFile("application/json", ".machum.json")?:return@withContext null
+        PlatformFile(newFile.uri)
+    } catch (e: Exception) {
+        throw e
+    }
+}
+
+internal actual suspend fun FileManager.validPermission(file: PlatformFile): Boolean {
+    return try {
+        val koin = object : KoinComponent {
+            val context: Context by inject()
+        }
+        koin.context.contentResolver
+            .persistedUriPermissions
+            .any {
+                it.isReadPermission &&
+                it.isWritePermission
+            }
+    } catch (e: Exception) {
+        println("Config 생성 실패: $e")
+        throw e
+    }
+}
+
+internal actual fun String.forPlatformFile(): String = this.replace("/", "%2F")
