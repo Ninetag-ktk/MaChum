@@ -5,6 +5,8 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.byteArrayPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.ninetag.machum.entity.ProjectConfig
+import com.ninetag.machum.entity.WorkflowStep
 import io.github.vinceglb.filekit.FileKit
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.bookmarkData
@@ -18,6 +20,7 @@ import io.github.vinceglb.filekit.fromBookmarkData
 import io.github.vinceglb.filekit.isDirectory
 import io.github.vinceglb.filekit.list
 import io.github.vinceglb.filekit.name
+import io.github.vinceglb.filekit.nameWithoutExtension
 import io.github.vinceglb.filekit.path
 import io.github.vinceglb.filekit.readString
 import io.github.vinceglb.filekit.writeString
@@ -31,9 +34,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlin.collections.emptyList
 
 class FileManager(private val dataStore: DataStore<Preferences>) {
+    val workflowParser = WorkflowParser()
     companion object {
         private val BOOKMARK_VAULT = byteArrayPreferencesKey("bookmark_vault")
         private val BOOKMARK_PROJECT = byteArrayPreferencesKey("bookmark_project")
@@ -57,7 +62,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             val vault = pref[BOOKMARK_VAULT]?.let { PlatformFile.fromBookmarkDataWithValidate(it) }
             val project = pref[BOOKMARK_PROJECT]?.let { PlatformFile.fromBookmarkDataWithValidate(it) }
             val file = project?.let { pref[BOOKMARK_FILE]?.let{
-                PlatformFile(project.path + "/$it".forPlatformFile())
+                PlatformFile(project.path + "/$it".forPlatformFile()).takeIf { it.exists() }
             } }
             Bookmarks(
                 vaultData = vault,
@@ -89,21 +94,92 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     private val _bookmarks = MutableStateFlow<Bookmarks?>(null)
     val bookmarks: StateFlow<Bookmarks?> = _bookmarks.asStateFlow()
 
+    private val _workflowList = MutableStateFlow<List<PlatformFile>>(emptyList())
+    val workflowList: StateFlow<List<PlatformFile>> = _workflowList.asStateFlow()
+
+    private val _workflow = MutableStateFlow<List<WorkflowStep>>(emptyList())
+    val workflow: StateFlow<List<WorkflowStep>> = _workflow.asStateFlow()
+
+    private val _needUpdateWorkflow = MutableStateFlow(false)
+    val needUpdateWorkflow = _needUpdateWorkflow.asStateFlow()
+
     init {
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
-            val preferences = getPreferences()
-            preferences.vaultData?.let {
-                if (!validPermission(it)) {
-                    clearPreferences()
-                }
-            }
-            _bookmarks.value = getPreferences()
+            validateVault() ?: return@launch
+            validProject() ?: return@launch
         }
     }
 
+    private suspend fun validateVault(): PlatformFile? {
+        val vault = getPreferences().vaultData ?: return null
+        if (!validPermission(vault)) {
+            clearPreferences()
+            return null
+        }
+        val bookmark = Bookmarks(vaultData = vault)
+        _bookmarks.value = bookmark
+        getWorkflowList()
+        if (_workflowList.value.isEmpty()) setPreferences(bookmark)
+        return vault
+    }
+
+    private suspend fun validProject(): PlatformFile? {
+        val project = getPreferences().projectData ?: return null
+        _bookmarks.value = getPreferences()
+        setConfig(project) ?: return null
+        setWorkflow()
+        return project
+    }
+
+    suspend fun createProject(name: String): PlatformFile? = withContext(Dispatchers.IO) { createFolder(_bookmarks.value!!.vaultData!!, name) }
+
+    suspend fun createWorkflow(name: String = "New_Workflow"): PlatformFile? = withContext(Dispatchers.IO) {
+        val parentDirectory = PlatformFile(_bookmarks.value!!.vaultData!!.path + "/.workflow".forPlatformFile())
+        createFile(parentDirectory, name)
+    }
+
+    suspend fun createNextFile(name: String): PlatformFile? = withContext(Dispatchers.IO) { createFile(_bookmarks.value!!.projectData!!, name) }
+
+    suspend fun createChildFile(numbering: String, name: String): PlatformFile? = withContext(Dispatchers.IO) {
+        // ToDo 로직 작성 필요
+        null
+    }
+
+    suspend fun getWorkflowList() = withContext(Dispatchers.IO) {
+        val workflowDir = PlatformFile(_bookmarks.value!!.vaultData!!.path + "/.workflow".forPlatformFile())
+        _workflowList.value = listFile(workflowDir)
+    }
+
+    suspend fun getWorkflow(workflow: String): PlatformFile? = withContext(Dispatchers.IO) {
+        val file = PlatformFile(_bookmarks.value!!.vaultData!!.path + "/.workflow/".forPlatformFile() + "$workflow.md")
+        if (file.exists()) file else null
+    }
+
     /**
-     * 사용자가 직접 지정하는 루트 디렉토리
-     * @return 앱이 실행될 디렉토리 지정
+     * Vault 내부의 프로젝트 폴더 목록
+     * @param vault 사용자 지정 또는 북마크에서 복원된 루트 디렉토리 경로
+     * @return 프로젝트 폴더 목록
+     */
+    suspend fun listProject(vault: PlatformFile): List<PlatformFile> = withContext(Dispatchers.IO) {
+        vault.list()
+            .filter { it.isDirectory() && !it.name.startsWith(".") }
+            .sortedBy { it.name }
+    }
+
+    /**
+     * Project 내부의 마크다운 파일 목록
+     * @param project 사용자 선택 또는 북마크에서 복원된 프로젝트 폴더 경로
+     * @return 마크다운 파일 목록
+     */
+    suspend fun listFile(project: PlatformFile): List<PlatformFile> = withContext(Dispatchers.IO) {
+        project.list()
+            .filter { it.name.endsWith(".md") }
+            .sortedBy { it.name }
+    }
+
+    /**
+     * 저장소를 선택
+     * @return 저장소
      */
     suspend fun pickVault(): PlatformFile? = withContext(Dispatchers.IO) {
         try {
@@ -129,7 +205,29 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      */
     suspend fun pickProject(project: PlatformFile): PlatformFile? = withContext(Dispatchers.IO) {
         try {
-            setPreferences(getPreferences().copy(projectData = project)).projectData
+            setPreferences(getPreferences().copy(projectData = project))
+            setConfig(project)
+            setWorkflow()
+            project
+        } catch (e: Exception) {
+            println(e)
+            null
+        }
+    }
+
+    /**
+     * 워크플로우 선택시 동작
+     * @param workflow 워크플로우 파일
+     */
+    suspend fun pickWorkflow(workflow: PlatformFile) = withContext(Dispatchers.IO) {
+        try {
+            writeConfig(
+                ProjectConfig(
+                    workflow = workflow.nameWithoutExtension,
+                    workflowLastModified = workflow.getLastModified()
+                )
+            )
+            _workflow.value = workflowParser.parse(workflow.readString())
         } catch (e: Exception) {
             throw e
         }
@@ -143,12 +241,6 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      */
     suspend fun pickFile(file: PlatformFile): PlatformFile = withContext(Dispatchers.IO) {
         setPreferences(getPreferences().copy(fileData = file)).fileData!!
-    }
-
-
-    suspend fun getWorkFlow(workflow: String): PlatformFile? = withContext(Dispatchers.IO) {
-        val file = PlatformFile(_bookmarks.value!!.vaultData!!.path + "/.workflow/".forPlatformFile() + "$workflow.md")
-        if (file.exists()) file else null
     }
 
     suspend fun pickFileTest(): PlatformFile? {
@@ -175,33 +267,26 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     }
 
     /**
-     * Vault 내부의 프로젝트 폴더 목록
-     * @param vault 사용자 지정 또는 북마크에서 복원된 루트 디렉토리 경로
-     * @return 프로젝트 폴더 목록
-     */
-    suspend fun listProject(vault: PlatformFile): List<PlatformFile> = withContext(Dispatchers.IO) {
-        vault.list()
-            .filter { it.isDirectory() && !it.name.startsWith(".") }
-            .sortedBy { it.name }
-    }
-
-    /**
-     * Project 내부의 마크다운 파일 목록
-     * @param project 사용자 선택 또는 북마크에서 복원된 프로젝트 폴더 경로
-     * @return 마크다운 파일 목록
-     */
-    suspend fun listFile(project: PlatformFile): List<PlatformFile> = withContext(Dispatchers.IO) {
-        project.list()
-            .filter { it.name.endsWith(".md") }
-            .sortedBy { it.name }
-    }
-
-    /**
      * 파일 읽기
      * @param file 읽을 파일
      * @return 파일 내용 (UTF-8)
      */
     suspend fun read(file: PlatformFile): String = withContext(Dispatchers.IO) { file.readString() }
+
+    private suspend fun readConfig(): ProjectConfig? = withContext(Dispatchers.IO) {
+        try {
+            val configFile = PlatformFile(_bookmarks.value!!.projectData!!.path + "/.machum.json".forPlatformFile())
+            if (!configFile.exists()) return@withContext null
+
+            val content = configFile.readString()
+            if (content.isBlank()) return@withContext null
+
+            Json.decodeFromString(ProjectConfig.serializer(), content)
+        } catch (e: Exception) {
+            println("Config 읽기 실패: $e")
+            throw e
+        }
+    }
 
     /**
      * 파일 쓰기 (생성 & 수정)
@@ -209,6 +294,17 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * @param content 파일 내용
      */
     suspend fun write(file: PlatformFile, content: String) = withContext(Dispatchers.IO) { file.writeString(content) }
+
+    suspend fun writeConfig(projectConfig: ProjectConfig) = withContext(Dispatchers.IO) {
+        try {
+            val configFile = PlatformFile(_bookmarks.value!!.projectData!!.path + "/.machum.json".forPlatformFile())
+            val content = Json.encodeToString(ProjectConfig.serializer(), projectConfig)
+            configFile.writeString(content)
+        } catch (e: Exception) {
+            println("Config 읽기 실패: $e")
+            throw e
+        }
+    }
 
     /**
      * 파일 삭제
@@ -224,18 +320,68 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
     }
 
+    /**
+     * 저장소 생성 및 초기 세팅
+     * @param parentDirectory 저장소가 생성될 위치
+     * @param name 저장소의 이름
+     * @return 저장소
+     */
     suspend fun setVault(parentDirectory: PlatformFile, name: String): PlatformFile? = withContext(Dispatchers.IO) {
         createFolder(parentDirectory, name)?.let{
+            createFolder(it, ".workflow")
             setPreferences(getPreferences().copy(vaultData = it)).vaultData
+        }
+    }
+
+    /**
+     * 프로젝트 생성 및 초기 세팅
+     * @param name 프로젝트의 이름
+     * @return 프로젝트
+     */
+    suspend fun setProject(name: String): PlatformFile? = withContext(Dispatchers.IO) {
+        createFolder(_bookmarks.value!!.vaultData!!, name)?.let{
+            setPreferences(getPreferences().copy(projectData = it))
+            setConfig(it)
+            setWorkflow()
+            it
+        }
+    }
+
+    /**
+     * 프로젝트 config 파일에 workflow 정보 입력
+     * 마지막 수정 시간이 다른 경우 플래그를 통해 상태 갱신 요청
+     */
+    suspend fun setWorkflow() = withContext(Dispatchers.IO) {
+        val config = readConfig()
+        if (config != null) {
+            val workflowFile = getWorkflow(config.workflow) ?: return@withContext
+            if (workflowFile.getLastModified() != workflowFile.getLastModified()) _needUpdateWorkflow.value = true
+            _workflow.value = workflowParser.parse(workflowFile.readString())
+        } else {
+            if (_workflowList.value.size == 1) {
+                println("workflow Count is 1")
+                val workflow = _workflowList.value.first()
+                writeConfig(
+                    ProjectConfig(
+                        workflow = workflow.nameWithoutExtension,
+                        workflowLastModified = workflow.getLastModified()
+                    )
+                )
+                _workflow.value = workflowParser.parse(workflow.readString())
+            }
         }
     }
 
     suspend fun setFile(project: PlatformFile): PlatformFile = withContext(Dispatchers.IO) {
         try {
             listFile(project).lastOrNull()
-                ?.let{ setPreferences(getPreferences().copy(fileData = it)).fileData }
+                ?.let{
+                    setPreferences(getPreferences().copy(fileData = it)).fileData
+                }
                 ?:run{
-                    createFile(project, "name")
+                    val firstStep = _workflow.value.first()
+                    val name = "${firstStep.numbering}. ${firstStep.title}"
+                    createFile(project, name)
                         ?.let { setPreferences(getPreferences().copy(fileData = it)).fileData }
                         ?:throw Exception()
                 }
@@ -243,39 +389,39 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             throw e
         }
     }
-
-    suspend fun createProject(name: String): PlatformFile? = withContext(Dispatchers.IO) { createFolder(_bookmarks.value!!.vaultData!!, name) }
-    suspend fun createNextFile(name: String): PlatformFile? = withContext(Dispatchers.IO) { createFile(_bookmarks.value!!.projectData!!, name) }
 }
 
 /**
- * 디렉토리 생성
+ * 파일/디렉토리 생성
  * @param parentDirectory 폴더를 생성할 부모 디렉토리
- * @param name 생성할 폴더명
+ * @param name 생성할 파일/폴더명
  * @return 생성된 디렉토리
  */
-internal expect suspend fun FileManager.createFolder(parentDirectory: PlatformFile, name: String): PlatformFile?
-
 internal expect suspend fun FileManager.createFile(parentDirectory: PlatformFile, name: String): PlatformFile?
 
-internal expect suspend fun FileManager.createConfig(parentDirectory: PlatformFile): PlatformFile?
+internal expect suspend fun FileManager.createFolder(parentDirectory: PlatformFile, name: String): PlatformFile?
+
+internal expect suspend fun FileManager.setConfig(parentDirectory: PlatformFile): PlatformFile?
 
 internal expect suspend fun FileManager.validPermission(file: PlatformFile): Boolean
 
-internal expect fun String.forPlatformFile(): String
+internal expect fun PlatformFile.getLastModified(): Long?
 
-fun PlatformFile.Companion.fromBookmarkDataWithValidate(bytes: ByteArray): PlatformFile? {
+internal suspend fun PlatformFile.getDescription(): String {
+    val firstLine = this.readString().lines().first()
+    if (!firstLine.startsWith('#') && !firstLine.startsWith('>')) return firstLine
+    else return ""
+}
+
+internal fun PlatformFile.Companion.fromBookmarkDataWithValidate(bytes: ByteArray): PlatformFile? {
     val data = PlatformFile.fromBookmarkData(bytes)
     return if (data.exists()) data else null
 }
+
+internal expect fun String.forPlatformFile(): String
 
 data class Bookmarks(
     val vaultData: PlatformFile? = null,
     val projectData: PlatformFile? = null,
     val fileData: PlatformFile? = null,
-)
-
-@Serializable
-data class Config(
-    val workflow: String,
 )

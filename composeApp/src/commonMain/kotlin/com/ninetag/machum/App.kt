@@ -13,6 +13,8 @@ import com.ninetag.machum.external.FileManager
 import com.ninetag.machum.screen.TestScreen
 import com.ninetag.machum.screen.selectionScreen.ProjectSelectionScreen
 import com.ninetag.machum.screen.selectionScreen.VaultSelectionScreen
+import com.ninetag.machum.screen.WorkflowManagementScreen
+import com.ninetag.machum.screen.selectionScreen.WorkflowSelectionScreen
 import kotlinx.coroutines.launch
 
 import org.koin.compose.koinInject
@@ -22,9 +24,12 @@ import org.koin.compose.koinInject
 fun App() {
     val fileManager = koinInject<FileManager>()
     val bookmark by fileManager.bookmarks.collectAsState()
+    val workflowList by fileManager.workflowList.collectAsState()
+    val workflow by fileManager.workflow.collectAsState()
     val scope = rememberCoroutineScope()
 
     var showVaultPicker by remember { mutableStateOf(false) }
+    var showWorkflowManagement by remember { mutableStateOf(false) }
 
     MaterialTheme {
         var showContent by remember { mutableStateOf(false) }
@@ -52,8 +57,10 @@ fun App() {
 //            Text("확인: 북마크=${bookmark!=null}, Vault=${bookmark?.vaultData != null}, Project=${bookmark?.projectData != null}, File=${bookmark?.fileData != null}")
             bookmark?.let {
                 when {
-                    it.vaultData == null || showVaultPicker -> { VaultSelectionScreen(reset = { showVaultPicker = false }) }
+                    it.vaultData == null || showVaultPicker -> { VaultSelectionScreen({ showVaultPicker = false }) }
+                    workflowList.isEmpty() || showWorkflowManagement -> { WorkflowManagementScreen(showWorkflowManagement, { showWorkflowManagement = false }) }
                     it.projectData == null -> { ProjectSelectionScreen() }
+                    workflow.isEmpty() -> { WorkflowSelectionScreen() }
                     it.fileData == null -> { scope.launch { fileManager.setFile(it.projectData) } }
                     else -> {
                         TestScreen()

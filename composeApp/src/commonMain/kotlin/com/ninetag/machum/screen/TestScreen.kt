@@ -23,6 +23,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.ninetag.machum.external.FileManager
+import com.ninetag.machum.external.getLastModified
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.name
 import kotlinx.coroutines.launch
@@ -30,14 +31,19 @@ import org.koin.compose.koinInject
 
 @Suppress("NewApi")
 @Composable
-fun TestScreen() {
+fun TestScreen(
+    onWorkflowManage: () -> Unit = {},
+) {
     val fileManager = koinInject<FileManager>()
     var currentDirectory by remember { mutableStateOf<PlatformFile?>(null) }
     var currentProject by remember { mutableStateOf<PlatformFile?>(null) }
+    var list by remember { mutableStateOf<List<PlatformFile>>(emptyList()) }
     var currentFile by remember { mutableStateOf<PlatformFile?>(null) }
     var content by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("") }
     val bookmark by fileManager.bookmarks.collectAsState()
+    val workflowList by fileManager.workflowList.collectAsState()
+    val workflow by fileManager.workflow.collectAsState()
 
     val scope = rememberCoroutineScope()
 
@@ -49,6 +55,7 @@ fun TestScreen() {
             }
             it.projectData?.let { project ->
                 currentProject = project
+                list = fileManager.listFile(project)
             }
             it.fileData?.let { file ->
                 currentFile = file
@@ -162,5 +169,13 @@ fun TestScreen() {
             enabled = currentFile != null,
             placeholder = { Text("파일을 열어주세요") }
         )
+        currentFile?.let { file ->
+            val lastModifier = file.getLastModified()
+            Text(text = "$lastModifier")
+        }
+        Text(text = "$workflowList")
+        workflow?.let{
+            Text(text = "$it")
+        }
     }
 }

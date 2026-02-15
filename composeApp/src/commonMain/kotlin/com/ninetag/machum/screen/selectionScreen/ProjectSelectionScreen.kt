@@ -24,7 +24,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import com.ninetag.machum.external.FileManager
-import com.ninetag.machum.screen.common.ListItem
+import com.ninetag.machum.screen.common.CustomListItem
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.nameWithoutExtension
 import kotlinx.coroutines.launch
@@ -65,7 +65,7 @@ internal fun ProjectCard(
     var menuPosition by remember { mutableStateOf(Offset.Zero) }
 
     Box {
-        ListItem(
+        CustomListItem(
             selected = isSelected,
             isLongPressed = showContextMenu,
             onClick = {

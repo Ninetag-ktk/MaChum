@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -31,7 +32,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 
 @Composable
-fun ListItem(
+fun CustomListItem(
     selected: Boolean = false,
     isLongPressed: Boolean,
     onClick: () -> Unit,
@@ -56,8 +57,8 @@ fun ListItem(
 
     val borderModifier = if (isFocused) {
         Modifier.border(
-            width = 2.dp,
-            color = MaterialTheme.colorScheme.onPrimaryContainer,
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.5f),
             shape = MaterialTheme.shapes.medium
         )
     } else {
@@ -96,7 +97,18 @@ fun ListItem(
                     },
                     onLongPress = {offset ->
                         onContextMenu(offset)
-                    }
+                    },
+                    // press인 경우에는 UI만 업데이트
+                    onPress = {offset ->
+                        val press = PressInteraction.Press(offset)
+                        interactionSource.emit(press)
+                        val released = tryAwaitRelease()
+                        if (released) {
+                            interactionSource.emit(PressInteraction.Release(press))
+                        } else {
+                            interactionSource.emit(PressInteraction.Cancel(press))
+                        }
+                    },
                 )
             }
     ) {
