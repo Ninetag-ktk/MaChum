@@ -1,4 +1,4 @@
-package com.ninetag.machum.screen.selectionScreen
+package com.ninetag.machum.screen.vaultScreen
 
 import androidx.compose.runtime.Composable
 

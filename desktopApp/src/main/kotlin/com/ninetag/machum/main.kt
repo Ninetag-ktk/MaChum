@@ -11,7 +11,7 @@ import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import com.ninetag.machum.di.commonModule
 import com.ninetag.machum.external.FileManager
-import com.ninetag.machum.screen.selectionScreen.DesktopVaultPickerContainer
+import com.ninetag.machum.screen.vaultScreen.DesktopVaultPickerContainer
 import io.github.vinceglb.filekit.FileKit
 import kotlinx.coroutines.flow.map
 import org.koin.compose.koinInject

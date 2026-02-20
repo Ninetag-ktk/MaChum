@@ -1,4 +1,4 @@
-package com.ninetag.machum.screen.selectionScreen
+package com.ninetag.machum.screen.vaultScreen
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeContentPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.wrapContentWidth
@@ -90,7 +89,6 @@ fun DesktopVaultPickerContainer(
         Column(
             modifier = Modifier
                 .background(MaterialTheme.colorScheme.primaryContainer)
-                .safeContentPadding()
                 .padding(24.dp)
                 .fillMaxSize(),
             horizontalAlignment = Alignment.CenterHorizontally,

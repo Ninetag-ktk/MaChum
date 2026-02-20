@@ -1,4 +1,4 @@
-package com.ninetag.machum.screen.selectionScreen
+package com.ninetag.machum.screen.projectScreen
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
