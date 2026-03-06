@@ -40,6 +40,11 @@ fun moveNode(
     dropTarget: DropTarget,
     rootNodes: MutableList<HeaderNode>
 ) {
+    // 자기 자신으로 이동 방지
+    if (node == dropTarget.node) return
+    // 자기 자신의 하위 노드로 이동 방지
+    if (isAncestor(node, dropTarget.node)) return
+
     val (newParent, newIndex) = resolveParentAndIndex(dropTarget, rootNodes)
 
     // 기존 위치 정보
@@ -62,6 +67,15 @@ fun moveNode(
     node.parent = newParent
     // 하위 노드 level 재조정
     adjustLevelsWithLimit(node, (newParent?.level ?: 0) + 1)
+}
+
+private fun isAncestor(ancestor: HeaderNode, target: HeaderNode): Boolean {
+    var current: HeaderNode? = target.parent
+    while (current != null) {
+        if (current === ancestor) return true
+        current = current.parent
+    }
+    return false
 }
 
 private fun resolveParentAndIndex(

@@ -16,15 +16,8 @@ internal actual suspend fun FileManager.createFile(
     try {
         if (!parentDirectory.exists()) return@withContext null
 
-        var fileName = name
-        var index = 1
-        var newFile = parentDirectory / "$fileName.md"
-
-        while (newFile.exists()) {
-            fileName = "${name}_${index}"
-            newFile = parentDirectory / "$fileName.md"
-            index++
-        }
+        val fileName = rotateMarkdownFileName(parentDirectory, name)
+        val newFile = parentDirectory / "$fileName.md"
 
         newFile.writeString("")
         newFile
@@ -49,32 +42,38 @@ internal actual suspend fun FileManager.createFolder(
     }
 }
 
-//internal actual suspend fun FileManager.renameMarkdown(
-//    parentDirectory: PlatformFile,
-//    file: PlatformFile,
-//    name: String
-//): PlatformFile? = withContext(Dispatchers.IO) {
-//    try {
-//        val doc = file.file
-//        val parentDoc = File(parentDirectory.file, name)
-//        if (!doc.renameTo())
-//    }
-//}
-//
-//private fun rotateMarkdownFileName(
-//    parent: PlatformFile,
-//    name: String,
-//): String {
-//    var fileName = name
-//    var index = 1
-//    var existing = parent.findFile("${fileName}.md")
-//    while (existing != null && existing.isFile) {
-//        fileName = "${name}_${index}"
-//        existing = parent.findFile("${fileName}.md")
-//        index ++
-//    }
-//    return fileName
-//}
+internal actual suspend fun FileManager.renameMarkdown(
+    parentDirectory: PlatformFile,
+    file: PlatformFile,
+    name: String
+): PlatformFile? = withContext(Dispatchers.IO) {
+    try {
+        if (!parentDirectory.exists()) return@withContext null
+
+        val fileName = rotateMarkdownFileName(parentDirectory, name)
+        val target = File(parentDirectory.file, "${fileName}.md")
+        if (!file.file.renameTo(target)) return@withContext null
+        PlatformFile(file.file)
+    } catch(e: Exception) {
+        println("이름변경 실패: $e")
+        throw e
+    }
+}
+
+private fun rotateMarkdownFileName(
+    parent: PlatformFile,
+    name: String,
+): String {
+    var fileName = name
+    var index = 1
+    var newFile = parent / "$fileName.md"
+    while (newFile.exists()) {
+        fileName = "${name}_${index}"
+        newFile = parent / "$fileName.md"
+        index++
+    }
+    return fileName
+}
 
 internal actual suspend fun FileManager.setConfig(
     parentDirectory: PlatformFile

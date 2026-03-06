@@ -45,6 +45,7 @@ import androidx.compose.ui.text.style.TextOverflow.Companion.StartEllipsis
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ninetag.machum.external.FileManager
+import com.ninetag.machum.screen.common.paddingDefaultHorizontal
 import io.github.vinceglb.filekit.FileKit
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.dialogs.openDirectoryPicker
@@ -89,18 +90,18 @@ private fun Menu(
     val bookmark = fileManager.bookmarks.collectAsState()
 
     Column(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().paddingDefaultHorizontal(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Spacer(modifier = Modifier.height(48.dp))
         Text(
-            text = bookmark.value?.vaultData?.nameWithoutExtension ?: "맞춤",
+            text = bookmark.value.vaultData?.nameWithoutExtension ?: "맞춤",
             fontSize = 48.sp,
             fontWeight = FontWeight.SemiBold,
         )
         Text(
-            text = bookmark.value?.vaultData?.path ?: "글쓰기 앱",
+            text = bookmark.value.vaultData?.path ?: "글쓰기 앱",
             fontSize = 16.sp,
             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.5f),
         )

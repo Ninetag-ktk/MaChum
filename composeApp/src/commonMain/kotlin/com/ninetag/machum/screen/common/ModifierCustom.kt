@@ -18,3 +18,6 @@ fun Modifier.paddingDefaultTop(): Modifier = this.windowInsetsPadding(WindowInse
 
 @Composable
 fun Modifier.paddingDefaultVertical(): Modifier = this.windowInsetsPadding(WindowInsets.safeContent.only(WindowInsetsSides.Vertical))
+
+@Composable
+fun Modifier.paddingDefaultHorizontal(): Modifier = this.windowInsetsPadding(WindowInsets.safeContent.only(WindowInsetsSides.Horizontal))

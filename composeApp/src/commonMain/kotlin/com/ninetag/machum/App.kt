@@ -39,16 +39,14 @@ fun App() {
                     .fillMaxSize(),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                bookmark?.let {
-                    when {
-                        it.vaultData == null || showVaultPicker -> { VaultSelectionScreen({ showVaultPicker = false }) }
-                        workflowList.isEmpty() || showWorkflowManagement -> { WorkflowScreen(showWorkflowManagement, { showWorkflowManagement = false }) }
-                        it.projectData == null -> { ProjectSelectionScreen() }
+                when {
+                    bookmark.vaultData == null || showVaultPicker -> { VaultSelectionScreen({ showVaultPicker = false }) }
+                    workflowList.isEmpty() || showWorkflowManagement -> { WorkflowScreen(showWorkflowManagement, { showWorkflowManagement = false }) }
+                    bookmark.projectData == null -> { ProjectSelectionScreen() }
 //                        workflow.isEmpty() -> { WorkflowSelectionScreen() }
-                        it.fileData == null -> { scope.launch { fileManager.setFile(it.projectData) } }
-                        else -> {
-                            TestScreen()
-                        }
+                    bookmark.fileData == null -> { scope.launch { fileManager.setFile(bookmark.projectData!!) } }
+                    else -> {
+                        TestScreen()
                     }
                 }
             }

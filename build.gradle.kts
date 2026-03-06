@@ -8,6 +8,6 @@ plugins {
     alias(libs.plugins.composeCompiler) apply false
     alias(libs.plugins.kotlinMultiplatform) apply false
     alias(libs.plugins.kotlinJvm) apply false
-    // 삭제 필요
+    // ToDo 삭제 필요
     alias(libs.plugins.kotlinAndroid) apply false
 }

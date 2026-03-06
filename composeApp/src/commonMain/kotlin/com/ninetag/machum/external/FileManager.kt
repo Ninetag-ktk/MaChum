@@ -62,7 +62,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             val vault = pref[BOOKMARK_VAULT]?.let { PlatformFile.fromBookmarkDataWithValidate(it) }
             val project = pref[BOOKMARK_PROJECT]?.let { PlatformFile.fromBookmarkDataWithValidate(it) }
             val file = project?.let { pref[BOOKMARK_FILE]?.let{
-                PlatformFile(project.path + "/$it".forPlatformFile()).takeIf { it.exists() }
+                project.list().find { file -> file.name == it }
             } }
             Bookmarks(
                 vaultData = vault,
@@ -91,8 +91,8 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         _bookmarks.value = getPreferences()
     }
 
-    private val _bookmarks = MutableStateFlow<Bookmarks?>(null)
-    val bookmarks: StateFlow<Bookmarks?> = _bookmarks.asStateFlow()
+    private val _bookmarks = MutableStateFlow(Bookmarks())
+    val bookmarks: StateFlow<Bookmarks> = _bookmarks.asStateFlow()
 
     private val _workflowList = MutableStateFlow<List<PlatformFile>>(emptyList())
     val workflowList: StateFlow<List<PlatformFile>> = _workflowList.asStateFlow()
@@ -131,14 +131,14 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         return project
     }
 
-    suspend fun createProject(name: String): PlatformFile? = withContext(Dispatchers.IO) { createFolder(_bookmarks.value!!.vaultData!!, name) }
+    suspend fun createProject(name: String): PlatformFile? = withContext(Dispatchers.IO) { createFolder(_bookmarks.value.vaultData!!, name) }
 
     suspend fun createWorkflow(name: String = "New_Workflow"): PlatformFile? = withContext(Dispatchers.IO) {
-        val parentDirectory = PlatformFile(_bookmarks.value!!.vaultData!!.path + "/.workflow".forPlatformFile())
+        val parentDirectory = _bookmarks.value.vaultData!!.list().find { it.name == ".workflow" }?:return@withContext null
         createFile(parentDirectory, name)
     }
 
-    suspend fun createNextFile(name: String): PlatformFile? = withContext(Dispatchers.IO) { createFile(_bookmarks.value!!.projectData!!, name) }
+    suspend fun createNextFile(name: String): PlatformFile? = withContext(Dispatchers.IO) { createFile(_bookmarks.value.projectData!!, name) }
 
     suspend fun createChildFile(numbering: String, name: String): PlatformFile? = withContext(Dispatchers.IO) {
         // ToDo 로직 작성 필요
@@ -146,13 +146,14 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     }
 
     suspend fun getWorkflowList() = withContext(Dispatchers.IO) {
-        val workflowDir = PlatformFile(_bookmarks.value!!.vaultData!!.path + "/.workflow".forPlatformFile())
-        _workflowList.value = listFile(workflowDir)
+        val workflowDir = _bookmarks.value.vaultData!!.list().find { it.name == ".workflow" }
+        _workflowList.value = listFile(workflowDir!!)
     }
 
     suspend fun getWorkflow(workflow: String): PlatformFile? = withContext(Dispatchers.IO) {
-        val file = PlatformFile(_bookmarks.value!!.vaultData!!.path + "/.workflow/".forPlatformFile() + "$workflow.md")
-        if (file.exists()) file else null
+        val workflowDir = _bookmarks.value.vaultData!!.list().find { it.name == ".workflow" }
+        val file = workflowDir!!.list().find { it.name == "$workflow.md" }
+        file
     }
 
     /**
@@ -161,6 +162,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * @return 프로젝트 폴더 목록
      */
     suspend fun listProject(vault: PlatformFile): List<PlatformFile> = withContext(Dispatchers.IO) {
+        println("Listing project")
         vault.list()
             .filter { it.isDirectory() && !it.name.startsWith(".") }
             .sortedBy { it.name }
@@ -185,7 +187,6 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         try {
             val initVault = getPreferences().vaultData
             val vault = FileKit.openDirectoryPicker(
-                title = "폴더 선택",
                 directory = initVault,
             )
             vault?.let{
@@ -247,7 +248,6 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         val bookmarks = getPreferences()
         val initDirectory = bookmarks.projectData
         val file = FileKit.openFilePicker(
-            title = "파일 선택",
             type = FileKitType.File("md"),
             mode = FileKitMode.Single,
             directory = initDirectory,
@@ -275,9 +275,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
 
     private suspend fun readConfig(): ProjectConfig? = withContext(Dispatchers.IO) {
         try {
-            val configFile = PlatformFile(_bookmarks.value!!.projectData!!.path + "/.machum.json".forPlatformFile())
-            if (!configFile.exists()) return@withContext null
-
+            val configFile = _bookmarks.value.projectData!!.list().find { it.name == ".machum.json" } ?: return@withContext null
             val content = configFile.readString()
             if (content.isBlank()) return@withContext null
 
@@ -297,7 +295,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
 
     suspend fun writeConfig(projectConfig: ProjectConfig) = withContext(Dispatchers.IO) {
         try {
-            val configFile = PlatformFile(_bookmarks.value!!.projectData!!.path + "/.machum.json".forPlatformFile())
+            val configFile = _bookmarks.value.projectData!!.list().find { it.name == ".machum.json" } ?: return@withContext null
             val content = Json.encodeToString(ProjectConfig.serializer(), projectConfig)
             configFile.writeString(content)
         } catch (e: Exception) {
@@ -339,7 +337,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * @return 프로젝트
      */
     suspend fun setProject(name: String): PlatformFile? = withContext(Dispatchers.IO) {
-        createFolder(_bookmarks.value!!.vaultData!!, name)?.let{
+        createFolder(_bookmarks.value.vaultData!!, name)?.let{
             setPreferences(getPreferences().copy(projectData = it))
             setConfig(it)
             setWorkflow()
@@ -390,16 +388,20 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
     }
 
-    suspend fun renemaProject(project: PlatformFile, name: String) = withContext(Dispatchers.IO) {
+    suspend fun renameProject(project: PlatformFile, name: String): PlatformFile? = withContext(Dispatchers.IO) {
+        null
     }
 
-    suspend fun renameWorkflow(file: PlatformFile, name: String) = withContext(Dispatchers.IO) {
-        val workflowDic = PlatformFile(_bookmarks.value!!.vaultData!!.path + "/.workflow/".forPlatformFile())
-        renameMarkdown(workflowDic, file, name)
+    suspend fun renameWorkflow(file: PlatformFile, name: String): PlatformFile? = withContext(Dispatchers.IO) {
+        val workflowDir = _bookmarks.value.vaultData!!.list().find { it.name == ".workflow" } ?: return@withContext null
+        renameMarkdown(workflowDir, file, name).also{
+            println("이름 변경 체크: ${it?.name}")
+            getWorkflowList()
+        }
     }
 
-    suspend fun renameFile(file: PlatformFile, name: String) = withContext(Dispatchers.IO) {
-        renameMarkdown(_bookmarks.value!!.projectData!!, file, name)
+    suspend fun renameFile(file: PlatformFile, name: String): PlatformFile? = withContext(Dispatchers.IO) {
+        renameMarkdown(_bookmarks.value.projectData!!, file, name)
     }
 }
 

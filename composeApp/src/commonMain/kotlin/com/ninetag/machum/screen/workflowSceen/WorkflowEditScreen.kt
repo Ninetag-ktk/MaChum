@@ -56,6 +56,7 @@ import com.ninetag.machum.screen.common.renderTreeItems
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.nameWithoutExtension
 import io.github.vinceglb.filekit.readString
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
@@ -67,9 +68,11 @@ fun WorkflowEditScreen(
     onDismiss: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    var debounceJob by remember { mutableStateOf<Job?>(null) }
     val fileManager = koinInject<FileManager>()
     val workflowParser = WorkflowParser()
 
+    var currentWorkflow by remember { mutableStateOf(workflow) }
     var workflowTitle by remember { mutableStateOf("") }
     var workflowDescription by remember { mutableStateOf("") }
     val workflowSteps = remember { mutableStateListOf<HeaderNode>() }
@@ -123,10 +126,13 @@ fun WorkflowEditScreen(
                 WorkflowEditHeader(
                     title = workflowTitle,
                     onTitleChange = {
-                        scope.launch {
-                            workflowTitle = it
-                            // Todo 파일명이 변경되기 때문에 파라미터로 받은 workflow를 바꿔줘야 함, 저장할 때 에러가 발생함
-                            fileManager.renameMarkdown(workflow, it)
+                        workflowTitle = it
+                        debounceJob?.cancel()
+                        debounceJob = scope.launch {
+                            delay(500)
+                            fileManager.renameWorkflow(currentWorkflow, it)?.let{ newWorkflow ->
+                                currentWorkflow = newWorkflow
+                            }
                             isMenuExpanded = false
                         }
                     },
@@ -147,7 +153,7 @@ fun WorkflowEditScreen(
                                 description = workflowDescription,
                                 nodes = workflowSteps,
                             )
-                            fileManager.write(workflow, content)
+                            fileManager.write(currentWorkflow, content)
                             onDismiss()
                         }
                     },

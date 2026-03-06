@@ -26,8 +26,8 @@ fun ProjectSelectionScreen() {
 
     var list by remember { mutableStateOf<List<PlatformFile>?>(null) }
 
-    LaunchedEffect(Unit, bookmark?.vaultData) {
-        list = fileManager.listProject(bookmark?.vaultData!!)
+    LaunchedEffect(Unit, bookmark.vaultData) {
+        list = fileManager.listProject(bookmark.vaultData!!)
     }
 
     Column(
