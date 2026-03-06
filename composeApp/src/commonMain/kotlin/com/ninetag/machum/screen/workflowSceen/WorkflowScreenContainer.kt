@@ -35,20 +35,21 @@ fun WorkflowScreen(
     Box(modifier = Modifier.fillMaxSize()) {
         workflow
             ?.let{ WorkflowEditScreen(it, { workflow = null }) }
-            ?:run{ WorkflowListScreen(workflowList, { workflow = it }) }
-
-        if (show) {
-            FloatingActionButton(
-                onClick = onDismiss,
-                modifier = Modifier.align(Alignment.BottomStart).padding(16.dp),
-                containerColor = MaterialTheme.colorScheme.primary,
-                shape = CircleShape
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Default.ArrowBack,
-                    contentDescription = "Back",
-                )
+            ?:run{
+                WorkflowListScreen(workflowList, { workflow = it })
+                if (show) {
+                    FloatingActionButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.align(Alignment.BottomStart).padding(16.dp),
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        shape = CircleShape
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Default.ArrowBack,
+                            contentDescription = "Back",
+                        )
+                    }
+                }
             }
-        }
     }
 }

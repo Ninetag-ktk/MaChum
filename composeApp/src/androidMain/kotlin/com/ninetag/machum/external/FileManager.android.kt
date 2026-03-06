@@ -23,17 +23,7 @@ internal actual suspend fun FileManager.createFile(
             koin.context,
             parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"))
             ?:return@withContext null
-
-        var fileName = name
-        var index = 1
-        var existing = parentDoc.findFile("${fileName}.md")
-
-        while (existing != null && existing.isFile) {
-            fileName = "${name}_${index}"
-            existing = parentDoc.findFile("${fileName}.md")
-            index ++
-        }
-
+        val fileName = rotateMarkdownFileName(parentDoc, name)
         val newFile = parentDoc.createFile("text/markdown", "${fileName}.md")?:return@withContext null
         PlatformFile(newFile.uri)
     } catch (e: Exception) {
@@ -62,6 +52,51 @@ internal actual suspend fun FileManager.createFolder(
         println("폴더 생성 실패: $e")
         throw e
     }
+}
+
+internal actual suspend fun FileManager.renameMarkdown(
+    parentDirectory: PlatformFile,
+    file: PlatformFile,
+    name: String
+): PlatformFile? = withContext(Dispatchers.IO) {
+    try {
+        val koin = object: KoinComponent {
+            val context: Context by inject()
+        }
+        val parentDoc = DocumentFile.fromTreeUri(
+            koin.context,
+            parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"))
+            ?:return@withContext null
+
+        val doc = DocumentFile.fromTreeUri(
+            koin.context,
+            file.toAndroidUri("com.ninetag.machum.fileprovider")
+        ) ?: return@withContext null
+
+        val fileName = rotateMarkdownFileName(parentDoc, name)
+
+        val renameFile = doc.renameTo("${fileName}.md")
+        if (!renameFile) return@withContext null
+        PlatformFile(doc.uri)
+    } catch (e: Exception) {
+        println("이름변경 실패: $e")
+        throw e
+    }
+}
+
+private fun rotateMarkdownFileName(
+    parent: DocumentFile,
+    name: String,
+): String {
+    var fileName = name
+    var index = 1
+    var existing = parent.findFile("${fileName}.md")
+    while (existing != null && existing.isFile) {
+        fileName = "${name}_${index}"
+        existing = parent.findFile("${fileName}.md")
+        index ++
+    }
+    return fileName
 }
 
 internal actual suspend fun FileManager.setConfig(

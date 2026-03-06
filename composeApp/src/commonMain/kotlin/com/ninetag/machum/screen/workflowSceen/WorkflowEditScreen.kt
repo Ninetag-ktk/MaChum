@@ -3,8 +3,10 @@ package com.ninetag.machum.screen.workflowSceen
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Description
@@ -29,23 +32,33 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.ninetag.machum.entity.HeaderNode
+import com.ninetag.machum.external.FileManager
 import com.ninetag.machum.external.WorkflowParser
 import com.ninetag.machum.external.getDescription
+import com.ninetag.machum.external.renameMarkdown
+import com.ninetag.machum.screen.common.DragGhostCard
 import com.ninetag.machum.screen.common.assignIds
 import com.ninetag.machum.screen.common.paddingDefault
 import com.ninetag.machum.screen.common.renderTreeItems
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.nameWithoutExtension
 import io.github.vinceglb.filekit.readString
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import org.koin.compose.koinInject
 import java.util.IdentityHashMap
 
 @Composable
@@ -53,6 +66,8 @@ fun WorkflowEditScreen(
     workflow: PlatformFile,
     onDismiss: () -> Unit,
 ) {
+    val scope = rememberCoroutineScope()
+    val fileManager = koinInject<FileManager>()
     val workflowParser = WorkflowParser()
 
     var workflowTitle by remember { mutableStateOf("") }
@@ -64,6 +79,16 @@ fun WorkflowEditScreen(
     var collapsedNodes by remember { mutableStateOf<Set<String>>(emptySet()) }
     var isEditingDescription by remember { mutableStateOf(false) }
     var isDescriptionExpended by remember { mutableStateOf<Boolean?>(null) }
+    var isDraggingActive by remember { mutableStateOf(false) }
+
+    var dragState by remember { mutableStateOf<DragState?>(null) }
+    val nodePositions = remember { mutableStateMapOf<HeaderNode, Float>() }
+    var currentPointerY by remember { mutableStateOf<Float?>(null) }
+
+    val density = LocalDensity.current
+    val lazyListState = rememberLazyListState()
+    val autoScrollThreshold = 200.dp
+    val thresholdPx = with(density) { autoScrollThreshold.toPx() }
 
     LaunchedEffect(Unit) {
         workflowTitle = workflow.nameWithoutExtension
@@ -77,32 +102,6 @@ fun WorkflowEditScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // HeaderNodeTree 범위
-        Box(modifier = Modifier
-            .paddingDefault()
-            .fillMaxSize()) {
-            // HeaderNode 리스트
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(top = 96.dp, bottom = 72.dp,),
-            ) {
-                renderTreeItems(
-                    nodes = workflowSteps,
-                    nodeIdMap = nodeIdMap,
-                    onNodeChanged = {},
-                    collapsedNode = collapsedNodes,
-                    onChildExpandToggle = { nodeId ->
-                        collapsedNodes = if (collapsedNodes.contains(nodeId)) {
-                            collapsedNodes - nodeId
-                        } else {
-                            collapsedNodes + nodeId
-                        }
-                    },
-                    descriptionExpandTrigger = isDescriptionExpended,
-                )
-            }
-        }
-
         // UI Header 와 Description 수정 UI
         Box(
             modifier = Modifier.fillMaxWidth().wrapContentHeight().zIndex(99f),
@@ -124,8 +123,12 @@ fun WorkflowEditScreen(
                 WorkflowEditHeader(
                     title = workflowTitle,
                     onTitleChange = {
-                        workflowTitle = it
-                        isMenuExpanded = false
+                        scope.launch {
+                            workflowTitle = it
+                            // Todo 파일명이 변경되기 때문에 파라미터로 받은 workflow를 바꿔줘야 함, 저장할 때 에러가 발생함
+                            fileManager.renameMarkdown(workflow, it)
+                            isMenuExpanded = false
+                        }
                     },
                     isMenuExpended = isMenuExpanded,
                     onMenuToggle = { isMenuExpanded = !isMenuExpanded },
@@ -133,9 +136,21 @@ fun WorkflowEditScreen(
                         isEditingDescription = !isEditingDescription
                     },
                     onDelete = {
-                        // Todo 삭제 로직
+                        scope.launch {
+                            fileManager.delete(workflow)
+                            onDismiss()
+                        }
                     },
-                    onBackClick = onDismiss,
+                    onBackClick = {
+                        scope.launch {
+                            val content = workflowParser.toMarkdown(
+                                description = workflowDescription,
+                                nodes = workflowSteps,
+                            )
+                            fileManager.write(workflow, content)
+                            onDismiss()
+                        }
+                    },
                 )
                 AnimatedVisibility(
                     visible = isEditingDescription,
@@ -186,29 +201,133 @@ fun WorkflowEditScreen(
                 }
             }
         }
-    }
-}
 
-private fun resolveParentAndIndex(
-    target: DropTarget,
-    rootNodes: List<HeaderNode>
-): Pair<HeaderNode?, Int> {
-    return when (target.zone) {
-        DropZone.Inside -> {
-            val index = target.node.children.size
-            Pair(target.node, index)
+        // HeaderNodeTree 범위
+        BoxWithConstraints(
+            modifier = Modifier
+                .paddingDefault()
+                .fillMaxSize()
+                .pointerInput(dragState) {
+                    // drag를 시작한 WorkflowNodeItem이 존재할 때 그 인터랙션을 이어받음
+                    if (dragState != null) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                when (event.type) {
+                                    PointerEventType.Move -> {
+                                        event.changes.forEach { change ->
+                                            change.consume()
+
+                                            // 현재 포인터 위치 (BoxWithConstraints 기준)
+                                            val absolutePointerY = change.position.y
+                                            currentPointerY = absolutePointerY
+
+                                            // 스크롤 오프셋 계산
+                                            val scrollOffset = lazyListState.firstVisibleItemScrollOffset.toFloat()
+
+                                            // LazyColumn 내부 좌표로 변환
+                                            val relativePointerY = absolutePointerY + scrollOffset
+
+                                            // 드롭 타겟 계산
+                                            val current = dragState ?: return@awaitPointerEventScope
+                                            val flatNodes = flattenTree(workflowSteps, collapsedNodes, nodeIdMap,)
+
+                                            computeDropTarget(relativePointerY, current.draggingNode, nodePositions, flatNodes)
+                                                ?.let { target ->
+                                                    dragState = current.copy(
+                                                        dropTargetNode = target.node,
+                                                        dropZone = target.zone,
+                                                    )
+                                                }
+                                        }
+                                    }
+                                    PointerEventType.Release -> {
+                                        val current = dragState
+                                        if (current != null) {
+                                            val target = current.dropTargetNode
+                                            val zone = current.dropZone
+                                            if (target != null && zone != null) {
+                                                moveNode(
+                                                    node = current.draggingNode,
+                                                    dropTarget = DropTarget(node = target, zone = zone),
+                                                    rootNodes = workflowSteps
+                                                )
+                                            }
+                                        }
+                                        isDraggingActive = false
+                                        currentPointerY = null
+                                        dragState = null
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+        ) {
+            val screenHeight = with(density) { maxHeight.toPx() }
+
+            LaunchedEffect(dragState) {
+                while (dragState != null) {
+                    val pointerY = currentPointerY
+                    if (pointerY != null) {
+                        when {
+                            pointerY < thresholdPx -> {
+                                lazyListState.scrollBy(-15f)
+                            }
+                            pointerY > screenHeight - thresholdPx -> {
+                                lazyListState.scrollBy(15f)
+                            }
+                        }
+                    }
+                    delay(30)
+                }
+            }
+
+            // HeaderNode 리스트
+            LazyColumn(
+                state = lazyListState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(top = 96.dp, bottom = 72.dp,),
+            ) {
+                renderTreeItems(
+                    nodes = workflowSteps,
+                    nodeIdMap = nodeIdMap,
+                    onNodeChanged = {},
+                    collapsedNode = collapsedNodes,
+                    onChildExpandToggle = { nodeId ->
+                        collapsedNodes = if (collapsedNodes.contains(nodeId)) {
+                            collapsedNodes - nodeId
+                        } else {
+                            collapsedNodes + nodeId
+                        }
+                    },
+                    descriptionExpandTrigger = isDescriptionExpended,
+                    dragState = dragState,
+                    isDraggingActive = isDraggingActive,
+                    onPositionChanged = { node, y ->
+                        nodePositions[node] = y
+                    },
+                    onDragStart = { node ->
+                        isDraggingActive = true
+                        dragState = DragState(
+                            draggingNode = node,
+                            dropTargetNode = null,
+                            dropZone = null
+                        )
+                    },
+                )
+            }
         }
-        DropZone.Above -> {
-            val parent = target.node.parent
-            val list = parent?.children ?: rootNodes
-            val index = list.indexOfFirst { it === target.node }.coerceAtLeast(0)
-            Pair(parent, index)
-        }
-        DropZone.Below -> {
-            val parent = target.node.parent
-            val list = parent?.children ?: rootNodes
-            val index = (list.indexOfFirst { it === target.node } + 1).coerceAtLeast(0)
-            Pair(parent, index)
+
+        // DragGhostCard
+        dragState?.let { state ->
+            currentPointerY?.let { pointerY ->
+                DragGhostCard(
+                    title = state.draggingNode.title,
+                    pointerY = pointerY,
+                )
+            }
         }
     }
 }

@@ -7,6 +7,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -42,6 +43,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.Dp
@@ -49,6 +54,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.ninetag.machum.entity.HeaderNode
+import com.ninetag.machum.screen.workflowSceen.DropZone
+import com.ninetag.machum.screen.workflowSceen.DragState
 import java.util.IdentityHashMap
 import java.util.UUID
 
@@ -60,17 +67,27 @@ fun WorkflowNodeItem(
     onChildExpandTrigger: () -> Unit = {},
     descriptionExpandTrigger: Boolean? = null,
     modifier: Modifier = Modifier,
+    isDragging: Boolean,
+    isDraggingActive: Boolean,
+    isDropTargetAbove: Boolean,
+    isDropTargetInside: Boolean,
+    isDropTargetBelow: Boolean,
+    onPositionChanged: (Float) -> Unit,
+    onDragStart: () -> Unit,
 ) {
     var title by remember(node) { mutableStateOf(node.title) }
     var description by remember(node) { mutableStateOf(node.description) }
 
     val depth = node.level - 1
     val indent = (depth * 16).dp
+    
+    var nodeYInParent by remember { mutableStateOf(0f) } // LazyColumn 기준 좌표
 
     var isDescriptionExpanded by remember(node) { mutableStateOf(
         if (node.description.isBlank()) false
         else descriptionExpandTrigger?:node.description.isNotBlank()
     ) }
+    
     val expandIconRotation by animateFloatAsState(
         targetValue = if (childExpandTrigger) 90f else 0f,
         animationSpec = tween(
@@ -87,72 +104,109 @@ fun WorkflowNodeItem(
         }
     }
 
-    Row(
-        modifier = modifier.fillMaxWidth().wrapContentHeight(),
-        verticalAlignment = Alignment.Top,
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .alpha(if (isDragging) 0.5f else 1f)
+            .onGloballyPositioned { coords ->
+                nodeYInParent = coords.positionInParent().y
+                onPositionChanged(nodeYInParent) // 드롭 타겟용
+            },
     ) {
-        Spacer(Modifier.width(indent))
-        if (node.children.isNotEmpty()) {
-            IconButton(
-                onClick = { onChildExpandTrigger() },
-                modifier = Modifier.size(40.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.ChevronRight,
-                    contentDescription = if (childExpandTrigger) "Expand" else "Shrink",
-                    modifier = Modifier.rotate(expandIconRotation)
+        DropIndicatorLine(visible = isDropTargetAbove, indent = indent)
+
+        Row(
+            modifier = modifier.fillMaxWidth().wrapContentHeight()
+                .background(
+                    color = if (isDropTargetInside) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else Color.Transparent,
+                    shape = RoundedCornerShape(8.dp)
                 )
-            }
-        } else {
-            Spacer(Modifier.width(40.dp))
-        }
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.Center,
+                .pointerInput(Unit) {
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = { onDragStart() },
+                        onDrag = { _, _ ->},
+                    )
+                },
+            verticalAlignment = Alignment.Top,
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                BasicTextField(
-                    value = title,
-                    onValueChange = {
-                        title = it
-                        node.title = it
-                        onNodeChanged(node)
-                    },
-                    modifier = Modifier.weight(1f).padding(4.dp, 0.dp),
-                    singleLine = true,
-                )
+            Spacer(Modifier.width(indent))
+            if (node.children.isNotEmpty()) {
                 IconButton(
-                    onClick = { isDescriptionExpanded = !isDescriptionExpanded },
+                    onClick = { onChildExpandTrigger() },
                     modifier = Modifier.size(40.dp),
                 ) {
                     Icon(
-                        imageVector = Icons.Outlined.Description,
-                        contentDescription = "DescriptionToggle",
+                        imageVector = Icons.Rounded.ChevronRight,
+                        contentDescription = if (childExpandTrigger) "Expand" else "Shrink",
+                        modifier = Modifier.rotate(expandIconRotation)
+                    )
+                }
+            } else {
+                Spacer(Modifier.width(40.dp))
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    BasicTextField(
+                        value = title,
+                        onValueChange = {
+                            title = it
+                            node.title = it
+                            onNodeChanged(node)
+                        },
+                        modifier = Modifier.weight(1f).padding(4.dp, 0.dp)
+                            .pointerInput(Unit) {
+                                awaitPointerEventScope {
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        if (event.changes.all { it.pressed && it.previousPressed }) {
+                                            event.changes.forEach { it.consume() }
+                                            break
+                                        }
+                                    }
+                                }
+                            },
+                        enabled = !isDragging,
+                        singleLine = true,
+                    )
+                    IconButton(
+                        onClick = { isDescriptionExpanded = !isDescriptionExpanded },
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Description,
+                            contentDescription = "DescriptionToggle",
+                        )
+                    }
+                }
+                AnimatedVisibility (isDescriptionExpanded && !isDraggingActive ) {
+                    OutlinedTextField(
+                        value = description,
+                        onValueChange = {
+                            description = it
+                            node.description = it
+                            onNodeChanged(node)
+                        },
+                        modifier = Modifier.fillMaxWidth().wrapContentHeight().padding(4.dp),
+                        enabled = !isDragging,
+                        textStyle = TextStyle(fontSize = 14.sp),
+                        placeholder = {
+                            Text(
+                                text = "공정에 대한 설명을 입력하세요",
+                                fontSize = 14.sp,
+                            ) },
                     )
                 }
             }
-            AnimatedVisibility (isDescriptionExpanded) {
-                OutlinedTextField(
-                    value = description,
-                    onValueChange = {
-                        description = it
-                        node.description = it
-                        onNodeChanged(node)
-                    },
-                    modifier = Modifier.fillMaxWidth().wrapContentHeight().padding(4.dp),
-                    textStyle = TextStyle(fontSize = 14.sp),
-                    placeholder = {
-                        Text(
-                            text = "공정에 대한 설명을 입력하세요",
-                            fontSize = 14.sp,
-                        ) },
-                )
-            }
         }
     }
+
+    DropIndicatorLine(visible = isDropTargetBelow, indent = indent)
 }
 
 fun LazyListScope.renderTreeItems(
@@ -162,6 +216,10 @@ fun LazyListScope.renderTreeItems(
     collapsedNode: Set<String>,
     onChildExpandToggle: (nodeId: String) -> Unit,
     descriptionExpandTrigger: Boolean?,
+    dragState: DragState?,
+    isDraggingActive: Boolean,
+    onPositionChanged: (HeaderNode, Float) -> Unit,
+    onDragStart: (HeaderNode) -> Unit,
 ) {
     nodes.forEach { node ->
         val nodeId = nodeIdMap[node] ?: return@forEach
@@ -180,6 +238,13 @@ fun LazyListScope.renderTreeItems(
                         stiffness = Spring.StiffnessHigh
                     )
                 ),
+                isDragging = dragState?.draggingNode === node,
+                isDraggingActive = isDraggingActive,
+                isDropTargetAbove = dragState?.dropTargetNode === node && dragState.dropZone == DropZone.Above,
+                isDropTargetInside = dragState?.dropTargetNode === node && dragState.dropZone == DropZone.Inside,
+                isDropTargetBelow = dragState?.dropTargetNode === node && dragState.dropZone == DropZone.Below,
+                onPositionChanged = { y -> onPositionChanged(node, y) },
+                onDragStart = { onDragStart(node) },
             )
         }
         if (!collapsedNode.contains(nodeId) && node.children.isNotEmpty()) {
@@ -190,6 +255,10 @@ fun LazyListScope.renderTreeItems(
                 collapsedNode = collapsedNode,
                 onChildExpandToggle = onChildExpandToggle,
                 descriptionExpandTrigger = descriptionExpandTrigger,
+                dragState = dragState,
+                isDraggingActive = isDraggingActive,
+                onPositionChanged = onPositionChanged,
+                onDragStart = onDragStart,
             )
         }
     }
@@ -227,7 +296,7 @@ fun BoxScope.DragGhostCard(
                 .fillMaxWidth()
                 .shadow(elevation = 8.dp, shape = RoundedCornerShape(8.dp))
                 .background(
-                    color = MaterialTheme.colorScheme.surface,
+                    color = MaterialTheme.colorScheme.primaryFixedDim,
                     shape = RoundedCornerShape(8.dp)
                 )
                 .padding(horizontal = 16.dp, vertical = 12.dp)
@@ -237,7 +306,7 @@ fun BoxScope.DragGhostCard(
             Text(
                 text = title.ifBlank {"(noTitle)"},
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = MaterialTheme.colorScheme.onBackground,
             )
         }
     }

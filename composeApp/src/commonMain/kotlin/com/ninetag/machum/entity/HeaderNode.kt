@@ -9,4 +9,12 @@ data class HeaderNode(
     var description: String = "",
     val children: MutableList<HeaderNode> = mutableListOf(),
     var parent: HeaderNode? = null,
-)
+) {
+    override fun hashCode(): Int {
+        var result = title.hashCode()
+        result = 31 * result + description.hashCode()
+        result = 31 * result + level
+//        println("hashCode called for: $title")
+        return result
+    }
+}

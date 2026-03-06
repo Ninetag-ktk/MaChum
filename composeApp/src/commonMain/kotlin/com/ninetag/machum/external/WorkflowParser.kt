@@ -94,4 +94,31 @@ class WorkflowParser {
         }
         return steps
     }
+
+    fun toMarkdown(description: String, nodes: List<HeaderNode>): String {
+        val builder = StringBuilder()
+
+        // WorkflowDescription - 서식 없이 맨 상단
+        if (description.isNotBlank()) {
+            builder.appendLine(description)
+            builder.appendLine()
+        }
+
+        // HeaderNode 직렬화
+        fun appendNode(node: HeaderNode) {
+            val prefix = "#".repeat(node.level.coerceIn(1, 4))
+            builder.appendLine("${prefix} ${node.title}")
+
+            // NodeDescription 콜아웃 서식
+            if (node.description.isNotEmpty()) {
+                node.description.lines().forEach { line ->
+                    builder.appendLine("> ${line}")
+                }
+            }
+            node.children.forEach { child -> appendNode(child) }
+        }
+        nodes.forEach { appendNode(it) }
+
+        return builder.toString().trimEnd()
+    }
 }

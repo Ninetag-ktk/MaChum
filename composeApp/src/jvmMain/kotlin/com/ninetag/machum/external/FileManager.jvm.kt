@@ -7,6 +7,7 @@ import io.github.vinceglb.filekit.exists
 import io.github.vinceglb.filekit.writeString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 
 internal actual suspend fun FileManager.createFile(
     parentDirectory: PlatformFile,
@@ -47,6 +48,33 @@ internal actual suspend fun FileManager.createFolder(
         throw e
     }
 }
+
+//internal actual suspend fun FileManager.renameMarkdown(
+//    parentDirectory: PlatformFile,
+//    file: PlatformFile,
+//    name: String
+//): PlatformFile? = withContext(Dispatchers.IO) {
+//    try {
+//        val doc = file.file
+//        val parentDoc = File(parentDirectory.file, name)
+//        if (!doc.renameTo())
+//    }
+//}
+//
+//private fun rotateMarkdownFileName(
+//    parent: PlatformFile,
+//    name: String,
+//): String {
+//    var fileName = name
+//    var index = 1
+//    var existing = parent.findFile("${fileName}.md")
+//    while (existing != null && existing.isFile) {
+//        fileName = "${name}_${index}"
+//        existing = parent.findFile("${fileName}.md")
+//        index ++
+//    }
+//    return fileName
+//}
 
 internal actual suspend fun FileManager.setConfig(
     parentDirectory: PlatformFile

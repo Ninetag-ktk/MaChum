@@ -389,6 +389,18 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             throw e
         }
     }
+
+    suspend fun renemaProject(project: PlatformFile, name: String) = withContext(Dispatchers.IO) {
+    }
+
+    suspend fun renameWorkflow(file: PlatformFile, name: String) = withContext(Dispatchers.IO) {
+        val workflowDic = PlatformFile(_bookmarks.value!!.vaultData!!.path + "/.workflow/".forPlatformFile())
+        renameMarkdown(workflowDic, file, name)
+    }
+
+    suspend fun renameFile(file: PlatformFile, name: String) = withContext(Dispatchers.IO) {
+        renameMarkdown(_bookmarks.value!!.projectData!!, file, name)
+    }
 }
 
 /**
@@ -400,6 +412,8 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
 internal expect suspend fun FileManager.createFile(parentDirectory: PlatformFile, name: String): PlatformFile?
 
 internal expect suspend fun FileManager.createFolder(parentDirectory: PlatformFile, name: String): PlatformFile?
+
+internal expect suspend fun FileManager.renameMarkdown(parentDirectory: PlatformFile, file: PlatformFile, name: String): PlatformFile?
 
 internal expect suspend fun FileManager.setConfig(parentDirectory: PlatformFile): PlatformFile?
 
