@@ -19,7 +19,6 @@ data class HeaderNode(
         var result = title.hashCode()
         result = 31 * result + description.hashCode()
         result = 31 * result + level
-//        println("hashCode called for: $title")
         return result
     }
     override fun equals(other: Any?) = this === other

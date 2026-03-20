@@ -49,7 +49,7 @@ fun TestScreen(
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
-        bookmark?.let{
+        bookmark.let{
             message = "북마크 불러옴: dir=${it.vaultData != null}, prj=${it.projectData != null}, file=${it.fileData != null}"
             it.vaultData?.let { vault ->
                 currentDirectory = vault

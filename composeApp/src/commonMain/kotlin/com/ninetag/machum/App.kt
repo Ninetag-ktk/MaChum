@@ -12,6 +12,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import com.ninetag.machum.external.FileManager
 import com.ninetag.machum.screen.TestScreen
 import com.ninetag.machum.screen.projectScreen.ProjectSelectionScreen
+import com.ninetag.machum.screen.projectScreen.WorkflowSelectionScreen
 import com.ninetag.machum.screen.vaultScreen.VaultSelectionScreen
 import com.ninetag.machum.screen.workflowSceen.WorkflowScreen
 import kotlinx.coroutines.launch
@@ -28,10 +29,9 @@ fun App() {
     val scope = rememberCoroutineScope()
 
     var showVaultPicker by remember { mutableStateOf(false) }
-    var showWorkflowManagement by remember { mutableStateOf(true) }
+    var showWorkflowManagement by remember { mutableStateOf(false) }
 
     MaterialTheme {
-        var showContent by remember { mutableStateOf(false) }
         Box(Modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier
@@ -43,7 +43,7 @@ fun App() {
                     bookmark.vaultData == null || showVaultPicker -> { VaultSelectionScreen({ showVaultPicker = false }) }
                     workflowList.isEmpty() || showWorkflowManagement -> { WorkflowScreen(showWorkflowManagement, { showWorkflowManagement = false }) }
                     bookmark.projectData == null -> { ProjectSelectionScreen() }
-//                        workflow.isEmpty() -> { WorkflowSelectionScreen() }
+                    workflow.isEmpty() -> { WorkflowSelectionScreen() }
                     bookmark.fileData == null -> { scope.launch { fileManager.setFile(bookmark.projectData!!) } }
                     else -> {
                         TestScreen()
