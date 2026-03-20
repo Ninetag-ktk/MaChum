@@ -8,31 +8,26 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
-import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.rounded.ChevronRight
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -48,6 +43,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
@@ -62,6 +59,7 @@ import androidx.compose.ui.zIndex
 import com.ninetag.machum.entity.HeaderNode
 import com.ninetag.machum.screen.workflowSceen.DropZone
 import com.ninetag.machum.screen.workflowSceen.DragState
+import kotlinx.coroutines.delay
 import java.util.IdentityHashMap
 import java.util.UUID
 
@@ -80,9 +78,13 @@ fun WorkflowNodeItem(
     isDropTargetBelow: Boolean,
     onPositionChanged: (Float) -> Unit,
     onDragStart: () -> Unit,
+    onFocusGained: () -> Unit = {},
+    shouldRequestFocus: Boolean = false,
+    onFocusRequested: () -> Unit = {},
 ) {
     var title by remember(node) { mutableStateOf(node.title) }
     var description by remember(node) { mutableStateOf(node.description) }
+    val focusRequester = remember { FocusRequester() }
 
     val depth = node.level - 1
     val indent = (depth * 24).dp
@@ -108,6 +110,14 @@ fun WorkflowNodeItem(
         if (node.description.isBlank()) isDescriptionExpanded = false
         else descriptionExpandTrigger?.let {
             isDescriptionExpanded = (it && node.description.isNotBlank())
+        }
+    }
+
+    LaunchedEffect(shouldRequestFocus) {
+        if (shouldRequestFocus) {
+            delay(100)
+            focusRequester.requestFocus()
+            onFocusRequested()
         }
     }
 
@@ -172,8 +182,9 @@ fun WorkflowNodeItem(
                         onNodeChanged(node)
                     },
                     modifier = Modifier.weight(1f).padding(4.dp, 0.dp)
+                        .focusRequester(focusRequester)
                         .onFocusChanged { focusState ->
-                            println("isFocused ${focusState.hasFocus} / ${node.title}")
+                            if (focusState.hasFocus) onFocusGained()
                         }
                         .pointerInput(Unit) {
                             awaitPointerEventScope {
@@ -188,6 +199,21 @@ fun WorkflowNodeItem(
                         },
                     enabled = !isDragging,
                     singleLine = true,
+                    decorationBox = { innerTextField ->
+                        Box {
+                            if (title.isEmpty()) {
+                                Text(
+                                    text = "공정을 입력하세요",
+                                    style = LocalTextStyle.current.copy(
+                                        fontSize = 14.sp,
+                                        lineHeight = 14.sp,
+                                    ),
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                                )
+                            }
+                            innerTextField()
+                        }
+                    }
                 )
                 IconButton(
                     onClick = { isDescriptionExpanded = !isDescriptionExpanded },
@@ -232,7 +258,7 @@ fun WorkflowNodeItem(
                                 descriptionHeight = coords.size.height
                             }
                             .onFocusChanged { focusState ->
-                                println("isFocused ${focusState.hasFocus} / ${node.title}")
+                                if (focusState.hasFocus) onFocusGained()
                             },
                         enabled = !isDragging,
                         textStyle = TextStyle(fontSize = 14.sp),
@@ -261,6 +287,9 @@ fun LazyListScope.renderTreeItems(
     isDraggingActive: Boolean,
     onPositionChanged: (HeaderNode, Float) -> Unit,
     onDragStart: (HeaderNode) -> Unit,
+    onFocusGained: (nodeId: String) -> Unit = {},
+    pendingFocusNodeId: String? = null,
+    onFocusRequested: () -> Unit = {},
 ) {
     nodes.forEach { node ->
         val nodeId = nodeIdMap[node] ?: return@forEach
@@ -286,6 +315,9 @@ fun LazyListScope.renderTreeItems(
                 isDropTargetBelow = dragState?.dropTargetNode === node && dragState.dropZone == DropZone.Below,
                 onPositionChanged = { y -> onPositionChanged(node, y) },
                 onDragStart = { onDragStart(node) },
+                onFocusGained = { onFocusGained(nodeId) },
+                shouldRequestFocus = pendingFocusNodeId == nodeId,
+                onFocusRequested = onFocusRequested,
             )
         }
         if (!collapsedNode.contains(nodeId) && node.children.isNotEmpty()) {
@@ -300,6 +332,9 @@ fun LazyListScope.renderTreeItems(
                 isDraggingActive = isDraggingActive,
                 onPositionChanged = onPositionChanged,
                 onDragStart = onDragStart,
+                onFocusGained = onFocusGained,
+                pendingFocusNodeId = pendingFocusNodeId,
+                onFocusRequested = onFocusRequested,
             )
         }
     }
@@ -320,7 +355,7 @@ fun assignIds(
 }
 
 @Composable
-fun BoxScope.DragGhostCard(
+fun DragGhostCard(
     title: String,
     pointerY: Float
 ) {

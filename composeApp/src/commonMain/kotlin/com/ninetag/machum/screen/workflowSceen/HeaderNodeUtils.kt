@@ -127,6 +127,31 @@ fun flattenTree(
     return result
 }
 
+fun addNode(
+    selectedNodeId: String?,
+    nodeIdMap: IdentityHashMap<HeaderNode, String>,
+    rootNodes: MutableList<HeaderNode>
+): HeaderNode {
+    val newNode = HeaderNode(
+        level = 1,
+        title = "",
+        description = "",
+    )
+    if (selectedNodeId != null) {
+        val parent = nodeIdMap.entries.find { it.value == selectedNodeId }?.key
+        if (parent != null) {
+            newNode.level = (parent.level + 1).coerceAtMost(4)
+            newNode.parent = parent
+            parent.children.add(newNode)
+        } else {
+            rootNodes.add(newNode)
+        }
+    } else {
+        rootNodes.add(newNode)
+    }
+    return newNode
+}
+
 fun deleteNode(
     node: HeaderNode,
     rootNodes: MutableList<HeaderNode>

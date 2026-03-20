@@ -1,13 +1,18 @@
 package com.ninetag.machum.entity
 
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 
 @Serializable
 data class HeaderNode(
     var level: Int,
     var title: String,
     var description: String = "",
-    val children: MutableList<HeaderNode> = mutableListOf(),
+    @Transient
+    val children: SnapshotStateList<HeaderNode> = mutableStateListOf(),
+    @Transient
     var parent: HeaderNode? = null,
 ) {
     override fun hashCode(): Int {
@@ -16,5 +21,9 @@ data class HeaderNode(
         result = 31 * result + level
 //        println("hashCode called for: $title")
         return result
+    }
+    override fun equals(other: Any?) = this === other
+    override fun toString(): String {
+        return "HeaderNode(level=$level, title='$title', description='$description', children=${children.size}개)"
     }
 }

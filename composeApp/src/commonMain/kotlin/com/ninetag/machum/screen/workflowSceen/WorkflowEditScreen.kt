@@ -22,12 +22,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AddCircleOutline
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.UnfoldLess
 import androidx.compose.material.icons.outlined.UnfoldMore
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -76,6 +79,8 @@ fun WorkflowEditScreen(
     var workflowDescription by remember { mutableStateOf("") }
     val workflowSteps = remember { mutableStateListOf<HeaderNode>() }
     val nodeIdMap = remember { IdentityHashMap<HeaderNode, String>() }
+    var selectedNodeId by remember { mutableStateOf<String?>(null) }
+    var pendingFocusNodeId by remember { mutableStateOf<String?>(null) }
 
     var isMenuExpanded by remember { mutableStateOf(false) }
     var collapsedNodes by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -103,7 +108,21 @@ fun WorkflowEditScreen(
         assignIds(parseNodes, nodeIdMap)
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .then(
+                if (selectedNodeId != null) {
+                    Modifier.pointerInput(selectedNodeId) {
+                        detectTapGestures(
+                            onTap = {
+                                selectedNodeId = null
+                            }
+                        )
+                    }
+                } else Modifier
+            )
+    ) {
         // UI Header 와 Description 수정 UI
         Box(
             modifier = Modifier.fillMaxWidth().wrapContentHeight().zIndex(99f),
@@ -178,7 +197,7 @@ fun WorkflowEditScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     IconButton(
-                        modifier = Modifier.size(40.dp),
+                        modifier = Modifier.size(32.dp),
                         onClick = {
                             if (collapsedNodes.isEmpty()) {
                                 collapsedNodes = nodeIdMap.values.toSet()
@@ -193,7 +212,7 @@ fun WorkflowEditScreen(
                         )
                     }
                     IconButton(
-                        modifier = Modifier.size(40.dp),
+                        modifier = Modifier.size(32.dp),
                         onClick = { isDescriptionExpended
                             ?.let { isDescriptionExpended = !it }
                             ?:run { isDescriptionExpended = false } },
@@ -201,6 +220,65 @@ fun WorkflowEditScreen(
                         Icon(
                             imageVector = Icons.Outlined.Description,
                             contentDescription = "GlobalDescriptionToggle",
+                        )
+                    }
+                    VerticalDivider(
+                        modifier = Modifier.padding(2.dp),
+                        thickness = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.4f),
+                    )
+                    IconButton(
+                        modifier = Modifier.size(32.dp),
+                        enabled = selectedNodeId != null,
+                        onClick = {
+                            selectedNodeId?.let { nodeId ->
+                                val node = nodeIdMap.entries.find { it.value == nodeId }?.key
+                                node?.let {
+                                    deleteNode(node = it, rootNodes = workflowSteps)
+                                    selectedNodeId = null
+                                }
+                            }
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Delete,
+                            contentDescription = "NodeDelete",
+                        )
+                    }
+                    IconButton(
+                        modifier = Modifier.size(32.dp),
+                        onClick = {
+                            val newNode = addNode(
+                                selectedNodeId = selectedNodeId,
+                                nodeIdMap = nodeIdMap,
+                                rootNodes = workflowSteps,
+                            )
+                            assignIds(workflowSteps, nodeIdMap)
+                            pendingFocusNodeId = nodeIdMap[newNode]
+
+                            scope.launch {
+                                selectedNodeId?.let { nodeId ->
+                                    if (collapsedNodes.contains(nodeId)) {
+                                        collapsedNodes = collapsedNodes - nodeId
+                                    }
+                                }
+                                delay(50)
+                                val flatNodes = flattenTree(workflowSteps, collapsedNodes, nodeIdMap)
+                                val scrollTargetNode = if (selectedNodeId != null) {
+                                    nodeIdMap.entries.find { it.value == selectedNodeId }?.key ?: newNode
+                                } else {
+                                    newNode
+                                }
+                                val index = flatNodes.indexOf(scrollTargetNode)
+                                if (index >= 0) {
+                                    lazyListState.animateScrollToItem(index)
+                                }
+                            }
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.AddCircleOutline,
+                            contentDescription = "NodeAdd",
                         )
                     }
                 }
@@ -321,6 +399,9 @@ fun WorkflowEditScreen(
                             dropZone = null
                         )
                     },
+                    onFocusGained = { nodeId -> selectedNodeId = nodeId },
+                    pendingFocusNodeId = pendingFocusNodeId,
+                    onFocusRequested = { pendingFocusNodeId = null },
                 )
             }
         }
