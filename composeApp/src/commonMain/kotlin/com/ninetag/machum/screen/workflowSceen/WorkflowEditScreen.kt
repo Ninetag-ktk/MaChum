@@ -48,7 +48,6 @@ import com.ninetag.machum.entity.HeaderNode
 import com.ninetag.machum.external.FileManager
 import com.ninetag.machum.external.WorkflowParser
 import com.ninetag.machum.external.getDescription
-import com.ninetag.machum.external.renameMarkdown
 import com.ninetag.machum.screen.common.DragGhostCard
 import com.ninetag.machum.screen.common.assignIds
 import com.ninetag.machum.screen.common.paddingDefault

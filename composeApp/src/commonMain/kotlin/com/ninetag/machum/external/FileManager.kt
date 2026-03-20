@@ -162,7 +162,6 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * @return 프로젝트 폴더 목록
      */
     suspend fun listProject(vault: PlatformFile): List<PlatformFile> = withContext(Dispatchers.IO) {
-        println("Listing project")
         vault.list()
             .filter { it.isDirectory() && !it.name.startsWith(".") }
             .sortedBy { it.name }
@@ -357,7 +356,6 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             _workflow.value = workflowParser.parse(workflowFile.readString())
         } else {
             if (_workflowList.value.size == 1) {
-                println("workflow Count is 1")
                 val workflow = _workflowList.value.first()
                 writeConfig(
                     ProjectConfig(

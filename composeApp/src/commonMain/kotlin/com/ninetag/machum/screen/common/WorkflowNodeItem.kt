@@ -14,24 +14,29 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -43,6 +48,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -79,7 +85,7 @@ fun WorkflowNodeItem(
     var description by remember(node) { mutableStateOf(node.description) }
 
     val depth = node.level - 1
-    val indent = (depth * 16).dp
+    val indent = (depth * 24).dp
     
     var nodeYInParent by remember { mutableStateOf(0f) } // LazyColumn 기준 좌표
 
@@ -87,6 +93,7 @@ fun WorkflowNodeItem(
         if (node.description.isBlank()) false
         else descriptionExpandTrigger?:node.description.isNotBlank()
     ) }
+    var descriptionHeight by remember { mutableStateOf(0) }
     
     val expandIconRotation by animateFloatAsState(
         targetValue = if (childExpandTrigger) 90f else 0f,
@@ -115,7 +122,7 @@ fun WorkflowNodeItem(
     ) {
         DropIndicatorLine(visible = isDropTargetAbove, indent = indent)
 
-        Row(
+        Column(
             modifier = modifier.fillMaxWidth().wrapContentHeight()
                 .background(
                     color = if (isDropTargetInside) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else Color.Transparent,
@@ -126,65 +133,93 @@ fun WorkflowNodeItem(
                         onDragStart = { onDragStart() },
                         onDrag = { _, _ ->},
                     )
-                },
-            verticalAlignment = Alignment.Top,
+                }
         ) {
-            Spacer(Modifier.width(indent))
-            if (node.children.isNotEmpty()) {
+            // Depth 인디케이터
+            Row(
+                modifier = Modifier.fillMaxWidth().height(40.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                repeat(depth) {
+                    Spacer(Modifier.width(11.dp))
+                    VerticalDivider(color = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(11.dp))
+                }
+                if (node.children.isNotEmpty()) {
+                    Box (
+                        modifier = Modifier.height(40.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        IconButton(
+                            onClick = { onChildExpandTrigger() },
+                            modifier = Modifier.size(24.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.ChevronRight,
+                                contentDescription = if (childExpandTrigger) "Expand" else "Shrink",
+                                modifier = Modifier.rotate(expandIconRotation)
+                            )
+                        }
+                    }
+                } else {
+                    Spacer(Modifier.width(24.dp))
+                }
+                BasicTextField(
+                    value = title,
+                    onValueChange = {
+                        title = it
+                        node.title = it
+                        onNodeChanged(node)
+                    },
+                    modifier = Modifier.weight(1f).padding(4.dp, 0.dp)
+                        .onFocusChanged { focusState ->
+                            println("isFocused ${focusState.hasFocus} / ${node.title}")
+                        }
+                        .pointerInput(Unit) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    if (event.changes.all { it.pressed && it.previousPressed }) {
+                                        event.changes.forEach { it.consume() }
+                                        break
+                                    }
+                                }
+                            }
+                        },
+                    enabled = !isDragging,
+                    singleLine = true,
+                )
                 IconButton(
-                    onClick = { onChildExpandTrigger() },
+                    onClick = { isDescriptionExpanded = !isDescriptionExpanded },
                     modifier = Modifier.size(40.dp),
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.ChevronRight,
-                        contentDescription = if (childExpandTrigger) "Expand" else "Shrink",
-                        modifier = Modifier.rotate(expandIconRotation)
+                        imageVector = Icons.Outlined.Description,
+                        contentDescription = "DescriptionToggle",
                     )
                 }
-            } else {
-                Spacer(Modifier.width(40.dp))
             }
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    BasicTextField(
-                        value = title,
-                        onValueChange = {
-                            title = it
-                            node.title = it
-                            onNodeChanged(node)
-                        },
-                        modifier = Modifier.weight(1f).padding(4.dp, 0.dp)
-                            .pointerInput(Unit) {
-                                awaitPointerEventScope {
-                                    while (true) {
-                                        val event = awaitPointerEvent()
-                                        if (event.changes.all { it.pressed && it.previousPressed }) {
-                                            event.changes.forEach { it.consume() }
-                                            break
-                                        }
-                                    }
-                                }
-                            },
-                        enabled = !isDragging,
-                        singleLine = true,
-                    )
-                    IconButton(
-                        onClick = { isDescriptionExpanded = !isDescriptionExpanded },
-                        modifier = Modifier.size(40.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Description,
-                            contentDescription = "DescriptionToggle",
+            AnimatedVisibility (isDescriptionExpanded && !isDraggingActive ) {
+                Row {
+                    repeat(depth) {
+                        Spacer(Modifier.width(11.dp))
+                        VerticalDivider(
+                            modifier = Modifier.height(with(LocalDensity.current){descriptionHeight.toDp()} + 8.dp),
+                            color = MaterialTheme.colorScheme.primary
                         )
+                        Spacer(Modifier.width(11.dp))
                     }
-                }
-                AnimatedVisibility (isDescriptionExpanded && !isDraggingActive ) {
+                    if (node.children.isNotEmpty()) {
+                        Spacer(Modifier.width(11.dp))
+                        VerticalDivider(
+                            modifier = Modifier.height(with(LocalDensity.current){descriptionHeight.toDp()} + 8.dp),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.width(11.dp))
+                    } else {
+                        Spacer(Modifier.width(24.dp))
+                    }
+                    Spacer(Modifier.width(6.dp))
                     OutlinedTextField(
                         value = description,
                         onValueChange = {
@@ -192,7 +227,13 @@ fun WorkflowNodeItem(
                             node.description = it
                             onNodeChanged(node)
                         },
-                        modifier = Modifier.fillMaxWidth().wrapContentHeight().padding(4.dp),
+                        modifier = Modifier.fillMaxWidth().wrapContentHeight().padding(4.dp)
+                            .onGloballyPositioned { coords ->
+                                descriptionHeight = coords.size.height
+                            }
+                            .onFocusChanged { focusState ->
+                                println("isFocused ${focusState.hasFocus} / ${node.title}")
+                            },
                         enabled = !isDragging,
                         textStyle = TextStyle(fontSize = 14.sp),
                         placeholder = {

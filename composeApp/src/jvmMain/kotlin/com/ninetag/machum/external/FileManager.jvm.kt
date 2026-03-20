@@ -53,7 +53,7 @@ internal actual suspend fun FileManager.renameMarkdown(
         val fileName = rotateMarkdownFileName(parentDirectory, name)
         val target = File(parentDirectory.file, "${fileName}.md")
         if (!file.file.renameTo(target)) return@withContext null
-        PlatformFile(file.file)
+        PlatformFile(target)
     } catch(e: Exception) {
         println("이름변경 실패: $e")
         throw e

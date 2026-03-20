@@ -126,3 +126,15 @@ fun flattenTree(
     }
     return result
 }
+
+fun deleteNode(
+    node: HeaderNode,
+    rootNodes: MutableList<HeaderNode>
+) {
+    val parent = node.parent
+    if (parent != null) {
+        parent.children.remove(node)
+    } else {
+        rootNodes.remove(node)
+    }
+}
