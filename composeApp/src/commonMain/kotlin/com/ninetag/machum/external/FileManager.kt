@@ -21,7 +21,6 @@ import io.github.vinceglb.filekit.isDirectory
 import io.github.vinceglb.filekit.list
 import io.github.vinceglb.filekit.name
 import io.github.vinceglb.filekit.nameWithoutExtension
-import io.github.vinceglb.filekit.path
 import io.github.vinceglb.filekit.readString
 import io.github.vinceglb.filekit.writeString
 import kotlinx.coroutines.CoroutineScope
@@ -259,7 +258,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
         if (file != null) {
             setPreferences(
-                getPreferences().copy(fileData = file,)
+                getPreferences().copy(fileData = file)
             )
         }
         return file
@@ -431,8 +430,6 @@ internal fun PlatformFile.Companion.fromBookmarkDataWithValidate(bytes: ByteArra
     val data = PlatformFile.fromBookmarkData(bytes)
     return if (data.exists()) data else null
 }
-
-internal expect fun String.forPlatformFile(): String
 
 data class Bookmarks(
     val vaultData: PlatformFile? = null,

@@ -156,5 +156,3 @@ internal actual fun PlatformFile.getLastModified(): Long? {
         throw e
     }
 }
-
-internal actual fun String.forPlatformFile(): String = this.replace("/", "%2F")
