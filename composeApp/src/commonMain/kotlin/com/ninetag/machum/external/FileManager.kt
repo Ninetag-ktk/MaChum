@@ -102,6 +102,8 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     private val _needUpdateWorkflow = MutableStateFlow(false)
     val needUpdateWorkflow = _needUpdateWorkflow.asStateFlow()
 
+    private val _currentMarkdown = MutableStateFlow<Markdown?>(null)
+
     init {
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             validateVault() ?: return@launch
@@ -269,7 +271,12 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * @param file 읽을 파일
      * @return 파일 내용 (UTF-8)
      */
-    suspend fun read(file: PlatformFile): String = withContext(Dispatchers.IO) { file.readString() }
+    suspend fun read(file: PlatformFile): String = withContext(Dispatchers.IO) {
+        val raw = file.readString()
+        val markdown = Markdown.parse(raw).ensureId()
+        _currentMarkdown.value = markdown
+        markdown.body
+    }
 
     private suspend fun readConfig(): ProjectConfig? = withContext(Dispatchers.IO) {
         try {
@@ -287,9 +294,12 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     /**
      * 파일 쓰기 (생성 & 수정)
      * @param file 선택한 파일
-     * @param content 파일 내용
+     * @param body 파일 내용
      */
-    suspend fun write(file: PlatformFile, content: String) = withContext(Dispatchers.IO) { file.writeString(content) }
+    suspend fun write(file: PlatformFile, body: String) = withContext(Dispatchers.IO) {
+        val markdown = _currentMarkdown.value?.withBody(body = body) ?: Markdown.parse(body)
+        file.writeString(markdown.inject())
+    }
 
     suspend fun writeConfig(projectConfig: ProjectConfig) = withContext(Dispatchers.IO) {
         try {
