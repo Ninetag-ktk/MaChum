@@ -10,7 +10,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import com.ninetag.machum.external.FileManager
-import com.ninetag.machum.screen.TestScreen
+import com.ninetag.machum.screen.MainScreen
 import com.ninetag.machum.screen.projectScreen.ProjectSelectionScreen
 import com.ninetag.machum.screen.projectScreen.WorkflowSelectionScreen
 import com.ninetag.machum.screen.vaultScreen.VaultSelectionScreen
@@ -40,14 +40,12 @@ fun App() {
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 when {
-                    bookmark.vaultData == null || showVaultPicker -> { VaultSelectionScreen({ showVaultPicker = false }) }
-                    workflowList.isEmpty() || showWorkflowManagement -> { WorkflowScreen(showWorkflowManagement, { showWorkflowManagement = false }) }
+                    bookmark.vaultData == null || showVaultPicker -> { VaultSelectionScreen(reset = { showVaultPicker = false }) }
+                    workflowList.isEmpty() || showWorkflowManagement -> { WorkflowScreen(show = showWorkflowManagement, onDismiss = { showWorkflowManagement = false }) }
                     bookmark.projectData == null -> { ProjectSelectionScreen() }
                     workflow.isEmpty() -> { WorkflowSelectionScreen() }
                     bookmark.fileData == null -> { scope.launch { fileManager.setFile(bookmark.projectData!!) } }
-                    else -> {
-                        TestScreen()
-                    }
+                    else -> { MainScreen() }
                 }
             }
         }

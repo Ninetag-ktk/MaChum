@@ -422,8 +422,8 @@ internal expect fun PlatformFile.getLastModified(): Long?
 
 internal suspend fun PlatformFile.getDescription(): String {
     val firstLine = this.readString().lines().first()
-    if (!firstLine.startsWith('#') && !firstLine.startsWith('>')) return firstLine
-    else return ""
+    return if (!firstLine.startsWith('#') && !firstLine.startsWith('>')) firstLine
+    else ""
 }
 
 internal fun PlatformFile.Companion.fromBookmarkDataWithValidate(bytes: ByteArray): PlatformFile? {
