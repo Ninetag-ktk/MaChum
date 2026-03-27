@@ -4,8 +4,6 @@ plugins {
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
-    // ToDo 삭제 필요
-    alias(libs.plugins.kotlinAndroid)
 }
 
 kotlin {

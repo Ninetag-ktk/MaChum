@@ -139,7 +139,10 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         createFile(parentDirectory, name)
     }
 
-    suspend fun createNextFile(name: String): PlatformFile? = withContext(Dispatchers.IO) { createFile(_bookmarks.value.projectData!!, name) }
+    suspend fun createNextFile(name: String): PlatformFile? = withContext(Dispatchers.IO) {
+        createFile(_bookmarks.value.projectData!!, name)
+            ?.also { pickFile(it) }
+    }
 
     suspend fun createChildFile(numbering: String, name: String): PlatformFile? = withContext(Dispatchers.IO) {
         // ToDo 로직 작성 필요
@@ -395,6 +398,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
     }
 
+    // TODO
     suspend fun renameProject(project: PlatformFile, name: String): PlatformFile? = withContext(Dispatchers.IO) {
         null
     }

@@ -19,7 +19,6 @@ kotlin {
         compilerOptions {
             jvmTarget = JvmTarget.JVM_11
         }
-        @Suppress("UnstableApiUsage")
         androidResources {
             enable = true
         }
@@ -45,6 +44,7 @@ kotlin {
         implementation(libs.androidx.datastore)
         implementation(libs.koin.core)
         implementation(libs.koin.compose)
+        implementation(libs.koin.compose.viewmodel)
 
         implementation(libs.fileKit)
         implementation(libs.markdown)
