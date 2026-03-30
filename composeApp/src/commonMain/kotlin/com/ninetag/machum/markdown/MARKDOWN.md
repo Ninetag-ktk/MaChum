@@ -72,14 +72,30 @@ MaChum은 이를 직접 사용하지 않고, 프로젝트에 최적화하여 별
         - Tab → 스페이스 2칸
       ↓ TextFieldState에 반영 (raw text)
 
-[화면 표시]
+[화면 표시 — 인라인 서식]
   BasicTextField 렌더링 시
       ↓ RawMarkdownOutputTransformation.transformOutput()
         1. text != cachedText 이면 MarkdownPatternScanner.scan(text) 재실행
-        2. selection.start 로 커서 줄 경계 계산
-        3. for (range, style) in cachedSpans:
-           - 커서 줄과 겹치면 → skip (활성 줄: raw text 그대로)
-           - 아니면 → addStyle(style, start, end) (비활성 줄: 서식 적용)
+           → ScanResult(spans, blocks) 반환
+        2. selection 으로 활성 블록/줄 판별
+           - 멀티라인 블록(Callout, CodeBlock) 내부 커서 → 전체 블록 raw
+           - selection이 블록과 교차 → 해당 블록 raw
+        3. 비활성 인라인: addStyle(서식 SpanStyle)
+        4. 비활성 블록: addStyle(blockTransparent) → 색상만 투명, 줄 높이 유지
+
+[화면 표시 — 특수 블록 오버레이] (Phase 3 — 구현 예정)
+  Box {
+      BasicTextField(...)
+      for (block in overlayBlocks) {
+          BlockOverlay(data, textFieldState)  ← 오버레이 Composable
+      }
+  }
+  오버레이는 TextLayoutResult 좌표 기반으로 투명 텍스트 위에 정확히 배치.
+  오버레이 내부에 별도 TextField → 직접 편집 → raw markdown 동기화.
+
+[화면 표시 — DrawBehind]
+  활성 블록(raw 편집 중)에만 배경/테두리 데코레이션.
+  비활성 블록의 데코레이션은 오버레이 Composable 자체가 담당.
 
 [저장]
   textFieldState.text.toString()
@@ -97,22 +113,37 @@ MaChum은 이를 직접 사용하지 않고, 프로젝트에 최적화하여 별
 | 파일 | 역할 |
 |---|---|
 | `MarkdownEditorState.kt` | TextFieldState(raw text) 홀더. `setMarkdown()` 으로 초기화 |
-| `MarkdownPatternScanner.kt` | 문서 전체 스캔 → `List<Pair<IntRange, SpanStyle>>` 반환. 줄 단위 블록 타입 감지 후 InlineStyleScanner에 위임 |
-| `RawMarkdownOutputTransformation.kt` | `OutputTransformation` 구현. 커서 줄 판별 + 비활성 줄 서식 적용. 텍스트 변경 시만 재스캔 (캐시) |
-| `InlineStyleScanner.kt` | 블록 타입별 SpanStyle 범위 계산. MARKER(투명) + 내용 서식. 헤딩/코드블록/인라인 마커 처리 |
-| `MarkdownBasicTextField.kt` | BasicTextField 래퍼 Composable (Basic). `value`/`onValueChange` 시그니처. 내부에서 state + input/output transformation 조립 + `onPreviewKeyEvent` 키보드 단축키 |
-| `MarkdownTextField.kt` | Material3 래퍼. 내부에서 `MarkdownBasicTextField`를 호출하며 Material3 테마를 자동 적용 |
-| `EditorInputTransformation.kt` | Smart Enter (블록 prefix 자동 continuation) + auto-close (`[[`, `**`, `` ` `` 등) + Tab→space. `InputTransformation` 구현 |
-| `RawStyleToggle.kt` | 서식 토글 유틸리티. 인라인 마커/헤딩/블록 prefix 삽입·제거. 키보드 단축키 및 향후 툴바 공용 |
+| `ScanResult.kt` | `BlockType`(CODE_BLOCK, CALLOUT, EMBED), `BlockRange`(type, textRange, meta), `ScanResult`(spans, blocks) |
+| `MarkdownPatternScanner.kt` | 문서 전체 스캔 → `ScanResult` 반환. Callout(`> [!TYPE]`) 감지 + CodeBlock/Embed BlockRange 생성 |
+| `RawMarkdownOutputTransformation.kt` | `OutputTransformation` 구현. 블록 수준 커서 감지 + 비활성 블록 투명 처리. `blockRanges`/`activeBlockRange` 프로퍼티 노출 |
+| `InlineStyleScanner.kt` | 블록 타입별 SpanStyle 범위 계산. MARKER(인라인) + blockTransparent(블록). `calloutSpans()` 포함 |
+| `MarkdownStyleConfig.kt` | 서식 설정. `CalloutDecorationStyle`(containerColor, accentColor) + `blockTransparent` + `codeBlockBackground` |
+| `BlockDecorationDrawer.kt` | DrawScope 확장. 활성 블록(raw 편집 중)의 배경/테두리 데코레이션. `scrollOffset` 보정 |
+| `MarkdownBasicTextField.kt` | BasicTextField 래퍼 (Basic). Box 래핑 + drawBehind + scrollState + onTextLayout. Phase 3 오버레이 레이어 추가 예정 |
+| `MarkdownTextField.kt` | Material3 래퍼. Material3 테마 기반 Callout/CodeBlock 색상 전달 |
+| `EditorInputTransformation.kt` | Smart Enter + auto-close + Tab→space. `InputTransformation` 구현 |
+| `RawStyleToggle.kt` | 서식 토글 유틸리티. 인라인 마커/헤딩/블록 prefix 삽입·제거 |
 | `EditorKeyboardShortcuts.kt` | 하드웨어 키보드 단축키. Ctrl/Cmd+B/I/E, Ctrl/Cmd+Shift+S/X/H |
+
+### Phase 3 오버레이 (editor/overlay/) — 구현 예정
+
+| 파일 | 역할 |
+|---|---|
+| `OverlayBlockData.kt` | 오버레이용 파싱 데이터 sealed class (CalloutData, TableData, CodeBlockData) |
+| `OverlayBlockParser.kt` | raw text → OverlayBlockData 경량 파서 (> prefix 제거, \| 분리 등) |
+| `OverlayPositionCalculator.kt` | TextLayoutResult + scrollOffset → 뷰포트 좌표 Rect |
+| `overlay/BlockOverlay.kt` | 오버레이 라우팅 Composable (타입별 분기) |
+| `overlay/CalloutOverlay.kt` | 배경 + 왼쪽 테두리 + 제목/내용 TextField + raw 동기화 |
+| `overlay/TableOverlay.kt` | 그리드 레이아웃 + 셀별 TextField + raw 동기화 |
+| `overlay/CodeBlockOverlay.kt` | 모노스페이스 배경 + 코드 TextField + raw 동기화 |
 
 ### 파서/렌더러 (parser/, renderer/, token/)
 
-| 디렉토리 | 역할 | Phase 2에서의 사용 |
+| 디렉토리 | 역할 | 에디터에서의 사용 |
 |---|---|---|
 | `token/` | `MarkdownBlock`, `InlineToken` sealed class | `MarkdownPatternScanner`가 블록 타입 인스턴스 생성에 사용 |
 | `parser/` | `BlockSplitter` → `BlockParser` → `InlineParser` 파이프라인 | 에디터에서 직접 사용하지 않음 (파일 로딩 시 블록 판별용) |
-| `renderer/` | 11개 블록별 Composable 렌더러 | Phase 3 특수 블록 렌더링에 재활용 예정 |
+| `renderer/` | 11개 블록별 Composable 렌더러 | Embed 별도 블록에서 `EmbedRenderer` 재활용 |
 
 ### 레퍼런스 (reference_hyphen/)
 
@@ -238,18 +269,64 @@ markdown/
 ├── renderer/                  ← 블록별 Composable 렌더러
 │   └── (11개 파일)
 │
-└── editor/                    ← Phase 2 에디터 + Phase 4 편집 기능
+└── editor/                    ← Phase 2 에디터 + Phase 3 오버레이 + Phase 4 편집 기능
     ├── MarkdownEditorState.kt              raw text 홀더
-    ├── MarkdownPatternScanner.kt           문서 전체 스캔 (블록 감지 + InlineStyleScanner 위임)
-    ├── RawMarkdownOutputTransformation.kt  커서 줄 기반 OutputTransformation
-    ├── InlineStyleScanner.kt               블록별 SpanStyle 범위 계산
-    ├── MarkdownStyleConfig.kt              서식 커스터마이징 설정
-    ├── MarkdownBasicTextField.kt           BasicTextField 래퍼 (Basic)
+    ├── ScanResult.kt                       BlockType, BlockRange, ScanResult 데이터 모델
+    ├── MarkdownPatternScanner.kt           문서 전체 스캔 → ScanResult(spans, blocks)
+    ├── RawMarkdownOutputTransformation.kt  블록 수준 커서 감지 + blockTransparent 적용
+    ├── InlineStyleScanner.kt               블록별 SpanStyle + calloutSpans() + overlay 모드
+    ├── MarkdownStyleConfig.kt              서식 설정 + CalloutDecorationStyle + blockTransparent
+    ├── BlockDecorationDrawer.kt            DrawScope — 활성 블록 배경/테두리 (scrollOffset 보정)
+    ├── OverlayBlockData.kt                 📌 미구현 — 오버레이용 파싱 데이터 sealed class
+    ├── OverlayBlockParser.kt               📌 미구현 — raw text → OverlayBlockData
+    ├── OverlayPositionCalculator.kt        📌 미구현 — TextLayoutResult → 뷰포트 좌표
+    ├── overlay/
+    │   ├── BlockOverlay.kt                 📌 미구현 — 오버레이 라우팅 Composable
+    │   ├── CalloutOverlay.kt               📌 미구현 — 제목/내용 TextField + raw 동기화
+    │   ├── TableOverlay.kt                 📌 미구현 — 셀별 TextField + raw 동기화
+    │   └── CodeBlockOverlay.kt             📌 미구현 — 코드 TextField + raw 동기화
+    ├── MarkdownBasicTextField.kt           BasicTextField + Box 래핑 + drawBehind + scrollState
     ├── MarkdownTextField.kt                Material3 래퍼
     ├── EditorInputTransformation.kt        Smart Enter + auto-close + Tab→space
     ├── RawStyleToggle.kt                   서식 토글 유틸리티
     └── EditorKeyboardShortcuts.kt          하드웨어 키보드 단축키
 ```
+
+---
+
+## 5a. Phase 3 오버레이 아키텍처 설계 결정
+
+### 투명 텍스트 + 오버레이 방식 선택 이유
+
+검토한 대안:
+1. **InlineContent + Placeholder**: TextFieldState 기반 BasicTextField에서 지원되지 않음
+2. **블록 단위 LazyColumn 분할**: 블록 간 커서 이동/선택 복잡, 옵시디언 UX와 다름
+3. **DrawBehind만 사용**: Canvas 그리기만 가능, 대화형 UI(TextField) 불가
+4. **✅ 투명 텍스트 + 오버레이**: raw text가 줄 높이를 보존하고, 그 위에 자유로운 Composable 배치
+
+장점:
+- 모든 raw markdown이 단일 TextFieldState에 존재 → 저장/Undo/선택이 자연스러움
+- 블록 패턴이 깨지면 오버레이 자동 제거 → 삭제 로직 불필요
+- 오버레이 내 TextField로 직접 편집 가능 → raw 전환 없이 WYSIWYG 경험
+
+### Embed 별도 블록 분리 이유
+
+Embed(`![[파일명]]`)의 raw text는 1줄이지만 렌더링된 콘텐츠는 크기를 예측할 수 없다.
+투명 텍스트 방식은 raw text의 줄 높이 = 오버레이 높이를 전제하므로 Embed에는 적용 불가.
+따라서 EditorPage에서 Embed 위치를 기준으로 문서를 세그먼트로 분할하고,
+각 세그먼트를 MarkdownTextField로, Embed를 별도 Composable로 렌더링한다.
+
+### 오버레이 ↔ raw markdown 동기화 방식
+
+오버레이 내 TextField에서 편집 발생 시:
+1. 변경된 내용을 raw markdown 형식으로 재구성 (예: `> [!NOTE] 새제목\n> 새내용`)
+2. `TextFieldState.edit { replace(blockStart, blockEnd, newRawText) }`
+3. Scanner 재실행 → ScanResult 갱신 → 오버레이 자동 재구성
+
+raw → overlay 방향 (초기화/외부 편집):
+1. Scanner가 블록 감지 → BlockRange 생성
+2. OverlayBlockParser가 raw text 파싱 → OverlayBlockData 생성
+3. 오버레이 Composable에 파싱된 데이터 전달
 
 ---
 

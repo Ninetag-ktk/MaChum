@@ -114,7 +114,53 @@ internal object InlineStyleScanner {
         return spans
     }
 
-    /** TextBlock, Blockquote, BulletList, OrderedList, Callout 등 줄 단위 스캔 */
+    /**
+     * Callout 블록 전용 스팬 계산.
+     *
+     * 첫 줄: `> [!TYPE] Title` → `> [!TYPE] ` 숨김, Title에 bold 적용
+     * 나머지: `> Content` → `> ` 숨김, Content에 인라인 스캔
+     */
+    fun calloutSpans(
+        blockText: String,
+        docOffset: Int,
+        config: MarkdownStyleConfig,
+    ): List<Pair<IntRange, SpanStyle>> {
+        if (blockText.isEmpty()) return emptyList()
+        val spans = mutableListOf<Pair<IntRange, SpanStyle>>()
+        val lines = blockText.split('\n')
+        var lineStart = 0
+
+        for ((idx, line) in lines.withIndex()) {
+            val lineDocStart = docOffset + lineStart
+            if (idx == 0) {
+                // 첫 줄: "> [!TYPE] Title" or ">[!TYPE]" (공백 선택적)
+                val headerRegex = Regex("^> ?\\[!\\w+]\\s*")
+                val match = headerRegex.find(line)
+                if (match != null) {
+                    val markerEnd = match.range.last + 1
+                    // "> [!TYPE] " → 숨김
+                    spans += (lineDocStart until lineDocStart + markerEnd) to config.marker
+                    // Title 부분 → bold + 인라인 스캔
+                    if (markerEnd < line.length) {
+                        spans += (lineDocStart + markerEnd until lineDocStart + line.length) to config.bold
+                        scanInline(line, markerEnd, line.length, lineDocStart, spans, config)
+                    }
+                } else {
+                    // fallback: 일반 줄 처리
+                    val contentStart = hideLinePrefix(line, lineDocStart, spans, config)
+                    scanInline(line, contentStart, line.length, lineDocStart, spans, config)
+                }
+            } else {
+                // 나머지 줄: "> Content"
+                val contentStart = hideLinePrefix(line, lineDocStart, spans, config)
+                scanInline(line, contentStart, line.length, lineDocStart, spans, config)
+            }
+            lineStart += line.length + 1
+        }
+        return spans
+    }
+
+    /** TextBlock, Blockquote, BulletList, OrderedList 등 줄 단위 스캔 */
     private fun lineScannedSpans(
         blockText: String,
         docOffset: Int,
@@ -142,12 +188,12 @@ internal object InlineStyleScanner {
         spans: MutableList<Pair<IntRange, SpanStyle>>,
         config: MarkdownStyleConfig,
     ): Int {
-        // Blockquote / Callout: "> "
+        // Blockquote / Callout: "> " 또는 ">"
         if (line.startsWith("> ")) {
             spans += (lineDocStart until lineDocStart + 2) to config.marker
             return 2
         }
-        if (line == ">") {
+        if (line.startsWith(">")) {
             spans += (lineDocStart until lineDocStart + 1) to config.marker
             return 1
         }

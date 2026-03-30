@@ -39,7 +39,40 @@ private fun defaultMaterialStyleConfig(): MarkdownStyleConfig {
     val linkColor = MaterialTheme.colorScheme.primary
     val codeBackground = MaterialTheme.colorScheme.surfaceVariant
     val highlightColor = MaterialTheme.colorScheme.tertiaryContainer
-    return remember(linkColor, codeBackground, highlightColor) {
+    val codeBlockBg = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+
+    // Material3 테마 기반 Callout 색상
+    val scheme = MaterialTheme.colorScheme
+    val calloutStyles = remember(scheme) {
+        mapOf(
+            "NOTE" to CalloutDecorationStyle(
+                scheme.primaryContainer.copy(alpha = 0.4f), scheme.primary
+            ),
+            "TIP" to CalloutDecorationStyle(
+                scheme.tertiaryContainer.copy(alpha = 0.4f), scheme.tertiary
+            ),
+            "IMPORTANT" to CalloutDecorationStyle(
+                scheme.secondaryContainer.copy(alpha = 0.4f), scheme.secondary
+            ),
+            "WARNING" to CalloutDecorationStyle(
+                scheme.errorContainer.copy(alpha = 0.3f), scheme.error.copy(alpha = 0.7f)
+            ),
+            "DANGER" to CalloutDecorationStyle(
+                scheme.errorContainer.copy(alpha = 0.4f), scheme.error
+            ),
+            "CAUTION" to CalloutDecorationStyle(
+                scheme.errorContainer.copy(alpha = 0.4f), scheme.error
+            ),
+            "QUESTION" to CalloutDecorationStyle(
+                scheme.surfaceVariant.copy(alpha = 0.5f), scheme.onSurfaceVariant
+            ),
+            "SUCCESS" to CalloutDecorationStyle(
+                scheme.tertiaryContainer.copy(alpha = 0.4f), scheme.tertiary
+            ),
+        )
+    }
+
+    return remember(linkColor, codeBackground, highlightColor, codeBlockBg, calloutStyles) {
         MarkdownStyleConfig(
             link = SpanStyle(color = linkColor),
             highlight = SpanStyle(background = highlightColor),
@@ -48,6 +81,8 @@ private fun defaultMaterialStyleConfig(): MarkdownStyleConfig {
                 background = codeBackground,
                 fontSize = 0.85.em,
             ),
+            codeBlockBackground = codeBlockBg,
+            calloutStyles = calloutStyles,
         )
     }
 }

@@ -242,18 +242,28 @@ markdown/
 │   ├── BlockParser.kt
 │   ├── MarkdownParserImpl.kt
 │   └── block/ (7개 sub-parser)
-├── renderer/                         ✅ 완료 (향후 특수 블록 재활용 가능)
+├── renderer/                         ✅ 완료 (Embed 블록에서 재활용)
 │   └── (11개 파일)
 ├── reference_hyphen/                 📌 레퍼런스 전용 (직접 사용하지 않음)
 │   └── (Hyphen 라이브러리 원본 — 설계 참고용)
 └── editor/
     ├── MarkdownEditorState.kt         ✅ Phase 2 (raw text 홀더)
-    ├── MarkdownPatternScanner.kt      ✅ Phase 2 (문서 전체 스캔)
-    ├── RawMarkdownOutputTransformation.kt  ✅ Phase 2 (커서 줄 기반 서식)
-    ├── InlineStyleScanner.kt          ✅ Phase 2 (블록별 SpanStyle 계산)
-    ├── MarkdownStyleConfig.kt         ✅ Phase 2 (서식 커스터마이징 설정)
-    ├── MarkdownBasicTextField.kt      ✅ Phase 2 (BasicTextField 래퍼 — Basic)
-    ├── MarkdownTextField.kt           ✅ Phase 2 (Material3 래퍼)
+    ├── MarkdownPatternScanner.kt      ✅ Phase 2+3 (문서 전체 스캔, ScanResult 반환)
+    ├── RawMarkdownOutputTransformation.kt  ✅ Phase 2+3 (블록 수준 커서 감지, blockTransparent)
+    ├── InlineStyleScanner.kt          ✅ Phase 2+3 (블록별 SpanStyle, calloutSpans, overlay 모드)
+    ├── MarkdownStyleConfig.kt         ✅ Phase 2+3 (서식 설정 + CalloutDecorationStyle + blockTransparent)
+    ├── ScanResult.kt                  ✅ Phase 3 (BlockType, BlockRange, ScanResult)
+    ├── BlockDecorationDrawer.kt       ✅ Phase 3 (DrawScope — 활성 블록 데코레이션)
+    ├── OverlayBlockData.kt            📌 Phase 3 미구현 (오버레이용 파싱 데이터)
+    ├── OverlayBlockParser.kt          📌 Phase 3 미구현 (raw text → OverlayBlockData)
+    ├── OverlayPositionCalculator.kt   📌 Phase 3 미구현 (TextLayoutResult → 뷰포트 좌표)
+    ├── overlay/
+    │   ├── BlockOverlay.kt            📌 Phase 3 미구현 (오버레이 라우팅)
+    │   ├── CalloutOverlay.kt          📌 Phase 3 미구현 (제목/내용 TextField + raw 동기화)
+    │   ├── TableOverlay.kt            📌 Phase 3 미구현 (셀별 TextField)
+    │   └── CodeBlockOverlay.kt        📌 Phase 3 미구현 (코드 TextField)
+    ├── MarkdownBasicTextField.kt      ✅ Phase 2+3 (BasicTextField + drawBehind + scrollState)
+    ├── MarkdownTextField.kt           ✅ Phase 2+3 (Material3 래퍼)
     ├── EditorInputTransformation.kt   ✅ Phase 4 (Smart Enter + auto-close + Tab→space)
     ├── RawStyleToggle.kt              ✅ Phase 4 (서식 토글 유틸리티)
     └── EditorKeyboardShortcuts.kt     ✅ Phase 4 (하드웨어 키보드 단축키)
@@ -261,15 +271,42 @@ markdown/
 
 ---
 
-## 향후 과제
+## Phase 3: 특수 블록 — 오버레이 Composable 아키텍처
 
-상세 설계는 **CLAUDE_sub.md** 참고.
+상세 구현 설계는 **CLAUDE_sub.md** 참고.
 
-### Phase 3: 특수 블록 렌더링 (우선순위 순)
-1. **Callout** `> [!type]` — 자주 사용. SubcomposeLayout 또는 InlineContent 방식
-2. **Embed** `![[파일명]]` — 자주 사용. FileManager 비동기 로딩 + 재귀 파싱
-3. **CodeBlock** ` ``` ` — DrawBehind로 배경 블록 처리
-4. **Table** `|` — 그리드 레이아웃 (가장 복잡)
+### 핵심 원리
+
+Raw markdown은 모두 **단일 TextFieldState에 존재**한다. 특수 블록(Callout, Table, CodeBlock)의
+텍스트는 `OutputTransformation`에서 **투명 + 정상 폰트 크기**로 처리하여 줄 높이를 보존하고,
+그 위에 오버레이 Composable을 배치한다. 오버레이 내부에 별도 TextField를 두어 직접 편집하며,
+변경 사항은 underlying raw markdown에 동기화된다.
+
+Embed는 콘텐츠 크기를 예측할 수 없으므로 LazyColumn 내 **별도 블록**으로 분리한다.
+
+### 세 가지 렌더링 레이어
+
+```
+Layer 1: OutputTransformation — 인라인 서식(MARKER 0.01sp) + 블록 투명(blockTransparent)
+Layer 2: DrawBehind           — 활성 블록(raw 편집 중)의 배경/테두리
+Layer 3: Overlay Composable   — 비활성 블록의 커스텀 UI (TextField 포함, 직접 편집)
+```
+
+### 블록별 전략
+
+| 블록 | 전략 | 편집 방식 | 구현 상태 |
+|---|---|---|---|
+| Callout `> [!type]` | 투명 텍스트 + 오버레이 | 제목/내용 각각 TextField | 📌 미구현 |
+| Table `\|` | 투명 텍스트 + 오버레이 | 셀별 TextField | 📌 미구현 |
+| CodeBlock ` ``` ` | 투명 텍스트 + 오버레이 | 코드 TextField (모노스페이스) | 📌 미구현 |
+| Embed `![[파일]]` | LazyColumn 별도 블록 | 읽기 전용 (원본 파일 편집은 별도) | 📌 미구현 |
+
+### Phase 3 현재 구현 상태 (DrawBehind 기반 — 오버레이 전환 전)
+
+Scanner가 Callout/CodeBlock/Embed 블록을 감지하여 `ScanResult`를 반환하고,
+`RawMarkdownOutputTransformation`이 블록 수준 커서 감지(커서가 블록 내부이면 전체 블록 raw 표시)를 수행한다.
+`BlockDecorationDrawer`가 DrawBehind로 배경/테두리를 그린다.
+이 기반 위에 오버레이 Composable 레이어를 추가하는 것이 다음 단계이다.
 
 ### Phase 4: 에디터 기능 확장 (✅ 완료)
 - **스마트 Enter**: 리스트/인용구/체크박스 자동 continuation (`EditorInputTransformation`)

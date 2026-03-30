@@ -1,15 +1,22 @@
 package com.ninetag.machum.markdown.editor
 
+import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -31,10 +38,13 @@ fun MarkdownBasicTextField(
     textStyle: TextStyle = TextStyle.Default,
     cursorBrush: Brush = SolidColor(Color.Black),
     styleConfig: MarkdownStyleConfig = MarkdownStyleConfig(),
+    scrollState: ScrollState = rememberScrollState(),
 ) {
     val state = remember { MarkdownEditorState(value) }
     val inputTransformation = remember { EditorInputTransformation() }
     val outputTransformation = remember(styleConfig) { RawMarkdownOutputTransformation(styleConfig) }
+
+    var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
 
     // 텍스트 변경 시 raw text 를 그대로 emit
     LaunchedEffect(state) {
@@ -46,10 +56,23 @@ fun MarkdownBasicTextField(
     BasicTextField(
         state = state.textFieldState,
         modifier = modifier
+            .drawBehind {
+                val layout = textLayoutResult ?: return@drawBehind
+                val scrollOffset = scrollState.value.toFloat()
+                drawBlockDecorations(
+                    layout = layout,
+                    blocks = outputTransformation.blockRanges,
+                    activeBlockRange = outputTransformation.activeBlockRange,
+                    config = styleConfig,
+                    scrollOffset = scrollOffset,
+                )
+            }
             .onPreviewKeyEvent { handleEditorKeyEvent(it, state.textFieldState) },
         textStyle = textStyle,
         cursorBrush = cursorBrush,
         inputTransformation = inputTransformation,
         outputTransformation = outputTransformation,
+        scrollState = scrollState,
+        onTextLayout = { textLayoutResult = it() },
     )
 }
