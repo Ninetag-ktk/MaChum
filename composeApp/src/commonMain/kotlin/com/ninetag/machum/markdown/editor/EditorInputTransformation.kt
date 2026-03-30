@@ -17,6 +17,12 @@ class EditorInputTransformation : InputTransformation {
 
         val insertedChar = toString().getOrNull(change.start) ?: return
 
+        // Smart Enter: 블록 prefix 자동 continuation
+        if (insertedChar == '\n') {
+            handleSmartEnter(change.start)
+            return
+        }
+
         // auto-close 트리거 문자가 아니면 종료
         // 한글·CJK 등 IME 조합 문자는 트리거에 포함되지 않으므로 자연스럽게 통과
         if (insertedChar !in TRIGGER_CHARS) return
@@ -65,7 +71,87 @@ class EditorInputTransformation : InputTransformation {
         selection = TextRange(change.end)
     }
 
+    /**
+     * Smart Enter: \n이 삽입된 위치(newlinePos) 이전 줄의 블록 prefix를 감지하여
+     * 자동으로 continuation prefix를 삽입하거나, prefix-only 줄이면 prefix를 제거한다.
+     */
+    private fun TextFieldBuffer.handleSmartEnter(newlinePos: Int) {
+        val text = toString()
+
+        // newlinePos 이전 줄의 시작 위치
+        val lineStart = text.lastIndexOf('\n', newlinePos - 1) + 1
+        val lineText = text.substring(lineStart, newlinePos)
+
+        val detected = detectBlockPrefix(lineText) ?: return
+
+        val (indent, fullPrefix, continuation, contentAfterPrefix) = detected
+
+        if (contentAfterPrefix.isEmpty()) {
+            // prefix-only 줄 → prefix + \n 제거하여 빈 줄로 변환
+            replace(lineStart, newlinePos + 1, "\n")
+            selection = TextRange(lineStart + 1)
+        } else {
+            // 내용이 있는 줄 → \n 뒤에 continuation prefix 삽입
+            val insert = indent + continuation
+            replace(newlinePos + 1, newlinePos + 1, insert)
+            selection = TextRange(newlinePos + 1 + insert.length)
+        }
+    }
+
+    private data class BlockPrefixResult(
+        val indent: String,
+        val fullPrefix: String,
+        val continuation: String,
+        val contentAfterPrefix: String,
+    )
+
+    /**
+     * 줄 텍스트에서 블록 prefix를 감지한다.
+     * checkbox > bullet > ordered > blockquote 순으로 체크.
+     */
+    private fun detectBlockPrefix(lineText: String): BlockPrefixResult? {
+        // 들여쓰기 분리
+        val indent = lineText.takeWhile { it == ' ' || it == '\t' }
+        val rest = lineText.drop(indent.length)
+
+        // checkbox: - [ ] 또는 - [x]
+        CHECKBOX_REGEX.matchAt(rest, 0)?.let { match ->
+            val prefix = match.value
+            val content = rest.drop(prefix.length).trimStart()
+            return BlockPrefixResult(indent, prefix, "- [ ] ", content)
+        }
+
+        // bullet: - 또는 *
+        BULLET_REGEX.matchAt(rest, 0)?.let { match ->
+            val prefix = match.value
+            val content = rest.drop(prefix.length)
+            return BlockPrefixResult(indent, prefix, prefix, content)
+        }
+
+        // ordered list: 숫자.
+        ORDERED_REGEX.matchAt(rest, 0)?.let { match ->
+            val prefix = match.value
+            val num = match.groupValues[1].toInt()
+            val content = rest.drop(prefix.length)
+            return BlockPrefixResult(indent, prefix, "${num + 1}. ", content)
+        }
+
+        // blockquote: >
+        BLOCKQUOTE_REGEX.matchAt(rest, 0)?.let { match ->
+            val prefix = match.value
+            val content = rest.drop(prefix.length)
+            return BlockPrefixResult(indent, prefix, "> ", content)
+        }
+
+        return null
+    }
+
     companion object {
         private const val TRIGGER_CHARS = "*~=`[\t"
+
+        private val CHECKBOX_REGEX = Regex("""- \[[xX ]] """)
+        private val BULLET_REGEX = Regex("""[-*] """)
+        private val ORDERED_REGEX = Regex("""(\d+)\. """)
+        private val BLOCKQUOTE_REGEX = Regex("""> """)
     }
 }
