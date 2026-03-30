@@ -102,7 +102,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     private val _needUpdateWorkflow = MutableStateFlow(false)
     val needUpdateWorkflow = _needUpdateWorkflow.asStateFlow()
 
-    private val _currentMarkdown = MutableStateFlow<Markdown?>(null)
+    private val _currentNoteFile = MutableStateFlow<NoteFile?>(null)
 
     init {
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
@@ -244,6 +244,8 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * @return 선택한 마크다운 파일
      */
     suspend fun pickFile(file: PlatformFile): PlatformFile = withContext(Dispatchers.IO) {
+        // 포커스 변경 시에만 갱신
+        _currentNoteFile.value = readMarkdown(file)
         setPreferences(getPreferences().copy(fileData = file)).fileData!!
     }
 
@@ -275,10 +277,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * @return 파일 내용 (UTF-8)
      */
     suspend fun read(file: PlatformFile): String = withContext(Dispatchers.IO) {
-        val raw = file.readString()
-        val markdown = Markdown.parse(raw).ensureId()
-        _currentMarkdown.value = markdown
-        markdown.body
+        file.readString()
     }
 
     private suspend fun readConfig(): ProjectConfig? = withContext(Dispatchers.IO) {
@@ -294,14 +293,22 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
     }
 
+    suspend fun readMarkdown(file: PlatformFile): NoteFile = withContext(Dispatchers.IO) {
+        val raw = NoteFile.parse(file.readString())
+        val withId = raw.ensureId()
+        if (raw.getId() == null) {
+            file.writeString(withId.inject())
+        }
+        withId
+    }
+
     /**
      * 파일 쓰기 (생성 & 수정)
      * @param file 선택한 파일
      * @param body 파일 내용
      */
     suspend fun write(file: PlatformFile, body: String) = withContext(Dispatchers.IO) {
-        val markdown = _currentMarkdown.value?.withBody(body = body) ?: Markdown.parse(body)
-        file.writeString(markdown.inject())
+        file.writeString(body)
     }
 
     suspend fun writeConfig(projectConfig: ProjectConfig) = withContext(Dispatchers.IO) {
@@ -313,6 +320,10 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             println("Config 읽기 실패: $e")
             throw e
         }
+    }
+
+    suspend fun writeMarkdown(file: PlatformFile, noteFile: NoteFile) = withContext(Dispatchers.IO) {
+        file.writeString(noteFile.inject())
     }
 
     /**
@@ -445,8 +456,19 @@ internal fun PlatformFile.Companion.fromBookmarkDataWithValidate(bytes: ByteArra
     return if (data.exists()) data else null
 }
 
+internal fun PlatformFile.markdownName(): MarkdownName {
+    val parts = nameWithoutExtension.split(". ", limit = 2)
+    return if (parts.size == 2) {
+        MarkdownName(parts[0], parts[1])
+    } else {
+        MarkdownName("", parts[0])
+    }
+}
+
 data class Bookmarks(
     val vaultData: PlatformFile? = null,
     val projectData: PlatformFile? = null,
     val fileData: PlatformFile? = null,
 )
+
+data class MarkdownName(val numbering: String, val title: String)

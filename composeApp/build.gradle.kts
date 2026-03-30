@@ -47,7 +47,6 @@ kotlin {
         implementation(libs.koin.compose.viewmodel)
 
         implementation(libs.fileKit)
-        implementation(libs.markdown)
 
         testImplementation(libs.kotlin.test)
     }

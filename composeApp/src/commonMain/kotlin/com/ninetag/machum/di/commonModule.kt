@@ -4,6 +4,8 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import com.ninetag.machum.external.FileManager
+import com.ninetag.machum.markdown.parser.MarkdownParser
+import com.ninetag.machum.markdown.parser.MarkdownParserImpl
 import com.ninetag.machum.screen.mainComposition.MainViewModel
 import io.github.vinceglb.filekit.FileKit
 import io.github.vinceglb.filekit.databasesDir
@@ -20,5 +22,6 @@ val commonModule = module {
         }
     }
     single { FileManager(dataStore = get()) }
+    single<MarkdownParser> { MarkdownParserImpl() }
     viewModel { MainViewModel(fileManager = get()) }
 }

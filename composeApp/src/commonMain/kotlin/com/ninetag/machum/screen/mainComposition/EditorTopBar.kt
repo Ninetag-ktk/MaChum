@@ -1,11 +1,11 @@
 package com.ninetag.machum.screen.mainComposition
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.text.BasicTextField
@@ -28,30 +28,32 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ninetag.machum.external.MarkdownName
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditorTopBar(
-    fileName: String,
+    fileName: MarkdownName,
     onCommitClick: () -> Unit,
     onFileListClick: () -> Unit,
     onToggleClick: () -> Unit,
     onRenameFile: (String) -> Unit,
 ) {
-    val parts = fileName.split(". ", limit = 2)
-    val numbering = parts.getOrNull(0) ?: ""
-    val title = parts.getOrNull(1) ?: fileName
-
     var isEditing by remember { mutableStateOf(false) }
-    var editingText by remember(fileName) { mutableStateOf(title) }
+    var editingTitle by remember(fileName) { mutableStateOf(fileName.title) }
     var hasFocused by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
 
@@ -66,54 +68,66 @@ fun EditorTopBar(
         },
         title = {
             Row(
-                /*TODO - 상단을 가득 채우게끔 구성 필요*/
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
+                val numberingAlpha by animateFloatAsState(
+                    targetValue = if (isEditing) 0f else 1f,
+                    animationSpec = tween(durationMillis = 300)
+                )
                 Spacer(Modifier.weight(0.5f))
+                Text(
+                    text = "${fileName.numbering}.",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Normal,
+                    lineHeight = 14.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .wrapContentWidth()
+                        .alpha(numberingAlpha)
+                        .padding(0.dp)
+                )
                 if (isEditing) {
-                    Text(
-                        color = Color.Transparent,
-                        text = "${numbering}. ",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Normal,
-                        lineHeight = 14.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .wrapContentWidth()
-                            .clickable { isEditing = true }
-                    )
                     BasicTextField(
-                        value = editingText,
-                        onValueChange = { editingText = it },
+                        value = editingTitle,
+                        onValueChange = { editingTitle = it },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                         keyboardActions = KeyboardActions(
                             onDone = {
-                                onRenameFile("${numbering}. ${editingText}")
+                                onRenameFile("${fileName.numbering}. ${editingTitle}")
                                 isEditing = false
                                 hasFocused = false
                             }
                         ),
                         modifier = Modifier
                             .wrapContentWidth()
+                            .onKeyEvent { keyEvent ->
+                                if (keyEvent.key == Key.Escape && keyEvent.type == KeyEventType.KeyDown) {
+                                    editingTitle = fileName.title
+                                    isEditing = false
+                                    hasFocused = false
+                                    true
+                                } else false
+                            }
                             .onFocusChanged { focusState ->
                                 if (focusState.isFocused) {
                                     hasFocused = true
                                 } else if (hasFocused) {
-                                    onRenameFile("${numbering}. ${editingText}")
+                                    onRenameFile("${fileName.numbering}. ${editingTitle}")
                                     isEditing = false
                                     hasFocused = false
                                 }
                             }
+                            .padding(0.dp)
                     )
                     LaunchedEffect(Unit) {
                         focusRequester.requestFocus()
                     }
                 } else {
                     Text(
-                        text = "${numbering}. ${title}",
+                        text = editingTitle,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Normal,
                         lineHeight = 14.sp,
@@ -122,6 +136,7 @@ fun EditorTopBar(
                         modifier = Modifier
                             .wrapContentWidth()
                             .clickable { isEditing = true }
+                            .padding(0.dp)
                     )
                 }
                 IconButton(onClick = onFileListClick) {

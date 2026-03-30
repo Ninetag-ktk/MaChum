@@ -11,6 +11,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import com.ninetag.machum.external.FileManager
+import com.ninetag.machum.external.markdownName
+import com.ninetag.machum.screen.mainComposition.EditorPage
 import com.ninetag.machum.screen.mainComposition.EditorTopBar
 import com.ninetag.machum.screen.mainComposition.MainViewModel
 import io.github.vinceglb.filekit.nameWithoutExtension
@@ -47,11 +49,13 @@ fun MainScreen() {
     Scaffold(
         topBar = {
             EditorTopBar(
-                fileName = fileList[pagerState.currentPage].nameWithoutExtension,
+                fileName = fileList[pagerState.currentPage].markdownName(),
                 onCommitClick = { /*TODO*/ },
                 onFileListClick = { /*TODO*/ },
                 onToggleClick = { /*TODO*/ },
-                onRenameFile = { /*TODO*/ }
+                onRenameFile = {newName ->
+                    viewModel.onRenameFile(fileList[pagerState.currentPage], newName)
+                }
             )
         }
     ) {
@@ -59,7 +63,7 @@ fun MainScreen() {
             state = pagerState,
             modifier = Modifier.padding(it)
         ) { page ->
-//            EditorPage(file = fileList[page])
+            EditorPage(file = fileList[page])
         }
     }
 }
