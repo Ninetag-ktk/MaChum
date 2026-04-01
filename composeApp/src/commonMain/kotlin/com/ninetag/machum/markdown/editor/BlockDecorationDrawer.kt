@@ -18,12 +18,16 @@ import androidx.compose.ui.unit.dp
 internal fun DrawScope.drawBlockDecorations(
     layout: TextLayoutResult,
     blocks: List<BlockRange>,
-    activeBlockRange: IntRange?,
+    activeBlockRanges: Set<IntRange>,
     config: MarkdownStyleConfig,
     scrollOffset: Float = 0f,
 ) {
     for (block in blocks) {
-        if (block.textRange == activeBlockRange) continue
+        val isActive = block.textRange in activeBlockRanges
+        // 오버레이가 있는 블록 타입: 활성일 때만 DrawBehind (비활성은 오버레이가 담당)
+        // 오버레이가 없는 블록 타입: 항상 DrawBehind
+        val hasOverlay = block.type == BlockType.CALLOUT || block.type == BlockType.TABLE
+        if (hasOverlay && !isActive) continue
 
         val rect = getBoundingRect(layout, block.textRange, scrollOffset) ?: continue
 
@@ -34,6 +38,7 @@ internal fun DrawScope.drawBlockDecorations(
             BlockType.CODE_BLOCK -> drawCodeBlockDecoration(rect, config)
             BlockType.CALLOUT -> drawCalloutDecoration(rect, block.meta, config)
             BlockType.EMBED -> drawEmbedDecoration(rect, config)
+            BlockType.TABLE -> {}
         }
     }
 }

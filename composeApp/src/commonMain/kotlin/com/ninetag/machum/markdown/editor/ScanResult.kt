@@ -9,6 +9,7 @@ enum class BlockType {
     CODE_BLOCK,
     CALLOUT,
     EMBED,
+    TABLE,
 }
 
 /**

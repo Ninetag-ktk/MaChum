@@ -144,6 +144,35 @@ internal object MarkdownPatternScanner {
                             textRange = offset until (offset + line.length),
                         )
                     }
+                    isTableLine(line) -> {
+                        flushGroup(groupText, groupStart, spans, config)
+                        groupStart = -1
+                        // Table: 연속 | 줄 소비
+                        val tableStart = offset
+                        val tableLines = mutableListOf(line)
+                        var j = i + 1
+                        var tableOffset = offset + line.length + 1
+                        while (j < lines.size && isTableLine(lines[j])) {
+                            tableLines.add(lines[j])
+                            tableOffset += lines[j].length + 1
+                            j++
+                        }
+                        // 최소 2줄(헤더 + 구분자) 이상이면 Table 블록
+                        if (tableLines.size >= 2) {
+                            val tableText = tableLines.joinToString("\n")
+                            blocks += BlockRange(
+                                type = BlockType.TABLE,
+                                textRange = tableStart until (tableStart + tableText.length),
+                            )
+                            // Table 내부는 인라인 스캔 (오버레이가 담당하므로 기본 처리)
+                            spans += InlineStyleScanner.computeSpans(
+                                MarkdownBlock.Table(emptyList(), emptyList()), tableText, tableStart, config,
+                            )
+                        }
+                        offset = tableOffset
+                        i = j
+                        continue
+                    }
                     else -> {
                         // 블록 prefix 없는 일반 텍스트 → 그룹에 추가
                         if (groupStart == -1) {
@@ -233,5 +262,11 @@ internal object MarkdownPatternScanner {
     private fun isEmbedLine(line: String): Boolean {
         val trimmed = line.trim()
         return trimmed.startsWith("![[") && trimmed.endsWith("]]")
+    }
+
+    /** 줄이 테이블 행인지 판별 (| 로 시작하고 | 를 2개 이상 포함) */
+    private fun isTableLine(line: String): Boolean {
+        val trimmed = line.trim()
+        return trimmed.startsWith("|") && trimmed.count { it == '|' } >= 2
     }
 }

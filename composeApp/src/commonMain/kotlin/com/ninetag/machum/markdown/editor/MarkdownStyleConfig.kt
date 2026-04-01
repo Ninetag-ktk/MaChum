@@ -44,6 +44,7 @@ data class MarkdownStyleConfig(
     val h5: SpanStyle = SpanStyle(fontSize = 16.sp, fontWeight = FontWeight.Bold),
     val h6: SpanStyle = SpanStyle(fontSize = 14.sp, fontWeight = FontWeight.Bold),
     // 블록 데코레이션
+    val blockTransparent: SpanStyle = SpanStyle(color = Color.Transparent),
     val codeBlockBackground: Color = Color(0x11000000),
     val calloutStyles: Map<String, CalloutDecorationStyle> = defaultCalloutStyles(),
 ) {
