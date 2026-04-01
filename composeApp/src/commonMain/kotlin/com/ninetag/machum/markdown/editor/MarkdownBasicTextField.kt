@@ -120,6 +120,7 @@ fun MarkdownBasicTextField(
                 textFieldState = state.textFieldState,
                 styleConfig = styleConfig,
                 textStyle = textStyle,
+                scrollState = scrollState,
             )
         }
     }

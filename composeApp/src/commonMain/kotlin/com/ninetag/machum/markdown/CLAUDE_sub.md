@@ -119,11 +119,13 @@ key(file.name) {
 
 ---
 
-## 특수 블록 렌더링 (Phase 3 — 오버레이 Composable 아키텍처)
+## 특수 블록 렌더링 (Phase 3 — 오버레이 Composable 아키텍처) ✅ 구현 완료
 
 SpanStyle만으로 표현할 수 없는 블록들. 단일 BasicTextField 위에 오버레이 Composable을 배치한다.
 새 API(TextFieldState 기반)에서는 `InlineTextContent` 가 지원되지 않으므로, Box 레이아웃 내
 절대 위치 오버레이 방식을 사용한다.
+
+> Callout, CodeBlock, Table 오버레이 모두 구현 완료. Embed만 미구현.
 
 ### 핵심 구조
 
@@ -189,9 +191,11 @@ fun computeOverlayRect(layout: TextLayoutResult, range: IntRange, scrollOffset: 
 
 ---
 
-### Callout `> [!type]`
+### Callout `> [!type]` ✅ 구현 완료
 
 기존 `CalloutRenderer` 형태 유지: 배경 + 왼쪽 테두리 + 제목 위 / 내용 아래.
+`CalloutOverlay.kt`에서 제목/내용 TextField + 양방향 raw 동기화(300ms 디바운스) 구현.
+내용 TextField에 `InlineOnlyOutputTransformation`으로 인라인 서식 Live Preview 적용.
 
 파싱 규칙 (공백 선택적):
 ```
@@ -219,7 +223,7 @@ textFieldState.edit { replace(blockStart, blockEnd, "$header\n$bodyLines") }
 
 ---
 
-### Embed `![[파일명]]`
+### Embed `![[파일명]]` 📌 미구현
 
 **LazyColumn 내 별도 블록으로 분리.** 콘텐츠 크기를 예측할 수 없으므로 투명 텍스트 방식 불가.
 
@@ -241,9 +245,9 @@ EmbedBlock:  FileManager 비동기 로딩 → 기존 EmbedRenderer 재활용
 
 ---
 
-### CodeBlock ` ``` `
+### CodeBlock ` ``` ` ✅ 구현 완료
 
-오버레이 Composable: 모노스페이스 배경 + 코드 TextField.
+오버레이 Composable: 모노스페이스 배경 + 코드 TextField. `CodeBlockOverlay.kt`에서 구현.
 
 ```
 ┌─ CodeBlockOverlay ─────────────────────┐
@@ -257,9 +261,9 @@ EmbedBlock:  FileManager 비동기 로딩 → 기존 EmbedRenderer 재활용
 
 ---
 
-### Table `|`
+### Table `|` ✅ 구현 완료
 
-오버레이 Composable: 그리드 레이아웃 + 셀별 TextField.
+오버레이 Composable: 그리드 레이아웃 + 셀별 TextField. `TableOverlay.kt`에서 구현.
 
 ```
 ┌─ TableOverlay ─────────────────────────┐
@@ -270,7 +274,6 @@ EmbedBlock:  FileManager 비동기 로딩 → 기존 EmbedRenderer 재활용
 ```
 
 편집 → raw 동기화: 셀 변경 시 `|` 구분자 포함 전체 테이블을 재구성.
-`MarkdownPatternScanner`에 Table 감지 추가 필요 (3+ 연속 `|` 줄).
 
 ---
 

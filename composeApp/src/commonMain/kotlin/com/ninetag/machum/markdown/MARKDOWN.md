@@ -125,17 +125,18 @@ MaChum은 이를 직접 사용하지 않고, 프로젝트에 최적화하여 별
 | `RawStyleToggle.kt` | 서식 토글 유틸리티. 인라인 마커/헤딩/블록 prefix 삽입·제거 |
 | `EditorKeyboardShortcuts.kt` | 하드웨어 키보드 단축키. Ctrl/Cmd+B/I/E, Ctrl/Cmd+Shift+S/X/H |
 
-### Phase 3 오버레이 (editor/overlay/) — 구현 예정
+### Phase 3 오버레이 (editor/overlay/) — ✅ 구현 완료
 
 | 파일 | 역할 |
 |---|---|
 | `OverlayBlockData.kt` | 오버레이용 파싱 데이터 sealed class (CalloutData, TableData, CodeBlockData) |
 | `OverlayBlockParser.kt` | raw text → OverlayBlockData 경량 파서 (> prefix 제거, \| 분리 등) |
-| `OverlayPositionCalculator.kt` | TextLayoutResult + scrollOffset → 뷰포트 좌표 Rect |
-| `overlay/BlockOverlay.kt` | 오버레이 라우팅 Composable (타입별 분기) |
-| `overlay/CalloutOverlay.kt` | 배경 + 왼쪽 테두리 + 제목/내용 TextField + raw 동기화 |
+| `OverlayPositionCalculator.kt` | TextLayoutResult + scrollOffset → 뷰포트 좌표 Rect. 뷰포트 밖 블록 컬링 |
+| `overlay/BlockOverlay.kt` | 오버레이 타입별 라우팅 Composable |
+| `overlay/CalloutOverlay.kt` | 배경 + 왼쪽 테두리 + 제목/내용 TextField + raw 동기화 (300ms 디바운스) |
 | `overlay/TableOverlay.kt` | 그리드 레이아웃 + 셀별 TextField + raw 동기화 |
 | `overlay/CodeBlockOverlay.kt` | 모노스페이스 배경 + 코드 TextField + raw 동기화 |
+| `overlay/InlineOnlyOutputTransformation.kt` | 오버레이 내 인라인 서식 (포커스 기반 활성 줄 감지 + 캐시) |
 
 ### 파서/렌더러 (parser/, renderer/, token/)
 
@@ -277,14 +278,15 @@ markdown/
     ├── InlineStyleScanner.kt               블록별 SpanStyle + calloutSpans() + overlay 모드
     ├── MarkdownStyleConfig.kt              서식 설정 + CalloutDecorationStyle + blockTransparent
     ├── BlockDecorationDrawer.kt            DrawScope — 활성 블록 배경/테두리 (scrollOffset 보정)
-    ├── OverlayBlockData.kt                 📌 미구현 — 오버레이용 파싱 데이터 sealed class
-    ├── OverlayBlockParser.kt               📌 미구현 — raw text → OverlayBlockData
-    ├── OverlayPositionCalculator.kt        📌 미구현 — TextLayoutResult → 뷰포트 좌표
+    ├── OverlayBlockData.kt                 ✅ 구현 완료 — 오버레이용 파싱 데이터 sealed class
+    ├── OverlayBlockParser.kt               ✅ 구현 완료 — raw text → OverlayBlockData
+    ├── OverlayPositionCalculator.kt        ✅ 구현 완료 — TextLayoutResult → 뷰포트 좌표
     ├── overlay/
-    │   ├── BlockOverlay.kt                 📌 미구현 — 오버레이 라우팅 Composable
-    │   ├── CalloutOverlay.kt               📌 미구현 — 제목/내용 TextField + raw 동기화
-    │   ├── TableOverlay.kt                 📌 미구현 — 셀별 TextField + raw 동기화
-    │   └── CodeBlockOverlay.kt             📌 미구현 — 코드 TextField + raw 동기화
+    │   ├── BlockOverlay.kt                 ✅ 구현 완료 — 오버레이 타입별 라우팅
+    │   ├── CalloutOverlay.kt               ✅ 구현 완료 — 제목/내용 TextField + raw 동기화
+    │   ├── TableOverlay.kt                 ✅ 구현 완료 — 셀별 TextField + raw 동기화
+    │   ├── CodeBlockOverlay.kt             ✅ 구현 완료 — 코드 TextField + raw 동기화
+    │   └── InlineOnlyOutputTransformation.kt  ✅ 구현 완료 — 오버레이 내 인라인 서식
     ├── MarkdownBasicTextField.kt           BasicTextField + Box 래핑 + drawBehind + scrollState
     ├── MarkdownTextField.kt                Material3 래퍼
     ├── EditorInputTransformation.kt        Smart Enter + auto-close + Tab→space

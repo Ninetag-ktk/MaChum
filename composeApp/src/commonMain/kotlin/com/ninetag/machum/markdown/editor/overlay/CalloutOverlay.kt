@@ -1,5 +1,6 @@
 package com.ninetag.machum.markdown.editor.overlay
 
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Column
@@ -52,6 +53,7 @@ internal fun CalloutOverlay(
     textFieldState: TextFieldState,
     styleConfig: MarkdownStyleConfig,
     textStyle: TextStyle = TextStyle.Default,
+    scrollState: ScrollState? = null,
     modifier: Modifier = Modifier,
     @Suppress("UNUSED_PARAMETER") width: Dp,
     @Suppress("UNUSED_PARAMETER") height: Dp,
@@ -119,9 +121,12 @@ internal fun CalloutOverlay(
         )
     }
 
+    val scrollForwarder = scrollState?.let { overlayScrollForwarder(it) } ?: Modifier
+
     Column(
         modifier = modifier
             .fillMaxWidth()
+            .then(scrollForwarder)
             .background(decoStyle.containerColor, RoundedCornerShape(8.dp))
             .drawBehind {
                 drawRect(

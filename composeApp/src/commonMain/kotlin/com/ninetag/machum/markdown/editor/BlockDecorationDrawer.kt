@@ -25,9 +25,12 @@ internal fun DrawScope.drawBlockDecorations(
     for (block in blocks) {
         val isActive = block.textRange in activeBlockRanges
         // 오버레이가 있는 블록 타입: 활성일 때만 DrawBehind (비활성은 오버레이가 담당)
-        // 오버레이가 없는 블록 타입: 항상 DrawBehind
+        // 오버레이가 없는 블록 타입: 비활성일 때만 DrawBehind
         val hasOverlay = block.type == BlockType.CALLOUT || block.type == BlockType.TABLE
         if (hasOverlay && !isActive) continue
+
+        // 활성(raw 표시) 상태의 Callout/Embed → 배경 없이 raw 텍스트만 표시
+        if (isActive && (block.type == BlockType.CALLOUT || block.type == BlockType.EMBED)) continue
 
         val rect = getBoundingRect(layout, block.textRange, scrollOffset) ?: continue
 

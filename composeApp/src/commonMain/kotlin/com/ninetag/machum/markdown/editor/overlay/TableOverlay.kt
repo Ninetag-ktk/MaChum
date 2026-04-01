@@ -1,7 +1,9 @@
 package com.ninetag.machum.markdown.editor.overlay
 
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -9,10 +11,8 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -44,9 +44,11 @@ internal fun TableOverlay(
     data: OverlayBlockData.TableData,
     textFieldState: TextFieldState,
     styleConfig: MarkdownStyleConfig,
+    textStyle: TextStyle = TextStyle.Default,
+    scrollState: ScrollState? = null,
     modifier: Modifier = Modifier,
-    width: Dp,
-    height: Dp,
+    @Suppress("UNUSED_PARAMETER") width: Dp,
+    @Suppress("UNUSED_PARAMETER") height: Dp,
 ) {
     val columnCount = maxOf(
         data.headers.size,
@@ -75,9 +77,12 @@ internal fun TableOverlay(
         }
     }
 
-    LazyColumn(
+    val scrollForwarder = scrollState?.let { overlayScrollForwarder(it) } ?: Modifier
+
+    Column(
         modifier = modifier
-            .size(width, height)
+            .fillMaxWidth()
+            .then(scrollForwarder)
             .border(1.dp, Color(0x33000000))
             .pointerInput(data.blockRange.textRange) {
                 detectTapGestures(
@@ -88,9 +93,8 @@ internal fun TableOverlay(
                     },
                 )
             },
-        userScrollEnabled = false,
     ) {
-        itemsIndexed(cellStates) { rowIdx, row ->
+        for ((rowIdx, row) in cellStates.withIndex()) {
             val isHeader = rowIdx == 0
             Row(
                 modifier = Modifier
@@ -101,6 +105,7 @@ internal fun TableOverlay(
                     TableCell(
                         state = row.getOrNull(colIdx),
                         isHeader = isHeader,
+                        textStyle = textStyle,
                     )
                 }
             }
@@ -112,17 +117,18 @@ internal fun TableOverlay(
 private fun RowScope.TableCell(
     state: TextFieldState?,
     isHeader: Boolean,
+    textStyle: TextStyle,
 ) {
     if (state != null) {
         BasicTextField(
             state = state,
-            textStyle = if (isHeader) TextStyle(fontWeight = FontWeight.Bold) else TextStyle.Default,
+            textStyle = if (isHeader) textStyle.merge(TextStyle(fontWeight = FontWeight.Bold)) else textStyle,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxHeight()
                 .border(0.5.dp, Color(0x22000000))
                 .padding(6.dp),
-            lineLimits = androidx.compose.foundation.text.input.TextFieldLineLimits.SingleLine,
+            lineLimits = TextFieldLineLimits.SingleLine,
         )
     }
 }

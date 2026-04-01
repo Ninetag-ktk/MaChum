@@ -90,12 +90,60 @@ internal class RawMarkdownOutputTransformation(
             applySpanOutsideRawZones(range, style, rawZones)
         }
 
-        // 오버레이 블록 전체에 blockTransparent 적용 (정상 폰트 크기, 색상만 투명)
-        for (blockRange in overlayBlockRanges) {
-            val start = blockRange.first.coerceIn(0, length)
-            val end = (blockRange.last + 1).coerceIn(start, length)
-            if (start < end) addStyle(config.blockTransparent, start, end)
+        // 비활성 TABLE 블록의 구분자 줄 범위 수집 (marker로 높이 축소)
+        val tableSeparatorRanges = mutableListOf<IntRange>()
+        for (block in cachedBlocks) {
+            if (block.type != BlockType.TABLE || block.textRange in activeRanges) continue
+            findTableSeparatorRange(text, block.textRange)?.let { tableSeparatorRanges += it }
         }
+
+        // 오버레이 블록에 투명 스타일 적용
+        for (blockRange in overlayBlockRanges) {
+            val blockStart = blockRange.first.coerceIn(0, length)
+            val blockEnd = (blockRange.last + 1).coerceIn(blockStart, length)
+            if (blockStart >= blockEnd) continue
+
+            // 테이블 구분자 줄은 marker(0.01sp)로, 나머지는 blockTransparent(정상 높이)
+            val sepRange = tableSeparatorRanges.firstOrNull {
+                it.first >= blockRange.first && it.last <= blockRange.last
+            }
+            if (sepRange != null) {
+                val sepStart = sepRange.first.coerceIn(0, length)
+                val sepEnd = (sepRange.last + 1).coerceIn(sepStart, length)
+                // 구분자 줄 전
+                if (blockStart < sepStart) addStyle(config.blockTransparent, blockStart, sepStart)
+                // 구분자 줄 (높이 축소)
+                if (sepStart < sepEnd) addStyle(config.marker, sepStart, sepEnd)
+                // 구분자 줄 후
+                if (sepEnd < blockEnd) addStyle(config.blockTransparent, sepEnd, blockEnd)
+            } else {
+                addStyle(config.blockTransparent, blockStart, blockEnd)
+            }
+        }
+
+    }
+
+    /**
+     * 테이블 블록에서 구분자 줄(`| --- | --- |`)의 범위를 찾는다.
+     * 구분자 줄은 헤더 줄(1번째) 바로 다음인 2번째 줄이다.
+     */
+    private fun findTableSeparatorRange(text: String, blockRange: IntRange): IntRange? {
+        val blockStart = blockRange.first
+        val blockEnd = blockRange.last
+        // 첫 번째 \n 찾기 (헤더 줄 끝)
+        val firstNewline = text.indexOf('\n', blockStart)
+        if (firstNewline == -1 || firstNewline > blockEnd) return null
+        val sepStart = firstNewline + 1
+        // 두 번째 \n 찾기 (구분자 줄 끝)
+        val secondNewline = text.indexOf('\n', sepStart)
+        val sepEnd = if (secondNewline == -1 || secondNewline > blockEnd) blockEnd else secondNewline
+        if (sepStart > sepEnd) return null
+        // 구분자 줄 내용 검증 (| 와 - 로 구성)
+        val sepLine = text.substring(sepStart, sepEnd)
+        if (sepLine.contains('-') && sepLine.contains('|')) {
+            return sepStart..sepEnd
+        }
+        return null
     }
 
     /**

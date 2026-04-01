@@ -1,5 +1,6 @@
 package com.ninetag.machum.markdown.editor.overlay
 
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Composable
@@ -22,6 +23,7 @@ internal fun BlockOverlay(
     textFieldState: TextFieldState,
     styleConfig: MarkdownStyleConfig,
     textStyle: TextStyle = TextStyle.Default,
+    scrollState: ScrollState? = null,
     modifier: Modifier = Modifier,
 ) {
     val density = LocalDensity.current
@@ -39,6 +41,7 @@ internal fun BlockOverlay(
             textFieldState = textFieldState,
             styleConfig = styleConfig,
             textStyle = textStyle,
+            scrollState = scrollState,
             modifier = positioned,
             width = widthDp,
             height = heightDp,
@@ -48,6 +51,8 @@ internal fun BlockOverlay(
             data = data,
             textFieldState = textFieldState,
             styleConfig = styleConfig,
+            textStyle = textStyle,
+            scrollState = scrollState,
             modifier = positioned,
             width = widthDp,
             height = heightDp,
