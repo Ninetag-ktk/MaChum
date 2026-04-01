@@ -70,12 +70,15 @@ id: a1b2c3d4
 ### Workflow System (`external/WorkflowParser.kt`)
 Workflows are markdown files parsed into a `HeaderNode` tree (levels 1–4 via `#`–`####`). Leaf nodes become `WorkflowStep`s with dot-notation numbering (e.g., `"1-2-3"`). Blockquotes (`>`) become step descriptions. The tree serializes back to markdown via `toMarkdown()`.
 
-### Custom Markdown Parser (`markdown/`)
-Two-phase pipeline:
-1. **`BlockSplitter`** — splits raw text into `RawBlock`s by type (heading, code fence, blockquote, list, table, embed, text). Recognizes Obsidian-style `^blockid` anchors.
-2. **`InlineParser`** — recursive descent over a block's text producing `InlineToken`s: bold/italic/strikethrough/highlight, wiki links (`[[target|alias]]`), embed links (`![[file]]`), external links, inline code.
+### Markdown Editor Engine (`markdown/`)
+The `markdown/editor/` package implements a live-preview markdown editor using raw text + symbol transparency (OutputTransformation). Key components:
+- **`MarkdownPatternScanner`** — scans entire document for block/inline patterns, produces `ScanResult` (spans + block ranges). Also contains `BlockType`, `BlockRange`, `ScanResult` data classes.
+- **`InlineStyleScanner`** — computes per-block `SpanStyle` ranges (MARKER transparent + content styled).
+- **`RawMarkdownOutputTransformation`** — `OutputTransformation` impl; active line shows raw, inactive lines show styled preview.
+- **`OverlayBlockParser`** — parses raw text into `OverlayBlockData` (Callout/Table/CodeBlock) for overlay composables. Contains `OverlayBlockData` sealed class.
+- **`overlay/`** — Composable overlays (Callout, Table, CodeBlock) with internal TextFields for direct editing + raw markdown sync.
 
-Sealed types: `MarkdownBlock` and `InlineToken` in `markdown/token/`.
+Sealed types: `MarkdownBlock` and `InlineToken` in `markdown/token/` (used by `InlineStyleScanner` and `MarkdownPatternScanner`).
 
 ### Editor (`screen/mainComposition/`)
 - **`MainViewModel`**: manages file list, active page index, and a note cache (`Map<String, NoteFile>`). Debounces saves 500ms via a `_saveRequest` StateFlow.

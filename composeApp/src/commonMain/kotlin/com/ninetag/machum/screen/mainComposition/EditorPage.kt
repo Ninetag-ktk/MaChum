@@ -10,7 +10,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.ninetag.machum.markdown.editor.MarkdownTextField
+import com.ninetag.machum.markdown.ui.MarkdownTextField
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.name
 import kotlinx.coroutines.FlowPreview

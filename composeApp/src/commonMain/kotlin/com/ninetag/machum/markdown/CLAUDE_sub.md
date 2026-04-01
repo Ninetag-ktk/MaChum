@@ -4,25 +4,19 @@ CLAUDE.md의 설계를 기반으로 실제 구현 시 참고할 상세 내용을
 
 ---
 
-## 레퍼런스 vs MaChum 컴포넌트 대응표
+## 핵심 컴포넌트
 
-> `reference_hyphen/`은 설계 참고용으로 복사한 외부 라이브러리이다.
-> MaChum은 이를 직접 사용하지 않고, 프로젝트에 최적화하여 별도 구현한다.
-
-| reference_hyphen | MaChum (Phase 2) | 비고 |
+| 컴포넌트 | 파일 | 비고 |
 |---|---|---|
-| `MarkupStyle` | — (삭제) | Phase 2는 SpanStyle 직접 사용 |
-| `MarkupStyleRange` | — (삭제) | Phase 2는 spans 목록 없음 |
-| `HyphenTextState` | `MarkdownEditorState` | raw text 홀더로 단순화됨 |
-| `MarkdownProcessor` | `MarkdownPatternScanner` | 기호 제거 대신 범위만 반환 |
-| `MarkdownSerializer` | — (삭제) | raw text 직접 저장으로 불필요 |
-| `applyMarkdownStyles()` | `RawMarkdownOutputTransformation` | 커서 줄 기반 조건부 적용 |
-| `HyphenBasicTextEditor` | `MarkdownBasicTextField` | value/onValueChange 시그니처 유지 |
-| (HyphenTextEditor) | `MarkdownTextField` | Material3 래퍼 |
-| `SpanManager` | `RawStyleToggle` | 서식 토글 유틸리티 (Phase 4) |
-| `HistoryManager` | (미구현) | undo/redo |
-| `BlockStyleManager` | `EditorInputTransformation` (Smart Enter) + `RawStyleToggle` (블록 토글) | Phase 4 구현 완료 |
-| `handleHardwareKeyEvent()` | `EditorKeyboardShortcuts` | 키보드 단축키 (Phase 4) |
+| raw text 홀더 | `MarkdownEditorState` | TextFieldState 래퍼 |
+| 문서 스캔 | `MarkdownPatternScanner` | 기호 범위만 반환 (BlockType, BlockRange, ScanResult 포함) |
+| 출력 변환 | `RawMarkdownOutputTransformation` | 커서 줄 기반 조건부 적용 |
+| BasicTextField 래퍼 | `MarkdownBasicTextField` | value/onValueChange 시그니처 |
+| Material3 래퍼 | `MarkdownTextField` | Material3 테마 |
+| 서식 토글 | `RawStyleToggle` | Phase 4 구현 완료 |
+| Undo/Redo | (미구현) | raw text 기반 재설계 필요 |
+| Smart Enter + 블록 토글 | `EditorInputTransformation` + `RawStyleToggle` | Phase 4 구현 완료 |
+| 키보드 단축키 | `EditorKeyboardShortcuts` | Phase 4 구현 완료 |
 
 ---
 
@@ -301,13 +295,9 @@ Ctrl/Cmd+B/I/E, Ctrl/Cmd+Shift+S/X/H → `RawStyleToggle` 호출.
 
 ## 미구현 기능 — 향후 참고
 
-> `reference_hyphen/`에 해당 기능의 레퍼런스 구현이 있다.
-> 직접 사용하지 않고, 참고하여 MaChum에 최적화된 버전으로 새로 작성한다.
-
 ### Undo / Redo
 
 Phase 2에서는 raw text 기반이므로 텍스트 + 커서 스냅샷만 저장하면 된다.
-레퍼런스의 `HistoryManager.kt` 참고.
 
 ### 툴바 UI
 
@@ -317,4 +307,3 @@ Phase 2에서는 raw text 기반이므로 텍스트 + 커서 스냅샷만 저장
 ### 클립보드 직렬화
 
 raw text 기반이므로 선택 범위의 텍스트를 그대로 복사하면 마크다운이 유지된다.
-커스텀 처리가 필요하면 레퍼런스의 `rememberMarkdownClipboard()` 참고.
