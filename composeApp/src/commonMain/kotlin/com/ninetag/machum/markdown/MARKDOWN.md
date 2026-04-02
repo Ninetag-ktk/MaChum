@@ -43,32 +43,80 @@
 
 | 기능 | 비고 |
 |---|---|
-| **재귀적 오버레이 구조** | Callout body에 MarkdownBasicTextField 사용하여 중첩 오버레이 지원. `overlayDepth` 파라미터로 무한 재귀 방지. **구현 진행 중** |
+| **재귀적 오버레이 구조** | Callout body에 `MarkdownBasicTextFieldCore` 사용하여 중첩 오버레이 지원. **구현 완료 — 테스트 중** (아래 상세 참고) |
 | Undo/Redo | raw text 기반 재설계 필요 |
 | 툴바 UI | `RawStyleToggle` 로직 완료, UI만 추가 필요 |
 | Embed 오버레이 | 콘텐츠 크기 예측 불가 → LazyColumn 별도 블록 방식 필요 |
 | 클립보드 직렬화 | raw text 복사로 대체 가능 |
 
-### 재귀적 오버레이 설계 (진행 중)
+### 재귀적 오버레이 구조 (구현 완료 — 테스트 중)
 
-Callout/CodeBlock 등 오버레이 내부에서 또 다른 오버레이를 생성하는 구조.
+Callout body에서 중첩 Callout/CodeBlock/Table을 별도 오버레이 Composable로 렌더링하는 구조.
+**Callout에만 적용** — Table, CodeBlock 내부에서는 재귀하지 않음.
 
 ```
-MarkdownBasicTextField(depth=0)
+MarkdownBasicTextField → MarkdownBasicTextFieldCore(depth=0)
   └─ CalloutOverlay
-       └─ MarkdownBasicTextField(depth=1)  ← body를 마크다운으로 렌더링
-            └─ CodeBlockOverlay            ← 중첩 코드블록 오버레이
-            └─ CalloutOverlay              ← 중첩 Callout 오버레이
-                 └─ MarkdownBasicTextField(depth=2)
-                      └─ (depth >= maxDepth → 오버레이 생성 중단)
+       └─ MarkdownBasicTextFieldCore(depth=1)  ← body를 마크다운으로 렌더링
+            └─ CodeBlockOverlay               ← 중첩 코드블록 오버레이
+            └─ CalloutOverlay                 ← 중첩 Callout 오버레이
+                 └─ MarkdownBasicTextFieldCore(depth=2)
+                      └─ (depth >= MAX_OVERLAY_DEPTH(3) → 오버레이 생성 중단, 인라인 서식만)
 ```
 
-**핵심 변경점:**
-- `MarkdownBasicTextField`에 `overlayDepth` 파라미터 추가
-- `overlayDepth >= maxOverlayDepth` 이면 오버레이 생성 스킵 (BasicTextField만 렌더링)
-- `BlockOverlay` → `CalloutOverlay`: body에 MarkdownBasicTextField 사용 (depth+1)
-- Callout body 동기화: body 텍스트 변경 → `> ` prefix 재추가 → raw 동기화
-- 순환 의존: MarkdownBasicTextField → BlockOverlay → CalloutOverlay → MarkdownBasicTextField (depth로 종료 보장)
+**구현 상태:**
+- `MarkdownBasicTextField` → `MarkdownBasicTextFieldCore` internal composable 분리 완료
+- `MarkdownBasicTextFieldCore`: `overlayDepth` 파라미터, depth≥3 오버레이 스킵
+- 부모 overlay 루프에 `key(block.blockRange.textRange.first)` 적용 → 블록 identity 관리
+- `BlockOverlay` → `CalloutOverlay`에 `overlayDepth` 전달
+- `CalloutOverlay`: body에 `MarkdownBasicTextFieldCore(depth+1)` 사용, `MarkdownEditorState`로 body 관리
+- `RawMarkdownOutputTransformation`: `isFocused` 프로퍼티 추가 (기본값 `false`, 포커스 없으면 raw zone 없음)
+- `BlockDecorationDrawer`: `isNested` 파라미터 추가 (중첩 시 Blockquote/HorizontalRule만 DrawBehind)
+- depth=0 `fillMaxSize()`, depth>0 `fillMaxWidth()` (무한 확장 방지)
+- 포커스 이탈 시 즉시 raw 동기화 (`LaunchedEffect(isCalloutFocused)`)
+- 백스페이스: body 맨 앞(position 0)에서 Backspace → 부모 커서를 callout 시작으로 이동 (raw 전환)
+
+**CalloutOverlay state 관리 전략 (Phase 5 핵심 설계):**
+
+기존 문제: `remember(data.blockRange.textRange)`로 titleState/bodyEditorState를 키잉하면,
+overlay→raw sync가 부모 raw text를 변경 → textRange 변경 → state 재생성 → 사용자 입력 소실.
+특히 body에서 `>[!note] 제목` + Enter 시 Smart Enter 적용 후 sync가 textRange를 변경하여
+새 state가 생성되면서 Enter로 추가된 줄이 사라지는 문제 발생.
+
+해결:
+1. `remember` 키 없이 state 생성 → sync로 인한 textRange 변경 시 state 재생성 방지
+2. 부모 overlay 루프에서 `key(textRange.first)` → 블록 position identity 관리
+   - textRange.first: 블록 앞의 텍스트가 변경될 때만 변경됨 (본인 sync로는 변경 안 됨)
+   - textRange.last: 본인 내용 sync마다 변경됨 → key에 포함하면 매번 재생성
+3. `rememberUpdatedState(data)` → sync LaunchedEffect 내에서 항상 최신 data.blockRange 참조
+4. LaunchedEffect 키: `Unit` (한 번만 시작, 재시작 없음)
+5. raw→overlay sync: `LaunchedEffect(data.bodyLines, isCalloutFocused)` — 포커스 없을 때만 적용
+
+**스크롤 포워딩 전략:**
+- `overlayScrollForwarder`는 callout이 비활성(보기 모드)일 때만 적용
+- 편집 중(`isCalloutFocused=true`)에는 비활성화 → body 높이 변경 시 부모 스크롤 점프 방지
+- 원인: body에서 Enter → 높이 증가 → Column 리사이즈 → scrollable modifier가 부모에 delta 전달
+
+**알려진 이슈 / 주의사항:**
+- 오버레이 초기화 1프레임 지연: `textLayoutResult` 확보 전 blockTransparent 적용 → 잠깐 투명 텍스트(오버레이 없음). 최상위 에디터도 동일 현상이며 보통 눈에 띄지 않음
+- `isFocused` 기본값 `false` 필수: body 생성 시 커서가 텍스트 끝에 위치하므로, `isFocused=true`이면 마지막 줄이 raw로 보임
+- `overlaysAvailable` SideEffect 방식은 사용 불가: OutputTransformation 재실행을 트리거하지 못함. 필요시 생성자에서 고정 설정
+- 포커스 전환 순서: 중첩 Callout에서 메인 에디터로 포커스 이동 시, depth-2 → depth-1 순으로 sync 필요. 현재 `LaunchedEffect` 실행 순서에 의존
+- `forceAllOverlaysInactive` 프로퍼티: 선언은 남아있으나 미사용. `isFocused` 기반 제어로 대체됨. 정리 가능
+
+### 해결된 이슈 기록
+
+| 이슈 | 원인 | 해결 |
+|---|---|---|
+| body에서 `>[!note]` + Enter → 텍스트 소실 | `remember(textRange)` 키로 sync 후 state 재생성 | remember 키 제거 + `key(textRange.first)` + `rememberUpdatedState` |
+| body에서 Enter → 부모 스크롤 점프 | `overlayScrollForwarder`가 편집 중에도 활성화 | 포커스 시 scroll forwarder 비활성화 |
+| body 맨 앞 Backspace → callout 해제 | 미구현이었음 | `onPreviewKeyEvent`로 Backspace 감지 → 부모 커서 이동 |
+| depth≥MAX에서 텍스트 투명 | `applyBlockTransparent=true`인데 overlay 미생성 | `applyBlockTransparent = overlayDepth < MAX_OVERLAY_DEPTH` |
+| depth>0에서 무한 확장 | `fillMaxSize()` in Column | depth>0은 `fillMaxWidth()` |
+| `isFocused=true` 기본값 → 마지막 줄 raw | body 생성 시 커서 위치가 텍스트 끝 | `isFocused` 기본값 `false` |
+| Smart Enter 단일 `>` depth만 지원 | `BLOCKQUOTE_REGEX = "> "` | `(?:> ?)+` 로 다중 depth 지원 |
+| `> > >` 공백 prefix | `syncCalloutToRaw`에서 `"> $line"` | `if (line.startsWith(">")) ">$line" else "> $line"` |
+| 1프레임 타이밍 갭 | OutputTransformation(layout) vs overlay(composition) | 아키텍처 한계 — 문서화만 |
 
 ### 리스트 인디케이터 커스터마이징 가이드
 
@@ -182,7 +230,7 @@ markdown/
 | 파일 | 역할 |
 |---|---|
 | `BlockOverlay.kt` | 블록 타입별 오버레이 라우팅. `OverlayBlockData` 타입에 따라 CalloutOverlay/TableOverlay 분기. 뷰포트 좌표로 절대 위치 배치(`Modifier.offset`) |
-| `CalloutOverlay.kt` | Callout 블록 오버레이. 배경 + 왼쪽 테두리 + 제목/내용 각각 BasicTextField. 양방향 raw 동기화(300ms 디바운스). 내용에 `InlineOnlyOutputTransformation` 적용 |
+| `CalloutOverlay.kt` | Callout 블록 오버레이. 배경 + 왼쪽 테두리 + 제목 BasicTextField + body `MarkdownBasicTextFieldCore`(재귀). 양방향 raw 동기화(300ms 디바운스, `rememberUpdatedState` 사용). body 맨 앞 Backspace → raw 전환. 편집 중 scroll forwarder 비활성화 |
 | `TableOverlay.kt` | Table 블록 오버레이. Column + Row 그리드 + 셀별 BasicTextField. raw 동기화 시 구분자 줄(`|---|`) 자동 재생성 |
 | `CodeBlockOverlay.kt` | CodeBlock 블록 오버레이. 모노스페이스 배경 + 코드 BasicTextField. 펜스(` ``` `) 포함 전체 블록 재구성 |
 | `InlineOnlyOutputTransformation.kt` | 오버레이 내부 TextField용 `OutputTransformation`. 인라인 서식만 적용(블록 투명 없음). 포커스 기반 활성 줄 감지 + 스캔 캐시 |

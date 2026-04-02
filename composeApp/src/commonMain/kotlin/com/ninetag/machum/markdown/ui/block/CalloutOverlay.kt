@@ -1,8 +1,10 @@
 package com.ninetag.machum.markdown.ui.block
 
-import com.ninetag.machum.markdown.service.*
-import com.ninetag.machum.markdown.state.*
+import com.ninetag.machum.markdown.service.MarkdownStyleConfig
 import com.ninetag.machum.markdown.service.util.overlayScrollForwarder
+import com.ninetag.machum.markdown.state.MarkdownEditorState
+import com.ninetag.machum.markdown.state.OverlayBlockData
+import com.ninetag.machum.markdown.ui.MarkdownBasicTextFieldCore
 
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
@@ -19,37 +21,47 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.ninetag.machum.markdown.service.MarkdownStyleConfig
-import com.ninetag.machum.markdown.state.OverlayBlockData
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * Callout 블록 오버레이.
  *
- * 기존 CalloutRenderer 형태: 배경색 + 왼쪽 테두리 + 제목(위) / 내용(아래).
- * 제목과 내용에 각각 BasicTextField를 배치하여 직접 편집 가능.
- * 내용 TextField에는 인라인 서식(bold, italic 등) Live Preview 적용.
+ * 제목: BasicTextField (단일 줄).
+ * 내용: [MarkdownBasicTextFieldCore] (재귀적 마크다운 렌더링 — 중첩 오버레이 지원).
  *
- * 포커스 전략 (콜아웃 컨테이너 레벨):
- * - `hasFocus` true (자식 중 하나라도 포커스): 편집 모드, 오버레이 → raw 동기화
- * - `hasFocus` false: 표시 모드, raw → 오버레이 동기화, 모든 서식 적용
+ * 키보드 내비게이션:
+ * - Title ↓ → Body 시작으로 포커스 이동
+ * - Body ↑ (첫 줄) → Title 끝으로 포커스 이동
+ * - Body Backspace (position 0) → 부모 에디터로 포커스 이동 (raw 표시)
+ *
+ * State 관리:
+ * - titleState/bodyEditorState는 키 없이 remember → sync가 textRange를 변경해도 재생성 없음
+ * - 부모 overlay 루프에서 key(textRange.first)로 블록 identity 관리
+ * - rememberUpdatedState(data)로 sync 시 항상 최신 오프셋 사용
  */
 @OptIn(FlowPreview::class)
 @Composable
@@ -59,72 +71,146 @@ internal fun CalloutOverlay(
     styleConfig: MarkdownStyleConfig,
     textStyle: TextStyle = TextStyle.Default,
     scrollState: ScrollState? = null,
+    overlayDepth: Int = 0,
+    onRequestActivation: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val decoStyle = styleConfig.calloutDecorationStyle(data.calloutType)
     val borderWidth = 3.dp
 
-    val titleState = remember(data.blockRange.textRange) { TextFieldState(data.title) }
-    val bodyState = remember(data.blockRange.textRange) { TextFieldState(data.bodyLines.joinToString("\n")) }
-    // 콜아웃 전체 포커스 추적 (hasFocus = 자식 중 포커스된 것이 있으면 true)
-    var isCalloutFocused by remember { mutableStateOf(false) }
-    // body 개별 포커스 (인라인 서식 커서 줄 판별용)
-    var isBodyFocused by remember { mutableStateOf(false) }
-
-    // isBodyFocused 변경 시 새 인스턴스 생성 → BasicTextField 재렌더링 트리거
-    val bodyOutputTransformation = remember(styleConfig, isBodyFocused) {
-        InlineOnlyOutputTransformation(styleConfig).apply { isFocused = isBodyFocused }
+    // 키 없이 remember → sync로 인한 textRange 변경 시 state 재생성 방지
+    val titleState = remember { TextFieldState(data.title) }
+    val bodyEditorState = remember {
+        MarkdownEditorState(data.bodyLines.joinToString("\n"))
     }
+    var isCalloutFocused by remember { mutableStateOf(false) }
+    // 블록 활성화 요청 후 sync 차단 (포커스 이탈 sync가 callout을 다시 쓰는 것 방지)
+    var activating by remember { mutableStateOf(false) }
 
-    // raw → 오버레이 동기화 (콜아웃에 포커스가 없을 때만)
+    // 항상 최신 data를 참조하는 State — sync에서 stale offset 방지
+    val currentData by rememberUpdatedState(data)
+
+    // Title ↔ Body 포커스 전환용 FocusRequester
+    val titleFocusRequester = remember { FocusRequester() }
+    val bodyFocusRequester = remember { FocusRequester() }
+
+    // ── raw → 오버레이 동기화 (포커스 없을 때만) ──
+
     LaunchedEffect(data.title, isCalloutFocused) {
-        if (!isCalloutFocused && titleState.text.toString() != data.title) {
+        if (!activating && !isCalloutFocused && titleState.text.toString() != data.title) {
             titleState.edit { replace(0, length, data.title) }
         }
     }
     LaunchedEffect(data.bodyLines, isCalloutFocused) {
         val newBody = data.bodyLines.joinToString("\n")
-        if (!isCalloutFocused && bodyState.text.toString() != newBody) {
-            bodyState.edit { replace(0, length, newBody) }
+        if (!activating && !isCalloutFocused && bodyEditorState.textFieldState.text.toString() != newBody) {
+            bodyEditorState.textFieldState.edit { replace(0, length, newBody) }
         }
     }
 
-    // 오버레이 → raw 동기화 (debounce 300ms, 콜아웃 포커스 중에만)
-    LaunchedEffect(titleState) {
+    // 포커스 이탈 시 즉시 동기화
+    LaunchedEffect(isCalloutFocused) {
+        if (!activating && !isCalloutFocused) {
+            syncCalloutToRaw(
+                textFieldState, currentData,
+                titleState.text.toString(),
+                bodyEditorState.textFieldState.text.toString(),
+            )
+        }
+    }
+
+    // ── 오버레이 → raw 동기화 (debounce 300ms) ──
+
+    LaunchedEffect(Unit) {
         snapshotFlow { titleState.text.toString() }
             .distinctUntilChanged()
             .drop(1)
-            .debounce(300)
+            .debounce(300.milliseconds)
             .collectLatest { newTitle ->
-                if (isCalloutFocused) {
-                    syncCalloutToRaw(textFieldState, data, newTitle, bodyState.text.toString())
+                if (!activating && isCalloutFocused) {
+                    syncCalloutToRaw(
+                        textFieldState, currentData, newTitle,
+                        bodyEditorState.textFieldState.text.toString(),
+                    )
                 }
             }
     }
-    LaunchedEffect(bodyState) {
-        snapshotFlow { bodyState.text.toString() }
+    LaunchedEffect(Unit) {
+        snapshotFlow { bodyEditorState.textFieldState.text.toString() }
             .distinctUntilChanged()
             .drop(1)
-            .debounce(300)
+            .debounce(300.milliseconds)
             .collectLatest { newBody ->
-                if (isCalloutFocused) {
-                    syncCalloutToRaw(textFieldState, data, titleState.text.toString(), newBody)
+                if (!activating && isCalloutFocused) {
+                    syncCalloutToRaw(
+                        textFieldState, currentData, titleState.text.toString(), newBody,
+                    )
                 }
             }
     }
 
-    // LongPress → raw 전환
-    val longPressModifier = Modifier.pointerInput(data.blockRange.textRange) {
+    // ── 키보드 이벤트 핸들러 ──
+
+    // 롱프레스: 부모 에디터로 커서 이동 (raw 편집 모드)
+    val longPressModifier = Modifier.pointerInput(Unit) {
         detectTapGestures(
             onLongPress = {
-                textFieldState.edit {
-                    selection = TextRange(data.blockRange.textRange.first)
-                }
+                activating = true
+                onRequestActivation()
             },
         )
     }
 
-    val scrollForwarder = scrollState?.let { overlayScrollForwarder(it) } ?: Modifier
+    // Title 키 이벤트: ↓ → Body 시작으로 이동
+    val titleKeyModifier = Modifier.onPreviewKeyEvent { event ->
+        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+        when (event.key) {
+            Key.DirectionDown -> {
+                bodyFocusRequester.requestFocus()
+                bodyEditorState.textFieldState.edit { selection = TextRange(0) }
+                true
+            }
+            else -> false
+        }
+    }
+
+    // Body 키 이벤트: Backspace(position 0) → raw 전환, ↑(첫 줄) → Title로 이동
+    val bodyKeyModifier = Modifier.onPreviewKeyEvent { event ->
+        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+        val sel = bodyEditorState.textFieldState.selection
+
+        when (event.key) {
+            Key.Backspace -> {
+                if (sel.collapsed && sel.start == 0) {
+                    // 부모 에디터로 포커스 이동 → 블록 활성화 (raw 표시)
+                    activating = true
+                    onRequestActivation()
+                    true
+                } else false
+            }
+            Key.DirectionUp -> {
+                if (sel.collapsed) {
+                    val text = bodyEditorState.textFieldState.text.toString()
+                    val isFirstLine = text.lastIndexOf('\n', (sel.start - 1).coerceAtLeast(0)) == -1
+                    if (isFirstLine) {
+                        titleFocusRequester.requestFocus()
+                        titleState.edit { selection = TextRange(length) }
+                        true
+                    } else false
+                } else false
+            }
+            else -> false
+        }
+    }
+
+    // ── UI ──
+
+    // 포커스 중에는 스크롤 포워딩 비활성화 — body 높이 변경 시 부모 스크롤 점프 방지
+    val scrollForwarder = if (!isCalloutFocused) {
+        scrollState?.let { overlayScrollForwarder(it) } ?: Modifier
+    } else {
+        Modifier
+    }
 
     Column(
         modifier = modifier
@@ -137,83 +223,31 @@ internal fun CalloutOverlay(
                     size = Size(borderWidth.toPx(), size.height),
                 )
             }
-            // 콜아웃 전체 포커스 감지 (hasFocus: 자식 중 하나라도 포커스)
             .onFocusChanged { isCalloutFocused = it.hasFocus }
             .padding(start = borderWidth + 4.dp, end = 4.dp)
     ) {
-        // 제목 TextField — 메인 TextField와 동일 textStyle + bold
         BasicTextField(
             state = titleState,
             textStyle = textStyle.merge(TextStyle(fontWeight = FontWeight.Bold)),
             modifier = Modifier
                 .fillMaxWidth()
+                .focusRequester(titleFocusRequester)
+                .then(titleKeyModifier)
                 .then(longPressModifier),
             lineLimits = TextFieldLineLimits.SingleLine,
         )
-        // 내용 TextField — 인라인 서식 + 중첩 blockquote/callout depth 테두리
-        var bodyLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
 
-        BasicTextField(
-            state = bodyState,
-            textStyle = textStyle,
-            outputTransformation = bodyOutputTransformation,
-            onTextLayout = { bodyLayoutResult = it() },
+        MarkdownBasicTextFieldCore(
+            state = bodyEditorState,
             modifier = Modifier
                 .fillMaxWidth()
-                .drawBehind {
-                    val layout = bodyLayoutResult ?: return@drawBehind
-                    val bodyText = bodyState.text.toString()
-                    drawNestedQuoteBorders(layout, bodyText, styleConfig)
-                }
-                .onFocusChanged { isBodyFocused = it.isFocused }
+                .focusRequester(bodyFocusRequester)
+                .then(bodyKeyModifier)
                 .then(longPressModifier),
+            textStyle = textStyle,
+            styleConfig = styleConfig,
+            overlayDepth = overlayDepth + 1,
         )
-    }
-}
-
-/**
- * body TextField 내에서 줄별 `>` depth를 감지하여 중첩 테두리를 그린다.
- */
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawNestedQuoteBorders(
-    layout: TextLayoutResult,
-    text: String,
-    config: MarkdownStyleConfig,
-) {
-    if (text.isEmpty()) return
-    val borderWidth = 3.dp.toPx()
-    val borderSpacing = 8.dp.toPx()
-    val lines = text.split('\n')
-    var charOffset = 0
-
-    for (line in lines) {
-        // depth 계산
-        var depth = 0
-        var pos = 0
-        while (pos < line.length && line[pos] == '>') {
-            depth++
-            pos++
-            if (pos < line.length && line[pos] == ' ') pos++
-        }
-
-        if (depth > 0 && charOffset < text.length) {
-            val safeOffset = charOffset.coerceIn(0, text.length - 1)
-            val layoutLine = layout.getLineForOffset(safeOffset)
-            val lineTop = layout.getLineTop(layoutLine)
-            val lineBottom = layout.getLineBottom(layoutLine)
-
-            if (lineBottom >= 0f && lineTop <= size.height) {
-                for (d in 0 until depth) {
-                    val x = d * borderSpacing
-                    drawRect(
-                        color = config.blockquoteAccent,
-                        topLeft = Offset(x, lineTop),
-                        size = Size(borderWidth, lineBottom - lineTop),
-                    )
-                }
-            }
-        }
-
-        charOffset += line.length + 1
     }
 }
 
@@ -224,7 +258,9 @@ private fun syncCalloutToRaw(
     body: String,
 ) {
     val header = "> [!${data.calloutType}] $title"
-    val bodyLines = body.lines().joinToString("\n") { "> $it" }
+    val bodyLines = body.lines().joinToString("\n") { line ->
+        if (line.startsWith(">")) ">$line" else "> $line"
+    }
     val newRaw = "$header\n$bodyLines"
     val start = data.blockRange.textRange.first
     val end = data.blockRange.textRange.last + 1

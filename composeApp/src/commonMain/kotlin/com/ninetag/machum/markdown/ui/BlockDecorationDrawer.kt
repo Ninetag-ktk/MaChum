@@ -25,16 +25,16 @@ internal fun DrawScope.drawBlockDecorations(
     activeBlockRanges: Set<IntRange>,
     config: MarkdownStyleConfig,
     scrollOffset: Float = 0f,
+    isNested: Boolean = false,
 ) {
     for (block in blocks) {
         val isActive = block.textRange in activeBlockRanges
-        // 오버레이가 있는 블록 타입: 활성일 때만 DrawBehind (비활성은 오버레이가 담당)
-        // 오버레이가 없는 블록 타입: 비활성일 때만 DrawBehind
         val hasOverlay = block.type == BlockType.CALLOUT || block.type == BlockType.TABLE || block.type == BlockType.CODE_BLOCK
         if (hasOverlay && !isActive) continue
-
-        // 활성(raw 표시) 상태의 Callout/Embed/CodeBlock → 배경 없이 raw 텍스트만 표시
         if (isActive && (block.type == BlockType.CALLOUT || block.type == BlockType.EMBED || block.type == BlockType.CODE_BLOCK)) continue
+
+        // 중첩 에디터에서는 Blockquote 테두리와 HorizontalRule만 그린다
+        if (isNested && block.type != BlockType.BLOCKQUOTE && block.type != BlockType.HORIZONTAL_RULE) continue
 
         val rect = getBoundingRect(layout, block.textRange, scrollOffset) ?: continue
 

@@ -149,11 +149,13 @@ class EditorInputTransformation : InputTransformation {
             return BlockPrefixResult(indent, prefix, "${num + 1}. ", content)
         }
 
-        // blockquote: >
+        // blockquote: > 또는 >> 또는 > > 등 (depth 유지, continuation은 항상 ">>" 형식)
         BLOCKQUOTE_REGEX.matchAt(rest, 0)?.let { match ->
             val prefix = match.value
             val content = rest.drop(prefix.length)
-            return BlockPrefixResult(indent, prefix, "> ", content)
+            val depth = prefix.count { it == '>' }
+            val continuation = ">".repeat(depth) + " "
+            return BlockPrefixResult(indent, prefix, continuation, content)
         }
 
         return null
@@ -205,6 +207,6 @@ class EditorInputTransformation : InputTransformation {
         private val CHECKBOX_REGEX = Regex("""- \[[xX ]] """)
         private val BULLET_REGEX = Regex("""[-*] """)
         private val ORDERED_REGEX = Regex("""(\d+)\. """)
-        private val BLOCKQUOTE_REGEX = Regex("""> """)
+        private val BLOCKQUOTE_REGEX = Regex("""(?:> ?)+""")
     }
 }

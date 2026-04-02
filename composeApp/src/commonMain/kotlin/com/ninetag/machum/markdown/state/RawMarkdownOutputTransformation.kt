@@ -34,6 +34,26 @@ internal class RawMarkdownOutputTransformation(
     var activeBlockRanges: Set<IntRange> = emptySet()
         private set
 
+    /**
+     * BasicTextField의 포커스 여부. false이면 커서 줄 예외(raw zone)를 적용하지 않는다.
+     * 오버레이 내부 에디터는 포커스 없이 시작하므로 기본값 false.
+     */
+    var isFocused: Boolean = false
+
+    /**
+     * true이면 오버레이 블록(Callout/Table/CodeBlock)을 항상 비활성으로 처리한다.
+     * 중첩 에디터(Callout body)에서 사용: 커서 위치와 무관하게 모든 오버레이 블록을
+     * blockTransparent + 오버레이 Composable로 렌더링.
+     */
+    var forceAllOverlaysInactive: Boolean = false
+
+    /**
+     * false이면 blockTransparent 및 높이축소를 적용하지 않는다.
+     * overlayDepth >= MAX_OVERLAY_DEPTH 에서 사용: 오버레이 미생성인데
+     * blockTransparent만 적용되어 텍스트가 사라지는 현상 방지.
+     */
+    var applyBlockTransparent: Boolean = true
+
     override fun TextFieldBuffer.transformOutput() {
         val text = toString()
         if (text.isEmpty()) return
@@ -55,28 +75,34 @@ internal class RawMarkdownOutputTransformation(
             if (it == -1) text.length else it
         }
 
-        // 활성 블록 판별: 커서/선택 범위와 교차하는 모든 블록
-        // blockEnd + 1: 블록 마지막 문자 바로 뒤에 커서가 있어도 활성 처리
+        // 활성 블록 판별
+        // 포커스 없음 → 모든 블록 비활성 (모든 오버레이 표시, 상위 컴포지션 상태와 동기화)
+        // 포커스 있음 → 커서/선택 범위와 교차하는 블록만 활성
         val activeRanges = mutableSetOf<IntRange>()
-        for (block in cachedBlocks) {
-            val blockStart = block.textRange.first
-            val blockEnd = block.textRange.last + 1
-            if (blockStart <= selMax && blockEnd >= selMin) {
-                activeRanges += block.textRange
+        if (isFocused) {
+            for (block in cachedBlocks) {
+                val blockStart = block.textRange.first
+                val blockEnd = block.textRange.last + 1
+                if (blockStart <= selMax && blockEnd >= selMin) {
+                    activeRanges += block.textRange
+                }
             }
         }
         activeBlockRanges = activeRanges
 
-        // raw zone 계산: 활성 블록이 없으면 커서 줄만
-        val rawZones = if (activeRanges.isNotEmpty()) {
+        // raw zone 계산: 포커스 없으면 모든 줄 서식 적용 (raw zone 없음)
+        val rawZones = if (!isFocused) {
+            emptyList()
+        } else if (activeRanges.isNotEmpty()) {
             activeRanges.toList()
         } else {
             listOf(cursorLineStart until cursorLineEnd)
         }
 
-        // 비활성 오버레이 블록 범위 수집 (이 범위의 인라인 스팬은 건너뜀)
+        // 비활성 오버레이 블록 범위 수집
+        // applyBlockTransparent=false(오버레이 미생성)이면 비워서 blockTransparent/높이축소 스킵
         val overlayBlockTypes = setOf(BlockType.CALLOUT, BlockType.TABLE, BlockType.CODE_BLOCK)
-        val overlayBlockRanges = cachedBlocks
+        val overlayBlockRanges = if (!applyBlockTransparent) emptyList() else cachedBlocks
             .filter { it.textRange !in activeRanges && it.type in overlayBlockTypes }
             .map { it.textRange }
 

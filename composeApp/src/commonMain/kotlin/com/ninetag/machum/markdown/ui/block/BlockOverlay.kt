@@ -26,6 +26,8 @@ internal fun BlockOverlay(
     styleConfig: MarkdownStyleConfig,
     textStyle: TextStyle = TextStyle.Default,
     scrollState: ScrollState? = null,
+    overlayDepth: Int = 0,
+    onRequestActivation: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val rect = data.viewportRect
@@ -40,6 +42,8 @@ internal fun BlockOverlay(
             styleConfig = styleConfig,
             textStyle = textStyle,
             scrollState = scrollState,
+            overlayDepth = overlayDepth,
+            onRequestActivation = onRequestActivation,
             modifier = positioned,
         )
         is OverlayBlockData.CodeBlockData -> CodeBlockOverlay(

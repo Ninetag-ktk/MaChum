@@ -223,20 +223,20 @@ markdown/
 └── editor/
     ├── MarkdownEditorState.kt         ✅ Phase 2 (raw text 홀더)
     ├── MarkdownPatternScanner.kt      ✅ Phase 2+3 (문서 전체 스캔 + BlockType, BlockRange, ScanResult 데이터 모델 포함)
-    ├── RawMarkdownOutputTransformation.kt  ✅ Phase 2+3 (블록 수준 커서 감지, blockTransparent)
+    ├── RawMarkdownOutputTransformation.kt  ✅ Phase 2+3+5 (블록 수준 커서 감지, blockTransparent, isFocused)
     ├── InlineStyleScanner.kt          ✅ Phase 2+3 (블록별 SpanStyle, calloutSpans, overlay 모드)
     ├── MarkdownStyleConfig.kt         ✅ Phase 2+3 (서식 설정 + CalloutDecorationStyle + blockTransparent)
-    ├── BlockDecorationDrawer.kt       ✅ Phase 3 (DrawScope — 활성 블록 데코레이션)
+    ├── BlockDecorationDrawer.kt       ✅ Phase 3+5 (DrawScope — 활성 블록 데코레이션, isNested)
     ├── OverlayBlockParser.kt          ✅ Phase 3 (raw text → OverlayBlockData 경량 파서 + OverlayBlockData sealed class 포함)
     ├── OverlayPositionCalculator.kt   ✅ Phase 3 (TextLayoutResult → 뷰포트 좌표)
     ├── overlay/
-    │   ├── BlockOverlay.kt            ✅ Phase 3 (오버레이 타입별 라우팅)
-    │   ├── CalloutOverlay.kt          ✅ Phase 3 (제목/내용 TextField + raw 동기화)
+    │   ├── BlockOverlay.kt            ✅ Phase 3+5 (오버레이 타입별 라우팅, overlayDepth 전달)
+    │   ├── CalloutOverlay.kt          ✅ Phase 3+5 (제목 TextField + body MarkdownBasicTextFieldCore 재귀)
     │   ├── TableOverlay.kt            ✅ Phase 3 (셀별 TextField + raw 동기화)
     │   ├── CodeBlockOverlay.kt        ✅ Phase 3 (코드 TextField + raw 동기화)
     │   ├── InlineOnlyOutputTransformation.kt  ✅ Phase 3 (오버레이 내 인라인 서식)
     │   └── OverlayScrollForwarder.kt  ✅ Phase 3 (스크롤 포워딩 유틸리티)
-    ├── MarkdownBasicTextField.kt      ✅ Phase 2+3 (BasicTextField + drawBehind + scrollState)
+    ├── MarkdownBasicTextField.kt      ✅ Phase 2+3+5 (MarkdownBasicTextFieldCore 분리, overlayDepth, onFocusChanged)
     ├── MarkdownTextField.kt           ✅ Phase 2+3 (Material3 래퍼)
     ├── EditorInputTransformation.kt   ✅ Phase 4 (Smart Enter + auto-close + Tab→space)
     ├── RawStyleToggle.kt              ✅ Phase 4 (서식 토글 유틸리티)
@@ -285,6 +285,31 @@ Embed는 콘텐츠 크기 예측 불가로 LazyColumn 별도 블록 방식이며
 - **스마트 Enter**: 리스트/인용구/체크박스 자동 continuation (`EditorInputTransformation`)
 - **서식 토글**: 인라인/헤딩/블록 prefix 토글 (`RawStyleToggle`)
 - **하드웨어 키보드 단축키**: Ctrl+B/I/E, Ctrl+Shift+S/X/H (`EditorKeyboardShortcuts`)
+
+### Phase 5: 재귀적 오버레이 (✅ 구현 완료 — 테스트 중)
+
+Callout body에서 중첩 Callout/CodeBlock/Table을 별도 오버레이 Composable로 렌더링.
+Callout에만 적용 — Table, CodeBlock 내부에서는 재귀하지 않음.
+
+**구현 항목:**
+- `MarkdownBasicTextField` → `MarkdownBasicTextFieldCore` internal composable 분리
+- `overlayDepth` 파라미터: 0(최상위) ~ MAX_OVERLAY_DEPTH(3) 미만만 오버레이 생성
+- overlay 루프에 `key(block.blockRange.textRange.first)` 적용
+- `CalloutOverlay` body: `MarkdownBasicTextFieldCore(depth+1)` 사용
+- `CalloutOverlay` state: `remember`(키 없음) + `rememberUpdatedState(data)` → sync 안정성
+- `CalloutOverlay` body Backspace(position 0) → 부모 커서 이동 (callout raw 전환)
+- `CalloutOverlay` 편집 중 scroll forwarder 비활성화
+- `RawMarkdownOutputTransformation.isFocused`: 기본값 `false`, 포커스 없으면 raw zone 없음
+- `BlockDecorationDrawer.isNested`: 중첩 시 Blockquote 테두리 + HorizontalRule만 DrawBehind
+- depth=0 `fillMaxSize()`, depth>0 `fillMaxWidth()` (무한 확장 방지)
+- 포커스 이탈 시 즉시 raw 동기화
+
+**알려진 이슈:**
+- 초기 1프레임 지연: `textLayoutResult` 확보 전 blockTransparent 적용 → 잠깐 투명 텍스트
+- `overlaysAvailable` SideEffect 방식 사용 불가 (OutputTransformation 재실행 불가). 생성자 고정만 가능
+- `forceAllOverlaysInactive` 선언 잔재 (미사용, 정리 가능)
+
+상세 설계 및 이슈 기록은 **MARKDOWN.md** 참고.
 
 ### 기타
 - **Undo/Redo**: Phase 2 raw text 기반으로 재설계 필요

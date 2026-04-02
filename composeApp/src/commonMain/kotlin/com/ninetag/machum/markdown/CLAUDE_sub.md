@@ -185,11 +185,11 @@ fun computeOverlayRect(layout: TextLayoutResult, range: IntRange, scrollOffset: 
 
 ---
 
-### Callout `> [!type]` ✅ 구현 완료
+### Callout `> [!type]` ✅ 구현 완료 (Phase 5 재귀 오버레이 포함)
 
-기존 `CalloutRenderer` 형태 유지: 배경 + 왼쪽 테두리 + 제목 위 / 내용 아래.
-`CalloutOverlay.kt`에서 제목/내용 TextField + 양방향 raw 동기화(300ms 디바운스) 구현.
-내용 TextField에 `InlineOnlyOutputTransformation`으로 인라인 서식 Live Preview 적용.
+배경 + 왼쪽 테두리 + 제목 BasicTextField + body `MarkdownBasicTextFieldCore` (재귀).
+`CalloutOverlay.kt`에서 양방향 raw 동기화(300ms 디바운스) 구현.
+body는 `MarkdownBasicTextFieldCore(depth+1)` 사용 → 중첩 Callout/Table/CodeBlock 오버레이 지원.
 
 파싱 규칙 (공백 선택적):
 ```
@@ -200,20 +200,27 @@ fun computeOverlayRect(layout: TextLayoutResult, range: IntRange, scrollOffset: 
 
 오버레이 구성:
 ```kotlin
-Box(background + leftBorder) {
-    Column {
-        BasicTextField(value = title, ...)     // 제목 편집
-        BasicTextField(value = body, ...)      // 내용 편집
-    }
+Column(background + leftBorder) {
+    BasicTextField(state = titleState, ...)                  // 제목 편집
+    MarkdownBasicTextFieldCore(state = bodyEditorState, ...) // body (재귀 마크다운)
 }
 ```
 
-편집 → raw 동기화:
+편집 → raw 동기화 (`syncCalloutToRaw`):
 ```kotlin
 val header = "> [!${calloutType}] $title"
-val bodyLines = body.lines().joinToString("\n") { "> $it" }
+val bodyLines = body.lines().joinToString("\n") { line ->
+    if (line.startsWith(">")) ">$line" else "> $line"  // 중첩 prefix 간결 유지
+}
 textFieldState.edit { replace(blockStart, blockEnd, "$header\n$bodyLines") }
 ```
+
+State 관리 핵심:
+- `remember` 키 없이 state 생성 (sync로 인한 textRange 변경 시 재생성 방지)
+- `rememberUpdatedState(data)` → sync에서 항상 최신 오프셋 사용
+- 부모 overlay 루프 `key(textRange.first)` → 블록 identity 관리
+- body 맨 앞 Backspace → 부모 커서 이동 (callout raw 전환)
+- 편집 중(`isCalloutFocused=true`) scroll forwarder 비활성화
 
 ---
 
@@ -290,6 +297,52 @@ prefix-only 줄이면 prefix를 제거하여 빈 줄로 변환.
 
 `MarkdownBasicTextField.kt`의 `BasicTextField`에 `Modifier.onPreviewKeyEvent` 추가.
 Ctrl/Cmd+B/I/E, Ctrl/Cmd+Shift+S/X/H → `RawStyleToggle` 호출.
+
+---
+
+## Phase 5: 재귀적 오버레이 (✅ 구현 완료 — 테스트 중)
+
+Callout body에 `MarkdownBasicTextFieldCore`를 사용하여 중첩 오버레이 지원.
+Callout에만 적용 (Table/CodeBlock 내부는 재귀하지 않음).
+
+### 구현 구조
+
+```
+MarkdownBasicTextField (public API, value/onValueChange)
+  └─ MarkdownBasicTextFieldCore (internal, MarkdownEditorState 직접 사용)
+       ├─ BasicTextField + RawMarkdownOutputTransformation
+       ├─ drawBehind: BlockDecorationDrawer
+       └─ overlayBlocks → key(textRange.first) { BlockOverlay → CalloutOverlay(depth+1) }
+            └─ MarkdownBasicTextFieldCore (재귀, depth < MAX_OVERLAY_DEPTH)
+```
+
+### 핵심 변경 파일
+
+| 파일 | 변경 내용 |
+|---|---|
+| `MarkdownBasicTextField.kt` | `MarkdownBasicTextFieldCore` internal composable 분리, `overlayDepth` 파라미터, overlay 루프에 `key(textRange.first)` |
+| `RawMarkdownOutputTransformation.kt` | `isFocused` 프로퍼티 추가 (기본값 `false`), `applyBlockTransparent` |
+| `BlockDecorationDrawer.kt` | `isNested` 파라미터 (중첩 시 Blockquote/HorizontalRule만) |
+| `BlockOverlay.kt` | `overlayDepth` 파라미터 → CalloutOverlay에 전달 |
+| `CalloutOverlay.kt` | body를 `MarkdownBasicTextFieldCore(depth+1)`로 교체, `rememberUpdatedState`, body Backspace 처리, 포커스별 scroll forwarder |
+
+### 주요 설계 결정
+
+1. **`isFocused` 기본값 `false`**: body 생성 시 커서가 텍스트 끝에 위치(`setMarkdown()` → `TextRange(length)`). `isFocused=true`이면 마지막 줄이 raw zone이 되어 마크다운 코드 노출. 포커스 없으면 raw zone 없이 모든 줄 서식 적용.
+
+2. **`fillMaxWidth()` (depth>0)**: depth=0은 `fillMaxSize()`로 화면 전체 채움. depth>0에서 `fillMaxSize()` 사용 시 Column 내 무한 확장 → 오버레이가 아래 전체 덮음.
+
+3. **`isNested` DrawBehind 제한**: 중첩 에디터에서 CodeBlock/Callout/Embed 배경 데코레이션 스킵 (오버레이가 자체 배경 처리).
+
+4. **`overlaysAvailable` SideEffect 방식 불가**: `SideEffect`에서 OutputTransformation 프로퍼티 변경 → BasicTextField 재레이아웃 트리거 안 됨 → `transformOutput()` 재실행 안 됨. 생성자에서 고정 설정만 가능.
+
+5. **포커스 이탈 즉시 동기화**: `LaunchedEffect(isCalloutFocused)` — debounce 300ms 대기 중인 변경 사항을 즉시 flush. 없으면 메인 에디터가 stale raw 텍스트로 렌더링.
+
+6. **`remember` 키 없이 state 생성**: `remember(data.blockRange.textRange)`로 키잉하면 overlay→raw sync가 textRange를 변경할 때마다 state 재생성 → 사용자 입력 소실. 특히 body에서 `>[!note]` + Enter 시 Smart Enter 결과가 사라짐. 대신 `remember`(키 없음) + 부모 `key(textRange.first)` 조합으로 identity 관리.
+
+7. **`rememberUpdatedState(data)`**: LaunchedEffect 내 sync 함수가 항상 최신 `data.blockRange.textRange` 사용. LaunchedEffect(Unit)으로 한 번만 시작하므로, data 파라미터 캡처 시 stale offset 사용 방지.
+
+8. **편집 중 scroll forwarder 비활성화**: body에서 Enter → 높이 증가 → Column 리사이즈 → `overlayScrollForwarder`가 부모 ScrollState에 delta 전달 → 스크롤 점프. `isCalloutFocused=true`일 때 forwarder를 Modifier로 대체하여 방지.
 
 ---
 

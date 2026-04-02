@@ -15,6 +15,7 @@ import com.ninetag.machum.screen.projectScreen.ProjectSelectionScreen
 import com.ninetag.machum.screen.projectScreen.WorkflowSelectionScreen
 import com.ninetag.machum.screen.vaultScreen.VaultSelectionScreen
 import com.ninetag.machum.screen.workflowSceen.WorkflowScreen
+import com.ninetag.machum.theme.AppTheme
 import kotlinx.coroutines.launch
 
 import org.koin.compose.koinInject
@@ -31,7 +32,7 @@ fun App() {
     var showVaultPicker by remember { mutableStateOf(false) }
     var showWorkflowManagement by remember { mutableStateOf(false) }
 
-    MaterialTheme {
+    AppTheme {
         Box(Modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier
