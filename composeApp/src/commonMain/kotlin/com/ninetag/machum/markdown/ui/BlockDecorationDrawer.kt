@@ -9,6 +9,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.dp
 
@@ -26,12 +27,13 @@ internal fun DrawScope.drawBlockDecorations(
     config: MarkdownStyleConfig,
     scrollOffset: Float = 0f,
     isNested: Boolean = false,
+    inlineCodeRanges: List<IntRange> = emptyList(),
 ) {
     for (block in blocks) {
         val isActive = block.textRange in activeBlockRanges
-        val hasOverlay = block.type == BlockType.CALLOUT || block.type == BlockType.TABLE || block.type == BlockType.CODE_BLOCK
+        val hasOverlay = block.type == BlockType.CALLOUT || block.type == BlockType.TABLE
         if (hasOverlay && !isActive) continue
-        if (isActive && (block.type == BlockType.CALLOUT || block.type == BlockType.EMBED || block.type == BlockType.CODE_BLOCK)) continue
+        if (isActive && (block.type == BlockType.CALLOUT || block.type == BlockType.EMBED)) continue
 
         // 중첩 에디터에서는 Blockquote 테두리와 HorizontalRule만 그린다
         if (isNested && block.type != BlockType.BLOCKQUOTE && block.type != BlockType.HORIZONTAL_RULE) continue
@@ -42,30 +44,69 @@ internal fun DrawScope.drawBlockDecorations(
         if (rect.bottom < 0f || rect.top > size.height) continue
 
         when (block.type) {
-            BlockType.CODE_BLOCK -> drawCodeBlockDecoration(rect, config)
             BlockType.CALLOUT -> drawCalloutDecoration(rect, block.meta, config)
             BlockType.EMBED -> drawEmbedDecoration(rect, config)
             BlockType.HORIZONTAL_RULE -> if (!isActive) drawHorizontalRule(rect)
             BlockType.BLOCKQUOTE -> if (!isActive) drawBlockquoteLines(layout, block.textRange, config, scrollOffset)
-            BlockType.TABLE -> {}
+            BlockType.CODE_BLOCK, BlockType.TABLE -> {}
+        }
+    }
+
+    // ── Inline Code: RoundRect 배경 ──
+    drawInlineCodeBackgrounds(layout, inlineCodeRanges, config, scrollOffset)
+}
+
+// ── Inline Code: RoundRect 배경 ──
+
+private fun DrawScope.drawInlineCodeBackgrounds(
+    layout: TextLayoutResult,
+    ranges: List<IntRange>,
+    config: MarkdownStyleConfig,
+    scrollOffset: Float,
+) {
+    if (ranges.isEmpty()) return
+    val textLen = layout.layoutInput.text.length
+    val cornerRadius = CornerRadius(4.dp.toPx())
+    val verticalPadding = 0f
+    val horizontalPadding = 2.dp.toPx()
+
+    for (range in ranges) {
+        val safeStart = range.first.coerceIn(0, textLen)
+        val safeEnd = (range.last + 1).coerceIn(safeStart, textLen)
+        if (safeStart >= safeEnd) continue
+
+        val startLine = layout.getLineForOffset(safeStart)
+        val endLine = layout.getLineForOffset(safeEnd - 1)
+
+        // 단일 줄: 문자 범위의 좌표로 정확한 배경
+        if (startLine == endLine) {
+            val left = layout.getHorizontalPosition(safeStart, true)
+            val right = layout.getHorizontalPosition(safeEnd, true)
+            val top = layout.getLineTop(startLine) - scrollOffset
+            val bottom = layout.getLineBottom(startLine) - scrollOffset
+            if (bottom < 0f || top > size.height) continue
+            drawRoundRect(
+                color = config.codeInlineBackground,
+                topLeft = Offset(left - horizontalPadding, top - verticalPadding),
+                size = Size(right - left + horizontalPadding * 2, bottom - top + verticalPadding * 2),
+                cornerRadius = cornerRadius,
+            )
+        } else {
+            // 여러 줄에 걸치는 경우: 줄 전체 폭으로
+            val top = layout.getLineTop(startLine) - scrollOffset
+            val bottom = layout.getLineBottom(endLine) - scrollOffset
+            if (bottom < 0f || top > size.height) continue
+            drawRoundRect(
+                color = config.codeInlineBackground,
+                topLeft = Offset(0f, top - verticalPadding),
+                size = Size(size.width, bottom - top + verticalPadding * 2),
+                cornerRadius = cornerRadius,
+            )
         }
     }
 }
 
-// ── CodeBlock: 라운드 배경 ──
-
-private fun DrawScope.drawCodeBlockDecoration(rect: Rect, config: MarkdownStyleConfig) {
-    val cornerRadius = CornerRadius(8.dp.toPx())
-    val padding = 4.dp.toPx()
-    drawRoundRect(
-        color = config.codeBlockBackground,
-        topLeft = Offset(0f, rect.top - padding),
-        size = Size(size.width, rect.height + padding * 2),
-        cornerRadius = cornerRadius,
-    )
-}
-
-// ── Callout: 배경 + 왼쪽 테두리 + 아이콘 ──
+// ── Callout: 라운드 박스 (배경 + 테두리) ──
 
 private fun DrawScope.drawCalloutDecoration(
     rect: Rect,
@@ -77,23 +118,26 @@ private fun DrawScope.drawCalloutDecoration(
 
     val cornerRadius = CornerRadius(8.dp.toPx())
     val verticalPadding = 8.dp.toPx()
-    val borderWidth = 3.dp.toPx()
+    val borderWidth = 1.dp.toPx()
+    val boxTop = rect.top - verticalPadding
+    val boxSize = Size(size.width, rect.height + verticalPadding * 2)
 
     // 배경
     drawRoundRect(
         color = style.containerColor,
-        topLeft = Offset(0f, rect.top - verticalPadding),
-        size = Size(size.width, rect.height + verticalPadding * 2),
+        topLeft = Offset(0f, boxTop),
+        size = boxSize,
         cornerRadius = cornerRadius,
     )
 
-    // 왼쪽 테두리
-    drawRect(
+    // 라운드 테두리
+    drawRoundRect(
         color = style.accentColor,
-        topLeft = Offset(0f, rect.top - verticalPadding),
-        size = Size(borderWidth, rect.height + verticalPadding * 2),
+        topLeft = Offset(0f, boxTop),
+        size = boxSize,
+        cornerRadius = cornerRadius,
+        style = Stroke(width = borderWidth),
     )
-
 }
 
 // ── Blockquote: depth별 다중 왼쪽 테두리 ──

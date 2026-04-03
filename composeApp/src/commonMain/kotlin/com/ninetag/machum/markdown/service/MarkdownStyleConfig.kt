@@ -33,7 +33,8 @@ data class MarkdownStyleConfig(
     val boldItalic: SpanStyle = SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic),
     val strikethrough: SpanStyle = SpanStyle(textDecoration = TextDecoration.LineThrough),
     val highlight: SpanStyle = SpanStyle(background = Color(0xFFFFEB3B)),
-    val codeInline: SpanStyle = SpanStyle(fontFamily = FontFamily.Monospace, background = Color(0x22000000), fontSize = 0.85.em),
+    val codeInline: SpanStyle = SpanStyle(fontFamily = FontFamily.Monospace, fontSize = 0.85.em),
+    val codeInlineBackground: Color = Color(0x22000000),
     val codeBlock: SpanStyle = SpanStyle(fontFamily = FontFamily.Monospace),
     val link: SpanStyle = SpanStyle(color = Color(0xFF1565C0)),
     // 헤딩

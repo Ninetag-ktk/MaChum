@@ -3,7 +3,6 @@ package com.ninetag.machum.markdown.state
 import com.ninetag.machum.markdown.service.*
 
 import androidx.compose.ui.text.SpanStyle
-import com.ninetag.machum.markdown.state.MarkdownBlock
 
 /**
  * 비활성 블록의 raw 텍스트에 적용할 SpanStyle 범위 리스트를 계산한다.
@@ -29,7 +28,7 @@ internal object InlineStyleScanner {
     ): List<Pair<IntRange, SpanStyle>> {
         if (blockText.isEmpty()) return emptyList()
         return when (block) {
-            is MarkdownBlock.CodeBlock    -> codeBlockSpans(blockText, docOffset, config)
+            is MarkdownBlock.CodeBlock    -> emptyList()     // raw 마크다운 그대로
             is MarkdownBlock.Table        -> emptyList()     // 표는 raw 그대로
             is MarkdownBlock.HorizontalRule -> listOf((docOffset until docOffset + blockText.length) to config.marker)
             is MarkdownBlock.Embed        -> embedSpans(blockText, docOffset, config)
@@ -72,29 +71,6 @@ internal object InlineStyleScanner {
             spans += (docOffset + markerLen until contentEnd) to config.headingStyle(level)
             // heading 컨텐츠 내부 인라인 스타일
             scanInline(blockText, markerLen, blockText.length, docOffset, spans, config)
-        }
-        return spans
-    }
-
-    private fun codeBlockSpans(
-        blockText: String,
-        docOffset: Int,
-        config: MarkdownStyleConfig,
-    ): List<Pair<IntRange, SpanStyle>> {
-        val spans = mutableListOf<Pair<IntRange, SpanStyle>>()
-        val lines = blockText.split('\n')
-        var lineStart = 0
-        lines.forEachIndexed { idx, line ->
-            val lineDocStart = docOffset + lineStart
-            val isFence = line.trimStart().startsWith("```")
-            if (isFence) {
-                // ``` 펜스 라인 숨김
-                spans += (lineDocStart until lineDocStart + line.length) to config.marker
-            } else {
-                // 코드 본문: 모노스페이스만 (인라인 스캔 없음)
-                spans += (lineDocStart until lineDocStart + line.length) to config.codeBlock
-            }
-            lineStart += line.length + 1
         }
         return spans
     }

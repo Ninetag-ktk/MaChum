@@ -1,8 +1,5 @@
 package com.ninetag.machum.markdown.ui.block
 
-import com.ninetag.machum.markdown.service.*
-import com.ninetag.machum.markdown.state.*
-
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.text.input.TextFieldState
@@ -46,20 +43,14 @@ internal fun BlockOverlay(
             onRequestActivation = onRequestActivation,
             modifier = positioned,
         )
-        is OverlayBlockData.CodeBlockData -> CodeBlockOverlay(
-            data = data,
-            textFieldState = textFieldState,
-            styleConfig = styleConfig,
-            textStyle = textStyle,
-            scrollState = scrollState,
-            modifier = positioned,
-        )
+        is OverlayBlockData.CodeBlockData -> {} // CodeBlock은 인라인 렌더링, 오버레이 없음
         is OverlayBlockData.TableData -> TableOverlay(
             data = data,
             textFieldState = textFieldState,
             styleConfig = styleConfig,
             textStyle = textStyle,
             scrollState = scrollState,
+            onRequestActivation = onRequestActivation,
             modifier = positioned,
         )
     }

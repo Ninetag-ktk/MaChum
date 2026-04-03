@@ -1,7 +1,6 @@
 package com.ninetag.machum.markdown.ui
 
 import com.ninetag.machum.markdown.service.*
-import com.ninetag.machum.markdown.state.*
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
@@ -81,9 +80,9 @@ private fun defaultMaterialStyleConfig(): MarkdownStyleConfig {
             highlight = SpanStyle(background = highlightColor),
             codeInline = SpanStyle(
                 fontFamily = FontFamily.Monospace,
-                background = codeBackground,
                 fontSize = 0.85.em,
             ),
+            codeInlineBackground = codeBackground,
             codeBlockBackground = codeBlockBg,
             calloutStyles = calloutStyles,
         )

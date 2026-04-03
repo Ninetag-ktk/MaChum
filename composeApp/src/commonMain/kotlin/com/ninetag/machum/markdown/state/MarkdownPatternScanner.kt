@@ -3,7 +3,6 @@ package com.ninetag.machum.markdown.state
 import com.ninetag.machum.markdown.service.*
 
 import androidx.compose.ui.text.SpanStyle
-import com.ninetag.machum.markdown.state.MarkdownBlock
 
 /**
  * 블록 데코레이션이 필요한 특수 블록 타입.
@@ -65,8 +64,6 @@ internal object MarkdownPatternScanner {
         var i = 0
         var offset = 0
         var inCodeBlock = false
-        var codeBlockStart = 0
-        val codeBlockLines = mutableListOf<String>()
 
         // 블록 prefix 없는 연속 일반 텍스트 줄 그룹핑 (멀티라인 인라인 서식 지원)
         var groupStart = -1
@@ -76,40 +73,26 @@ internal object MarkdownPatternScanner {
             val line = lines[i]
             val isFence = line.trimStart().startsWith("```")
 
-            // ── 코드 블록 시작 ──
+            // ── 코드 블록 시작 (내부 줄의 인라인 스캔 방지용) ──
             if (isFence && !inCodeBlock) {
                 flushGroup(groupText, groupStart, spans, config)
                 groupStart = -1
                 inCodeBlock = true
-                codeBlockStart = offset
-                codeBlockLines.clear()
-                codeBlockLines.add(line)
                 offset += line.length + 1
                 i++
                 continue
             }
 
-            // ── 코드 블록 종료 ──
+            // ── 코드 블록 종료 ── (raw 마크다운 그대로 표시, 블록 등록 없음)
             if (isFence && inCodeBlock) {
-                codeBlockLines.add(line)
-                val blockText = codeBlockLines.joinToString("\n")
-                spans += InlineStyleScanner.computeSpans(
-                    MarkdownBlock.CodeBlock(),
-                    blockText, codeBlockStart, config,
-                )
-                blocks += BlockRange(
-                    type = BlockType.CODE_BLOCK,
-                    textRange = codeBlockStart until (offset + line.length),
-                )
                 inCodeBlock = false
                 offset += line.length + 1
                 i++
                 continue
             }
 
-            // ── 코드 블록 내부 ──
+            // ── 코드 블록 내부 (인라인 스캔 건너뛰기) ──
             if (inCodeBlock) {
-                codeBlockLines.add(line)
                 offset += line.length + 1
                 i++
                 continue
@@ -280,18 +263,7 @@ internal object MarkdownPatternScanner {
         // 남은 그룹 처리
         flushGroup(groupText, groupStart, spans, config)
 
-        // 닫히지 않은 코드 블록 처리
-        if (inCodeBlock) {
-            val blockText = codeBlockLines.joinToString("\n")
-            spans += InlineStyleScanner.computeSpans(
-                MarkdownBlock.CodeBlock(),
-                blockText, codeBlockStart, config,
-            )
-            blocks += BlockRange(
-                type = BlockType.CODE_BLOCK,
-                textRange = codeBlockStart until (codeBlockStart + blockText.length),
-            )
-        }
+        // 닫히지 않은 코드 블록: raw 마크다운 그대로 (블록 등록 없음)
 
         return ScanResult(spans, blocks)
     }

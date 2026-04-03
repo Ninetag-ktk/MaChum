@@ -286,30 +286,29 @@ Embed는 콘텐츠 크기 예측 불가로 LazyColumn 별도 블록 방식이며
 - **서식 토글**: 인라인/헤딩/블록 prefix 토글 (`RawStyleToggle`)
 - **하드웨어 키보드 단축키**: Ctrl+B/I/E, Ctrl+Shift+S/X/H (`EditorKeyboardShortcuts`)
 
-### Phase 5: 재귀적 오버레이 (✅ 구현 완료 — 테스트 중)
+### Phase 5: 재귀적 오버레이 + UI 개선 (✅ 구현 완료)
 
-Callout body에서 중첩 Callout/CodeBlock/Table을 별도 오버레이 Composable로 렌더링.
-Callout에만 적용 — Table, CodeBlock 내부에서는 재귀하지 않음.
+Callout body에서 중첩 Callout/Table을 별도 오버레이 Composable로 렌더링.
+Callout에만 적용 — Table 내부에서는 재귀하지 않음. CodeBlock은 오버레이 없이 raw 표시.
 
 **구현 항목:**
-- `MarkdownBasicTextField` → `MarkdownBasicTextFieldCore` internal composable 분리
-- `overlayDepth` 파라미터: 0(최상위) ~ MAX_OVERLAY_DEPTH(3) 미만만 오버레이 생성
-- overlay 루프에 `key(block.blockRange.textRange.first)` 적용
-- `CalloutOverlay` body: `MarkdownBasicTextFieldCore(depth+1)` 사용
-- `CalloutOverlay` state: `remember`(키 없음) + `rememberUpdatedState(data)` → sync 안정성
-- `CalloutOverlay` body Backspace(position 0) → 부모 커서 이동 (callout raw 전환)
-- `CalloutOverlay` 편집 중 scroll forwarder 비활성화
-- `RawMarkdownOutputTransformation.isFocused`: 기본값 `false`, 포커스 없으면 raw zone 없음
-- `BlockDecorationDrawer.isNested`: 중첩 시 Blockquote 테두리 + HorizontalRule만 DrawBehind
-- depth=0 `fillMaxSize()`, depth>0 `fillMaxWidth()` (무한 확장 방지)
-- 포커스 이탈 시 즉시 raw 동기화
+- `MarkdownBasicTextFieldCore`: `overlayDepth`, `parentScrollState` 파라미터
+- overlay 루프: `key(textRange.first)`, `onRequestActivation` 콜백 (FocusRequester 기반)
+- `CalloutOverlay`: RoundBox 디자인 (배경 + 라운드 테두리) + 타입별 아이콘(18×18)
+- `CalloutOverlay`: body fontSize 0.9em (중첩 시 누적), Title↔Body 방향키/Enter 내비게이션
+- `CalloutOverlay`: `remember`(키 없음) + `rememberUpdatedState(data)` → sync 안정성
+- `CalloutOverlay`: Backspace(position 0)/LongPress → `onRequestActivation`으로 raw 전환
+- `CalloutOverlay`: 편집 중 scroll forwarder 비활성화, `parentScrollState`로 루트 전달
+- CodeBlock: 오버레이 제거, raw 마크다운 그대로 표시 (펜스 감지만 유지 → 인라인 스캔 방지)
+- Inline Code: `codeInlineBackground` 분리 + DrawBehind `drawRoundRect`(4dp cornerRadius)
+- `normalizedTextStyle`: `LineHeightStyle(Proportional, Trim.Both)` → Bold/Italic 줄 높이 통일
+- `RawMarkdownOutputTransformation`: `inlineCodeRanges` 노출
 
 **알려진 이슈:**
 - 초기 1프레임 지연: `textLayoutResult` 확보 전 blockTransparent 적용 → 잠깐 투명 텍스트
-- `overlaysAvailable` SideEffect 방식 사용 불가 (OutputTransformation 재실행 불가). 생성자 고정만 가능
 - `forceAllOverlaysInactive` 선언 잔재 (미사용, 정리 가능)
 
-상세 설계 및 이슈 기록은 **MARKDOWN.md** 참고.
+상세 설계: **MARKDOWN.md**, Callout 전용: **Callout.md** 참고.
 
 ### 기타
 - **Undo/Redo**: Phase 2 raw text 기반으로 재설계 필요

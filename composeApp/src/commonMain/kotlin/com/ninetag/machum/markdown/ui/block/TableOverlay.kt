@@ -1,7 +1,5 @@
 package com.ninetag.machum.markdown.ui.block
 
-import com.ninetag.machum.markdown.service.*
-import com.ninetag.machum.markdown.state.*
 import com.ninetag.machum.markdown.service.util.overlayScrollForwarder
 
 import androidx.compose.foundation.ScrollState
@@ -26,7 +24,6 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -49,6 +46,7 @@ internal fun TableOverlay(
     styleConfig: MarkdownStyleConfig,
     textStyle: TextStyle = TextStyle.Default,
     scrollState: ScrollState? = null,
+    onRequestActivation: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val columnCount = maxOf(
@@ -85,13 +83,9 @@ internal fun TableOverlay(
             .fillMaxWidth()
             .then(scrollForwarder)
             .border(1.dp, Color(0x33000000))
-            .pointerInput(data.blockRange.textRange) {
+            .pointerInput(Unit) {
                 detectTapGestures(
-                    onLongPress = {
-                        textFieldState.edit {
-                            selection = TextRange(data.blockRange.textRange.first)
-                        }
-                    },
+                    onLongPress = { onRequestActivation() },
                 )
             },
     ) {

@@ -119,7 +119,7 @@ SpanStyle만으로 표현할 수 없는 블록들. 단일 BasicTextField 위에 
 새 API(TextFieldState 기반)에서는 `InlineTextContent` 가 지원되지 않으므로, Box 레이아웃 내
 절대 위치 오버레이 방식을 사용한다.
 
-> Callout, CodeBlock, Table 오버레이 모두 구현 완료. Embed만 미구현.
+> Callout, Table 오버레이 구현 완료. CodeBlock은 raw 표시 (오버레이 제거). Embed 미구현.
 
 ### 핵심 구조
 
@@ -146,7 +146,7 @@ val blockTransparent = SpanStyle(color = Color.Transparent)
 ```
 
 - 인라인 마커(`**`, `~~` 등): `marker` (fontSize=0.01sp) → 공간 제거
-- 블록 전체(Callout, Table, CodeBlock): `blockTransparent` → 색상만 투명, 줄 높이 유지
+- 블록 전체(Callout, Table): `blockTransparent` → 색상만 투명, 줄 높이 유지
 - 오버레이 Composable이 투명 텍스트 위에 정확히 겹쳐 배치됨
 
 ### 오버레이 내 직접 편집 + raw markdown 동기화
@@ -185,42 +185,25 @@ fun computeOverlayRect(layout: TextLayoutResult, range: IntRange, scrollOffset: 
 
 ---
 
-### Callout `> [!type]` ✅ 구현 완료 (Phase 5 재귀 오버레이 포함)
+### Callout `> [!type]` ✅ 구현 완료 (Phase 5 재귀 오버레이 + UI 개선)
 
-배경 + 왼쪽 테두리 + 제목 BasicTextField + body `MarkdownBasicTextFieldCore` (재귀).
-`CalloutOverlay.kt`에서 양방향 raw 동기화(300ms 디바운스) 구현.
-body는 `MarkdownBasicTextFieldCore(depth+1)` 사용 → 중첩 Callout/Table/CodeBlock 오버레이 지원.
-
-파싱 규칙 (공백 선택적):
-```
-> [!NOTE] 제목        또는    >[!NOTE] 제목
-> 내용 줄 1                   >내용 줄 1
-> 내용 줄 2                   >내용 줄 2
-```
+RoundBox(배경 + 라운드 테두리) + 타입별 아이콘(18×18) + Title/Body.
+body는 `MarkdownBasicTextFieldCore(depth+1, fontSize=0.9em)` → 중첩 Callout/Table 오버레이 지원.
+상세 문서: **Callout.md** 참고.
 
 오버레이 구성:
 ```kotlin
-Column(background + leftBorder) {
-    BasicTextField(state = titleState, ...)                  // 제목 편집
-    MarkdownBasicTextFieldCore(state = bodyEditorState, ...) // body (재귀 마크다운)
+Column(background(roundedShape) + border(1.dp, accentColor, roundedShape)) {
+    Row { Icon(calloutIcon, 18.dp) + BasicTextField(titleState, bold) }
+    MarkdownBasicTextFieldCore(bodyEditorState, fontSize=0.9em, depth+1)
 }
 ```
 
-편집 → raw 동기화 (`syncCalloutToRaw`):
-```kotlin
-val header = "> [!${calloutType}] $title"
-val bodyLines = body.lines().joinToString("\n") { line ->
-    if (line.startsWith(">")) ">$line" else "> $line"  // 중첩 prefix 간결 유지
-}
-textFieldState.edit { replace(blockStart, blockEnd, "$header\n$bodyLines") }
-```
+키보드 내비게이션:
+- Title ↓/Enter → Body 시작, Body ↑(첫 줄) → Title 끝
+- Body Backspace(position 0) / LongPress → `onRequestActivation`으로 raw 전환
 
-State 관리 핵심:
-- `remember` 키 없이 state 생성 (sync로 인한 textRange 변경 시 재생성 방지)
-- `rememberUpdatedState(data)` → sync에서 항상 최신 오프셋 사용
-- 부모 overlay 루프 `key(textRange.first)` → 블록 identity 관리
-- body 맨 앞 Backspace → 부모 커서 이동 (callout raw 전환)
-- 편집 중(`isCalloutFocused=true`) scroll forwarder 비활성화
+fontSize 누적: depth 0 title=16sp, body=14.4sp → depth 1 title=14.4sp, body=12.96sp
 
 ---
 
@@ -246,19 +229,11 @@ EmbedBlock:  FileManager 비동기 로딩 → 기존 EmbedRenderer 재활용
 
 ---
 
-### CodeBlock ` ``` ` ✅ 구현 완료
+### CodeBlock ` ``` ` — raw 마크다운 표시
 
-오버레이 Composable: 모노스페이스 배경 + 코드 TextField. `CodeBlockOverlay.kt`에서 구현.
-
-```
-┌─ CodeBlockOverlay ─────────────────────┐
-│ ``` 펜스는 숨김                          │
-│ 모노스페이스 TextField (코드 편집)        │
-│ rounded 배경                            │
-└────────────────────────────────────────┘
-```
-
-편집 → raw 동기화: 코드 변경 시 ``` 펜스를 포함한 전체 블록을 재구성.
+오버레이 없음. 펜스(` ``` `)와 코드 내용을 raw 마크다운 그대로 표시.
+스캐너에서 펜스 감지는 유지 (코드 블록 내부의 인라인 스캔 방지용).
+`CodeBlockOverlay.kt` 삭제됨.
 
 ---
 
@@ -322,9 +297,9 @@ MarkdownBasicTextField (public API, value/onValueChange)
 |---|---|
 | `MarkdownBasicTextField.kt` | `MarkdownBasicTextFieldCore` internal composable 분리, `overlayDepth` 파라미터, overlay 루프에 `key(textRange.first)` |
 | `RawMarkdownOutputTransformation.kt` | `isFocused` 프로퍼티 추가 (기본값 `false`), `applyBlockTransparent` |
-| `BlockDecorationDrawer.kt` | `isNested` 파라미터 (중첩 시 Blockquote/HorizontalRule만) |
-| `BlockOverlay.kt` | `overlayDepth` 파라미터 → CalloutOverlay에 전달 |
-| `CalloutOverlay.kt` | body를 `MarkdownBasicTextFieldCore(depth+1)`로 교체, `rememberUpdatedState`, body Backspace 처리, 포커스별 scroll forwarder |
+| `BlockDecorationDrawer.kt` | `isNested`, `inlineCodeRanges` 파라미터. Callout RoundBox, Inline Code RoundRect 배경 |
+| `BlockOverlay.kt` | `overlayDepth`, `onRequestActivation` 파라미터 → CalloutOverlay/TableOverlay에 전달 |
+| `CalloutOverlay.kt` | RoundBox + 아이콘 + body 0.9em + FocusRequester 내비게이션 + `onRequestActivation` |
 
 ### 주요 설계 결정
 
@@ -343,6 +318,18 @@ MarkdownBasicTextField (public API, value/onValueChange)
 7. **`rememberUpdatedState(data)`**: LaunchedEffect 내 sync 함수가 항상 최신 `data.blockRange.textRange` 사용. LaunchedEffect(Unit)으로 한 번만 시작하므로, data 파라미터 캡처 시 stale offset 사용 방지.
 
 8. **편집 중 scroll forwarder 비활성화**: body에서 Enter → 높이 증가 → Column 리사이즈 → `overlayScrollForwarder`가 부모 ScrollState에 delta 전달 → 스크롤 점프. `isCalloutFocused=true`일 때 forwarder를 Modifier로 대체하여 방지.
+
+9. **`onRequestActivation` 콜백**: 부모 `MarkdownBasicTextFieldCore`의 `FocusRequester`로 포커스 + 커서 이동. LongPress/Backspace에서 공통 사용. 기존 `textFieldState.edit { selection = ... }`만으로는 부모에 포커스가 없어 블록 활성화 안 됨.
+
+10. **`parentScrollState`**: 중첩 오버레이의 스크롤 포워딩이 depth>0의 빈 scrollState로 전달되던 문제 해결. `overlayForwardScrollState = parentScrollState ?: scrollState`로 항상 루트까지 전달.
+
+11. **CodeBlock 오버레이 제거**: 오버레이 sync 복잡도 대비 이점 부족. raw 마크다운 그대로 표시. 스캐너에서 펜스 감지만 유지 (코드 블록 내부 인라인 스캔 방지).
+
+12. **Inline Code RoundRect 배경**: `SpanStyle.background`는 직사각형만 지원. `codeInlineBackground` 색상을 별도 분리하고, `inlineCodeRanges`를 OutputTransformation에서 노출, DrawBehind에서 `drawRoundRect(4dp)`로 그리기.
+
+13. **`LineHeightStyle` 정규화**: Bold/Italic SpanStyle이 폰트 메트릭 차이로 줄 높이를 변경. `normalizedTextStyle`에 `LineHeightStyle(Proportional, Trim.Both)` 적용, `lineHeight` 미설정 시 `1.5.em` 기본값.
+
+14. **Callout body fontSize 0.9em**: `textStyle.merge(TextStyle(fontSize = 0.9.em))`로 body에 전달. 중첩 시 부모 body의 textStyle이 자식 CalloutOverlay에 전달되므로 누적 축소 (0.9 → 0.81 → 0.729).
 
 ---
 

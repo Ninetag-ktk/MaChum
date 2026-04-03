@@ -32,6 +32,9 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.LineHeightStyle
+import androidx.compose.ui.unit.em
+import androidx.compose.ui.unit.isUnspecified
 import com.ninetag.machum.markdown.ui.block.BlockOverlay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -88,8 +91,22 @@ internal fun MarkdownBasicTextFieldCore(
     cursorBrush: Brush = SolidColor(Color.Black),
     styleConfig: MarkdownStyleConfig = MarkdownStyleConfig(),
     scrollState: ScrollState = rememberScrollState(),
+    parentScrollState: ScrollState? = null,
     overlayDepth: Int = 0,
 ) {
+    // Bold/Italic 등 SpanStyle 적용 시 폰트 메트릭 차이로 줄 높이가 불균일해지는 것 방지
+    // lineHeight가 미설정이면 1.5em으로 기본값 지정 (LineHeightStyle은 lineHeight 필수)
+    val normalizedTextStyle = remember(textStyle) {
+        val effectiveLineHeight = if (textStyle.lineHeight.isUnspecified) 1.5.em else textStyle.lineHeight
+        textStyle.copy(
+            lineHeight = effectiveLineHeight,
+            lineHeightStyle = LineHeightStyle(
+                alignment = LineHeightStyle.Alignment.Proportional,
+                trim = LineHeightStyle.Trim.Both,
+            ),
+        )
+    }
+
     val inputTransformation = remember { EditorInputTransformation() }
     val canGenerateOverlays = overlayDepth < MAX_OVERLAY_DEPTH
     val outputTransformation = remember(styleConfig, canGenerateOverlays) {
@@ -125,6 +142,9 @@ internal fun MarkdownBasicTextFieldCore(
         }
     }
 
+    // 오버레이 스크롤 포워딩용: parentScrollState가 있으면 루트 스크롤, 없으면 자체 스크롤
+    val overlayForwardScrollState = parentScrollState ?: scrollState
+
     // depth=0: fillMaxSize (화면 전체, 빈 영역 클릭 가능)
     // depth>0: fillMaxWidth (텍스트 높이만큼, 무한 확장 방지)
     val fillModifier = if (overlayDepth == 0) Modifier.fillMaxSize() else Modifier.fillMaxWidth()
@@ -147,10 +167,11 @@ internal fun MarkdownBasicTextFieldCore(
                         config = styleConfig,
                         scrollOffset = scrollOffset,
                         isNested = overlayDepth > 0,
+                        inlineCodeRanges = outputTransformation.inlineCodeRanges,
                     )
                 }
                 .onPreviewKeyEvent { handleEditorKeyEvent(it, state.textFieldState) },
-            textStyle = textStyle,
+            textStyle = normalizedTextStyle,
             cursorBrush = cursorBrush,
             inputTransformation = inputTransformation,
             outputTransformation = outputTransformation,
@@ -165,7 +186,7 @@ internal fun MarkdownBasicTextFieldCore(
                     textFieldState = state.textFieldState,
                     styleConfig = styleConfig,
                     textStyle = textStyle,
-                    scrollState = scrollState,
+                    scrollState = overlayForwardScrollState,
                     overlayDepth = overlayDepth,
                     onRequestActivation = {
                         state.textFieldState.edit {

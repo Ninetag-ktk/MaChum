@@ -34,6 +34,10 @@ internal class RawMarkdownOutputTransformation(
     var activeBlockRanges: Set<IntRange> = emptySet()
         private set
 
+    /** 비활성 줄의 inline code 범위 (DrawBehind에서 RoundRect 배경 그리기용) */
+    var inlineCodeRanges: List<IntRange> = emptyList()
+        private set
+
     /**
      * BasicTextField의 포커스 여부. false이면 커서 줄 예외(raw zone)를 적용하지 않는다.
      * 오버레이 내부 에디터는 포커스 없이 시작하므로 기본값 false.
@@ -101,28 +105,34 @@ internal class RawMarkdownOutputTransformation(
 
         // 비활성 오버레이 블록 범위 수집
         // applyBlockTransparent=false(오버레이 미생성)이면 비워서 blockTransparent/높이축소 스킵
-        val overlayBlockTypes = setOf(BlockType.CALLOUT, BlockType.TABLE, BlockType.CODE_BLOCK)
+        val overlayBlockTypes = setOf(BlockType.CALLOUT, BlockType.TABLE)
         val overlayBlockRanges = if (!applyBlockTransparent) emptyList() else cachedBlocks
             .filter { it.textRange !in activeRanges && it.type in overlayBlockTypes }
             .map { it.textRange }
 
         // 비활성 줄의 인라인 스팬 적용
         // 오버레이 블록 내부의 스팬은 건너뜀 (MARKER 0.01sp가 줄 높이를 깨뜨리므로)
+        val codeRanges = mutableListOf<IntRange>()
         for ((range, style) in cachedSpans) {
             val inOverlayBlock = overlayBlockRanges.any { blockRange ->
                 range.first >= blockRange.first && range.last <= blockRange.last
             }
             if (inOverlayBlock) continue
+            // inline code 범위 수집 (DrawBehind RoundRect 배경용)
+            if (style == config.codeInline) {
+                val inRawZone = rawZones.any { rz -> range.first >= rz.first && range.last <= rz.last }
+                if (!inRawZone) codeRanges += range
+            }
             applySpanOutsideRawZones(range, style, rawZones)
         }
+        inlineCodeRanges = codeRanges
 
-        // 높이 축소 대상 줄 수집: TABLE 구분자, CODE_BLOCK 펜스
+        // 높이 축소 대상 줄 수집: TABLE 구분자
         val collapseRanges = mutableListOf<IntRange>()
         for (block in cachedBlocks) {
             if (block.textRange in activeRanges) continue
             when (block.type) {
                 BlockType.TABLE -> findTableSeparatorRange(text, block.textRange)?.let { collapseRanges += it }
-                BlockType.CODE_BLOCK -> collapseRanges += findCodeFenceRanges(text, block.textRange)
                 else -> {}
             }
         }
@@ -153,35 +163,6 @@ internal class RawMarkdownOutputTransformation(
             }
         }
 
-    }
-
-    /**
-     * 코드 블록에서 펜스 줄(``` 으로 시작하는 줄)의 범위를 찾는다.
-     * 첫 줄(여는 펜스)과 마지막 줄(닫는 펜스)을 반환한다.
-     */
-    private fun findCodeFenceRanges(text: String, blockRange: IntRange): List<IntRange> {
-        val result = mutableListOf<IntRange>()
-        val blockStart = blockRange.first
-        val blockEnd = blockRange.last
-
-        // 여는 펜스: 첫 줄
-        val firstNewline = text.indexOf('\n', blockStart)
-        val firstLineEnd = if (firstNewline == -1 || firstNewline > blockEnd) blockEnd else firstNewline
-        result += blockStart..firstLineEnd
-
-        // 닫는 펜스: 마지막 줄 (첫 줄과 다를 때만)
-        if (firstLineEnd < blockEnd) {
-            val lastNewline = text.lastIndexOf('\n', blockEnd)
-            if (lastNewline > blockStart) {
-                val lastLineStart = lastNewline + 1
-                val lastLine = text.substring(lastLineStart, blockEnd + 1)
-                if (lastLine.trimStart().startsWith("```")) {
-                    result += lastLineStart..blockEnd
-                }
-            }
-        }
-
-        return result
     }
 
     /**

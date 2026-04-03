@@ -8,14 +8,28 @@ import com.ninetag.machum.markdown.ui.MarkdownBasicTextFieldCore
 
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.automirrored.outlined.Help
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.outlined.Warning
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -24,12 +38,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -40,6 +53,7 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
@@ -76,7 +90,7 @@ internal fun CalloutOverlay(
     modifier: Modifier = Modifier,
 ) {
     val decoStyle = styleConfig.calloutDecorationStyle(data.calloutType)
-    val borderWidth = 3.dp
+    val calloutShape = RoundedCornerShape(8.dp)
 
     // 키 없이 remember → sync로 인한 textRange 변경 시 state 재생성 방지
     val titleState = remember { TextFieldState(data.title) }
@@ -161,11 +175,11 @@ internal fun CalloutOverlay(
         )
     }
 
-    // Title 키 이벤트: ↓ → Body 시작으로 이동
+    // Title 키 이벤트: ↓ 또는 Enter → Body 시작으로 이동
     val titleKeyModifier = Modifier.onPreviewKeyEvent { event ->
         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
         when (event.key) {
-            Key.DirectionDown -> {
+            Key.DirectionDown, Key.Enter -> {
                 bodyFocusRequester.requestFocus()
                 bodyEditorState.textFieldState.edit { selection = TextRange(0) }
                 true
@@ -216,26 +230,33 @@ internal fun CalloutOverlay(
         modifier = modifier
             .fillMaxWidth()
             .then(scrollForwarder)
-            .background(decoStyle.containerColor, RoundedCornerShape(8.dp))
-            .drawBehind {
-                drawRect(
-                    color = decoStyle.accentColor,
-                    size = Size(borderWidth.toPx(), size.height),
-                )
-            }
+            .background(decoStyle.containerColor, calloutShape)
+            .border(1.dp, decoStyle.accentColor, calloutShape)
             .onFocusChanged { isCalloutFocused = it.hasFocus }
-            .padding(start = borderWidth + 4.dp, end = 4.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
     ) {
-        BasicTextField(
-            state = titleState,
-            textStyle = textStyle.merge(TextStyle(fontWeight = FontWeight.Bold)),
-            modifier = Modifier
-                .fillMaxWidth()
-                .focusRequester(titleFocusRequester)
-                .then(titleKeyModifier)
-                .then(longPressModifier),
-            lineLimits = TextFieldLineLimits.SingleLine,
-        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(
+                imageVector = calloutIcon(data.calloutType),
+                contentDescription = data.calloutType,
+                tint = decoStyle.accentColor,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(4.dp))
+            BasicTextField(
+                state = titleState,
+                textStyle = textStyle.merge(TextStyle(fontWeight = FontWeight.Bold)),
+                modifier = Modifier
+                    .weight(1f)
+                    .focusRequester(titleFocusRequester)
+                    .then(titleKeyModifier)
+                    .then(longPressModifier),
+                lineLimits = TextFieldLineLimits.SingleLine,
+            )
+        }
 
         MarkdownBasicTextFieldCore(
             state = bodyEditorState,
@@ -244,11 +265,25 @@ internal fun CalloutOverlay(
                 .focusRequester(bodyFocusRequester)
                 .then(bodyKeyModifier)
                 .then(longPressModifier),
-            textStyle = textStyle,
+            textStyle = textStyle.merge(TextStyle(fontSize = 0.9.em)),
             styleConfig = styleConfig,
+            parentScrollState = scrollState,
             overlayDepth = overlayDepth + 1,
         )
     }
+}
+
+/** Callout 타입별 아이콘 매핑 */
+private fun calloutIcon(type: String) = when (type.uppercase()) {
+    "NOTE"      -> Icons.Outlined.Edit
+    "TIP"       -> Icons.Outlined.CheckCircle
+    "IMPORTANT" -> Icons.Outlined.Star
+    "WARNING"   -> Icons.Outlined.Warning
+    "DANGER"    -> Icons.Outlined.Warning
+    "CAUTION"   -> Icons.Outlined.Warning
+    "QUESTION"  -> Icons.AutoMirrored.Outlined.Help
+    "SUCCESS"   -> Icons.Outlined.Check
+    else        -> Icons.Outlined.Info
 }
 
 private fun syncCalloutToRaw(
