@@ -57,7 +57,7 @@ internal object OverlayBlockParser {
     fun parse(block: BlockRange, rawText: String, rect: Rect): OverlayBlockData? {
         return when (block.type) {
             BlockType.CALLOUT -> parseCallout(block, rawText, rect)
-            BlockType.CODE_BLOCK -> null // raw 마크다운 그대로 표시
+            BlockType.CODE_BLOCK -> parseCodeBlock(block, rawText, rect)
             BlockType.TABLE -> parseTable(block, rawText, rect)
             BlockType.EMBED -> null // Embed는 별도 블록으로 처리, 오버레이 아님
             BlockType.HORIZONTAL_RULE -> null // DrawBehind로 처리
@@ -89,6 +89,29 @@ internal object OverlayBlockParser {
             calloutType = calloutType,
             title = title,
             bodyLines = bodyLines,
+        )
+    }
+
+    // ── CodeBlock ──
+
+    private fun parseCodeBlock(block: BlockRange, rawText: String, rect: Rect): OverlayBlockData.CodeBlockData? {
+        val lines = rawText.split('\n')
+        if (lines.size < 2) return null
+
+        val firstLine = lines.first().trim()
+        val language = if (firstLine.startsWith("```")) firstLine.removePrefix("```").trim() else ""
+
+        val codeLines = if (lines.last().trim().startsWith("```")) {
+            lines.drop(1).dropLast(1)
+        } else {
+            lines.drop(1)
+        }
+
+        return OverlayBlockData.CodeBlockData(
+            blockRange = block,
+            viewportRect = rect,
+            language = language,
+            code = codeLines.joinToString("\n"),
         )
     }
 

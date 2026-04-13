@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.layout.Layout
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -22,9 +23,13 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -40,7 +45,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 /** 재귀적 오버레이의 최대 깊이. 이 값 이상이면 오버레이 생성을 중단한다. */
-private const val MAX_OVERLAY_DEPTH = 3
+private const val MAX_OVERLAY_DEPTH = 10
 
 /**
  * 마크다운 Live Preview 편집 컴포지션 (Phase 2+3 — raw text + 오버레이 Composable).
@@ -66,6 +71,11 @@ fun MarkdownBasicTextField(
             .collectLatest { onValueChange(it) }
     }
 
+    // [CONTENT_PADDING] fontSize × 4 좌우 패딩 (Dialogue Callout만 제외)
+    val textPadding = with(LocalDensity.current) {
+        if (textStyle.fontSize.isSp) textStyle.fontSize.toDp() * 3f else 0.dp
+    }
+
     MarkdownBasicTextFieldCore(
         state = state,
         modifier = modifier,
@@ -74,6 +84,7 @@ fun MarkdownBasicTextField(
         styleConfig = styleConfig,
         scrollState = scrollState,
         overlayDepth = 0,
+        contentPadding = textPadding,
     )
 }
 
@@ -93,6 +104,8 @@ internal fun MarkdownBasicTextFieldCore(
     scrollState: ScrollState = rememberScrollState(),
     parentScrollState: ScrollState? = null,
     overlayDepth: Int = 0,
+    // [CONTENT_PADDING] 텍스트 좌우 여백 (Overlay Block은 이 패딩에서 제외 → full width)
+    contentPadding: Dp = 0.dp,
 ) {
     // Bold/Italic 등 SpanStyle 적용 시 폰트 메트릭 차이로 줄 높이가 불균일해지는 것 방지
     // lineHeight가 미설정이면 1.5em으로 기본값 지정 (LineHeightStyle은 lineHeight 필수)
@@ -102,7 +115,7 @@ internal fun MarkdownBasicTextFieldCore(
             lineHeight = effectiveLineHeight,
             lineHeightStyle = LineHeightStyle(
                 alignment = LineHeightStyle.Alignment.Proportional,
-                trim = LineHeightStyle.Trim.Both,
+                trim = LineHeightStyle.Trim.None,
             ),
         )
     }
@@ -161,10 +174,25 @@ internal fun MarkdownBasicTextFieldCore(
     // 오버레이에서 부모 BasicTextField로 포커스를 되돌리기 위한 FocusRequester
     val editorFocusRequester = remember { FocusRequester() }
 
-    Box(modifier = modifier.clipToBounds()) {
+    // ── [OVERLAY_LAYOUT] depth별 레이아웃 전략 ──
+    // depth=0: Box + clipToBounds (에디터 영역 밖 클리핑, 오버레이는 투명 텍스트와 높이 일치)
+    // depth>0: OverlayAwareLayout (오버레이의 offset 위치+크기를 부모 높이 측정에 반영)
+    //          → 중첩 Callout의 chrome(padding/icon)이 투명 텍스트보다 커도 부모가 자동 확장
+
+    // 공통 content: BasicTextField + overlay 블록들
+    val editorContent: @Composable () -> Unit = {
+        // [CONTENT_PADDING] BasicTextField에만 좌우 패딩 적용
+        // Overlay Block은 Box/Layout의 직계 자식이므로 패딩 영향 없이 full width
+        val textFieldPadding = if (contentPadding > 0.dp) {
+            Modifier.padding(horizontal = contentPadding)
+        } else {
+            Modifier
+        }
+
         BasicTextField(
             state = state.textFieldState,
             modifier = fillModifier
+                .then(textFieldPadding)
                 .focusRequester(editorFocusRequester)
                 .onFocusChanged { outputTransformation.isFocused = it.isFocused }
                 .drawBehind {
@@ -189,7 +217,6 @@ internal fun MarkdownBasicTextFieldCore(
         )
 
         for ((index, block) in overlayBlocks.withIndex()) {
-            // 블록 타입 + 인덱스로 안정적인 key 사용 (textRange.first는 위 텍스트 편집 시 매번 변경 → 깜빡임)
             key(block.blockRange.type, index) {
                 BlockOverlay(
                     data = block,
@@ -198,6 +225,7 @@ internal fun MarkdownBasicTextFieldCore(
                     textStyle = textStyle,
                     scrollState = overlayForwardScrollState,
                     overlayDepth = overlayDepth,
+                    contentPadding = contentPadding,
                     onRequestActivation = {
                         state.textFieldState.edit {
                             selection = TextRange(block.blockRange.textRange.first)
@@ -205,6 +233,42 @@ internal fun MarkdownBasicTextFieldCore(
                         editorFocusRequester.requestFocus()
                     },
                 )
+            }
+        }
+    }
+
+    if (overlayDepth == 0) {
+        // [OVERLAY_LAYOUT:depth=0] 기존 Box + clipToBounds
+        Box(modifier = modifier.clipToBounds(), content = { editorContent() })
+    } else {
+        // [OVERLAY_LAYOUT:depth>0] offset 배치된 overlay의 높이를 부모 측정에 반영
+        // BasicTextField(child 0)는 (0,0)에 배치, overlay(child 1..N)는 viewportRect 위치에 배치
+        // 부모 높이 = max(BasicTextField 높이, 각 overlay의 top + height)
+        Layout(
+            content = editorContent,
+            modifier = modifier,
+        ) { measurables, constraints ->
+            val placeables = measurables.map { it.measure(constraints.copy(minHeight = 0)) }
+            val textFieldHeight = placeables.firstOrNull()?.height ?: 0
+
+            // overlay의 offset(viewportRect.top) + 측정 높이 → 실제 bottom 계산
+            var maxBottom = textFieldHeight
+            for (i in 1..placeables.lastIndex) {
+                val blockIndex = i - 1
+                if (blockIndex < overlayBlocks.size) {
+                    val top = overlayBlocks[blockIndex].viewportRect.top.toInt()
+                    val bottom = top + placeables[i].height
+                    if (bottom > maxBottom) maxBottom = bottom
+                }
+            }
+
+            layout(constraints.maxWidth, maxBottom) {
+                // BasicTextField at (0, 0)
+                placeables.firstOrNull()?.place(0, 0)
+                // overlay는 자체 Modifier.offset이 위치를 결정
+                for (i in 1..placeables.lastIndex) {
+                    placeables[i].place(0, 0)
+                }
             }
         }
     }

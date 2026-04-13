@@ -288,24 +288,28 @@ Embed는 콘텐츠 크기 예측 불가로 LazyColumn 별도 블록 방식이며
 
 ### Phase 5: 재귀적 오버레이 + UI 개선 (✅ 구현 완료)
 
-Callout body에서 중첩 Callout/Table을 별도 오버레이 Composable로 렌더링.
-Callout에만 적용 — Table 내부에서는 재귀하지 않음. CodeBlock은 오버레이 없이 raw 표시.
+Callout body에서 중첩 Callout/Table/CodeBlock을 별도 오버레이 Composable로 렌더링.
+Callout에만 재귀 적용 — Table, CodeBlock 내부에서는 재귀하지 않음.
 
 **구현 항목:**
-- `MarkdownBasicTextFieldCore`: `overlayDepth`, `parentScrollState` 파라미터
-- overlay 루프: `key(textRange.first)`, `onRequestActivation` 콜백 (FocusRequester 기반)
-- `CalloutOverlay`: RoundBox 디자인 (배경 + 라운드 테두리) + 타입별 아이콘(18×18)
-- `CalloutOverlay`: body fontSize 0.9em (중첩 시 누적), Title↔Body 방향키/Enter 내비게이션
-- `CalloutOverlay`: `remember`(키 없음) + `rememberUpdatedState(data)` → sync 안정성
-- `CalloutOverlay`: Backspace(position 0)/LongPress → `onRequestActivation`으로 raw 전환
+- `MarkdownBasicTextFieldCore`: `overlayDepth`, `parentScrollState`, `contentPadding` 파라미터
+- MAX_OVERLAY_DEPTH = 10 (중첩 제한 실질적 해제)
+- depth=0: `Box + clipToBounds`, depth>0: `OverlayAwareLayout` (overlay offset+height 부모 측정 반영)
+- overlay 루프: `key(block.blockRange.type, index)`, `onRequestActivation` 콜백 (FocusRequester 기반)
+- `CalloutOverlay`: RoundBox 디자인 + 타입별 아이콘(18×18)
+- `CalloutOverlay`: body fontSize × 0.9, lineHeight × 0.9 (sp 절대값, depth>=1만 lineHeight 축소)
+- `CalloutOverlay`: Title↔Body 방향키/Enter 내비게이션, Backspace/LongPress → raw 전환
 - `CalloutOverlay`: 편집 중 scroll forwarder 비활성화, `parentScrollState`로 루트 전달
-- CodeBlock: 오버레이 제거, raw 마크다운 그대로 표시 (펜스 감지만 유지 → 인라인 스캔 방지)
+- `CodeBlockOverlay`: 라운드 배경 + monospace + lineHeight 패딩 보정 (펜스 줄 축소 보상)
+- `TableOverlay`: lineHeight/2 상하 패딩 (구분자 줄 축소 보상)
+- `contentPadding`: fontSize × 3 좌우 패딩 (BasicTextField + overlay, Dialogue Callout만 제외)
 - Inline Code: `codeInlineBackground` 분리 + DrawBehind `drawRoundRect`(4dp cornerRadius)
-- `normalizedTextStyle`: `LineHeightStyle(Proportional, Trim.Both)` → Bold/Italic 줄 높이 통일
-- `RawMarkdownOutputTransformation`: `inlineCodeRanges` 노출
+- `normalizedTextStyle`: `LineHeightStyle(Proportional, Trim.None)` → Bold/Italic 줄 높이 통일
 
 **알려진 이슈:**
-- 초기 1프레임 지연: `textLayoutResult` 확보 전 blockTransparent 적용 → 잠깐 투명 텍스트
+- 초기 1프레임 지연: stale TextLayoutResult 감지 + `lastValidOverlayBlocks`로 완화
+- depth=0 Callout 높이 overflow: 중첩 overlay chrome이 투명 텍스트보다 커질 수 있음. clip/fixedHeight 내부 스크롤 충돌로 보류
+- depth=0 Callout 위 마우스 스크롤 포워딩: body 내부 BasicTextField가 이벤트 소비 가능. 조사 필요
 - `forceAllOverlaysInactive` 선언 잔재 (미사용, 정리 가능)
 
 상세 설계: **MARKDOWN.md**, Callout 전용: **Callout.md** 참고.

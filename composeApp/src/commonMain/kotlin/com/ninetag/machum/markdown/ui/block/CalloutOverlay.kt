@@ -235,6 +235,8 @@ internal fun CalloutOverlay(
     }
 
     if (data.calloutType == "DIALOGUE") {
+        // 헤더 줄 축소 보정: lineHeight 만큼 상하 패딩
+        val headerPadding = resolveLineHeightDp(textStyle)/2
         Row(
             verticalAlignment = Alignment.Top,
             modifier = modifier
@@ -244,7 +246,7 @@ internal fun CalloutOverlay(
                 .then(scrollForwarder)
                 .background(decoStyle.containerColor, calloutShape)
                 .onFocusChanged { isCalloutFocused = it.hasFocus }
-                .padding(horizontal = 8.dp, vertical = textStyle.fontSize.value.dp)
+                .padding(horizontal = 8.dp, vertical = headerPadding)
         ) {
             BasicTextField(
                 state = titleState,
@@ -282,14 +284,17 @@ internal fun CalloutOverlay(
             )
         }
     } else {
+        val outerPadding = if (overlayDepth >= 1) Modifier.padding(vertical = 4.dp) else Modifier
+
         Column(
             modifier = modifier
                 .fillMaxWidth()
                 .then(scrollForwarder)
+                .then(outerPadding)
                 .background(decoStyle.containerColor, calloutShape)
                 .border(1.dp, decoStyle.accentColor, calloutShape)
                 .onFocusChanged { isCalloutFocused = it.hasFocus }
-                .padding(horizontal = 8.dp, vertical = 4.dp)
+                .padding(horizontal = 8.dp, vertical = if (overlayDepth >= 1) 2.dp else 0.dp)
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -315,6 +320,21 @@ internal fun CalloutOverlay(
                 )
             }
 
+            // body fontSize = title × 0.9, lineHeight = 부모 lineHeight × 0.9
+            // sp 절대값으로 계산하여 중첩 시 누적
+            // depth=0: lineHeight 변경 없음 → 부모 lineHeight(24sp) 유지 → 투명 텍스트와 일치
+            // depth>=1: lineHeight × 0.9 → 중첩 Callout 컴팩트
+            val bodyFontSize = if (textStyle.fontSize.isSp) {
+                textStyle.fontSize * 0.9f
+            } else {
+                0.9.em
+            }
+            val bodyTextStyle = if (overlayDepth >= 1 && textStyle.lineHeight.isSp) {
+                textStyle.merge(TextStyle(fontSize = bodyFontSize, lineHeight = textStyle.lineHeight * 0.9f))
+            } else {
+                textStyle.merge(TextStyle(fontSize = bodyFontSize))
+            }
+
             MarkdownBasicTextFieldCore(
                 state = bodyEditorState,
                 modifier = Modifier
@@ -322,12 +342,13 @@ internal fun CalloutOverlay(
                     .focusRequester(bodyFocusRequester)
                     .then(bodyKeyModifier)
                     .then(longPressModifier),
-                textStyle = textStyle.merge(TextStyle(fontSize = 0.9.em)),
+                textStyle = bodyTextStyle,
                 styleConfig = styleConfig,
                 parentScrollState = scrollState,
                 overlayDepth = overlayDepth + 1,
                 cursorBrush = SolidColor(textStyle.color),
             )
+
         }
     }
 }

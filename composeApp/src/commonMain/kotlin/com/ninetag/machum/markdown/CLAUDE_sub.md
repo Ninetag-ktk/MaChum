@@ -250,11 +250,11 @@ EmbedBlock:  FileManager 비동기 로딩 → 기존 EmbedRenderer 재활용
 
 ---
 
-### CodeBlock ` ``` ` — raw 마크다운 표시
+### CodeBlock ` ``` ` ✅ 오버레이 복원
 
-오버레이 없음. 펜스(` ``` `)와 코드 내용을 raw 마크다운 그대로 표시.
-스캐너에서 펜스 감지는 유지 (코드 블록 내부의 인라인 스캔 방지용).
-`CodeBlockOverlay.kt` 삭제됨.
+라운드 배경 + monospace TextField. 펜스 줄은 marker(0.01sp)로 축소.
+축소된 펜스 높이를 `resolveLineHeightDp(textStyle)` 만큼 상하 패딩으로 보정.
+`CodeBlockOverlay.kt`에서 구현. LongPress → `onRequestActivation`으로 raw 전환.
 
 ---
 
@@ -296,10 +296,10 @@ Ctrl/Cmd+B/I/E, Ctrl/Cmd+Shift+S/X/H → `RawStyleToggle` 호출.
 
 ---
 
-## Phase 5: 재귀적 오버레이 (✅ 구현 완료 — 테스트 중)
+## Phase 5: 재귀적 오버레이 + UI 개선 (✅ 구현 완료)
 
 Callout body에 `MarkdownBasicTextFieldCore`를 사용하여 중첩 오버레이 지원.
-Callout에만 적용 (Table/CodeBlock 내부는 재귀하지 않음).
+Callout에만 재귀 적용 (Table/CodeBlock 내부는 재귀하지 않음).
 
 ### 구현 구조
 
@@ -307,20 +307,24 @@ Callout에만 적용 (Table/CodeBlock 내부는 재귀하지 않음).
 MarkdownBasicTextField (public API, value/onValueChange)
   └─ MarkdownBasicTextFieldCore (internal, MarkdownEditorState 직접 사용)
        ├─ BasicTextField + RawMarkdownOutputTransformation
-       ├─ drawBehind: BlockDecorationDrawer
-       └─ overlayBlocks → key(textRange.first) { BlockOverlay → CalloutOverlay(depth+1) }
-            └─ MarkdownBasicTextFieldCore (재귀, depth < MAX_OVERLAY_DEPTH)
+       ├─ drawBehind: BlockDecorationDrawer (Callout RoundBox, Inline Code RoundRect 등)
+       ├─ depth=0: Box + clipToBounds
+       └─ depth>0: OverlayAwareLayout (overlay offset+height 부모 측정 반영)
+            └─ overlayBlocks → key(type, index) { BlockOverlay → CalloutOverlay/CodeBlockOverlay/TableOverlay }
+                 └─ MarkdownBasicTextFieldCore (재귀, depth < MAX_OVERLAY_DEPTH=10)
 ```
 
 ### 핵심 변경 파일
 
 | 파일 | 변경 내용 |
 |---|---|
-| `MarkdownBasicTextField.kt` | `MarkdownBasicTextFieldCore` internal composable 분리, `overlayDepth` 파라미터, overlay 루프에 `key(textRange.first)` |
-| `RawMarkdownOutputTransformation.kt` | `isFocused` 프로퍼티 추가 (기본값 `false`), `applyBlockTransparent` |
-| `BlockDecorationDrawer.kt` | `isNested`, `inlineCodeRanges` 파라미터. Callout RoundBox, Inline Code RoundRect 배경 |
-| `BlockOverlay.kt` | `overlayDepth`, `onRequestActivation` 파라미터 → CalloutOverlay/TableOverlay에 전달 |
-| `CalloutOverlay.kt` | RoundBox + 아이콘 + body 0.9em + FocusRequester 내비게이션 + `onRequestActivation` |
+| `MarkdownBasicTextField.kt` | Core 분리, `overlayDepth`/`parentScrollState`/`contentPadding` 파라미터, depth>0 OverlayAwareLayout, `key(type,index)` |
+| `RawMarkdownOutputTransformation.kt` | `isFocused`, `applyBlockTransparent`, `inlineCodeRanges` |
+| `BlockDecorationDrawer.kt` | `isNested`, `inlineCodeRanges`. Callout RoundBox(Stroke), Inline Code RoundRect |
+| `BlockOverlay.kt` | `overlayDepth`, `onRequestActivation`, `contentPadding` → 모든 Overlay에 전달. Dialogue Callout만 contentPadding 제외 |
+| `CalloutOverlay.kt` | RoundBox + 아이콘 + body fontSize×0.9 + lineHeight×0.9(depth>=1) + FocusRequester 내비게이션 |
+| `CodeBlockOverlay.kt` | 라운드 배경 + monospace + lineHeight 패딩 보정 |
+| `TableOverlay.kt` | lineHeight/2 상하 패딩 (구분자 줄 축소 보상) |
 
 ### 주요 설계 결정
 

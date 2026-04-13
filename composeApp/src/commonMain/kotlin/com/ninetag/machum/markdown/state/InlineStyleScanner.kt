@@ -28,7 +28,7 @@ internal object InlineStyleScanner {
     ): List<Pair<IntRange, SpanStyle>> {
         if (blockText.isEmpty()) return emptyList()
         return when (block) {
-            is MarkdownBlock.CodeBlock    -> emptyList()     // raw 마크다운 그대로
+            is MarkdownBlock.CodeBlock    -> codeBlockSpans(blockText, docOffset, config)
             is MarkdownBlock.Table        -> emptyList()     // 표는 raw 그대로
             is MarkdownBlock.HorizontalRule -> listOf((docOffset until docOffset + blockText.length) to config.marker)
             is MarkdownBlock.Embed        -> embedSpans(blockText, docOffset, config)
@@ -71,6 +71,27 @@ internal object InlineStyleScanner {
             spans += (docOffset + markerLen until contentEnd) to config.headingStyle(level)
             // heading 컨텐츠 내부 인라인 스타일
             scanInline(blockText, markerLen, blockText.length, docOffset, spans, config)
+        }
+        return spans
+    }
+
+    private fun codeBlockSpans(
+        blockText: String,
+        docOffset: Int,
+        config: MarkdownStyleConfig,
+    ): List<Pair<IntRange, SpanStyle>> {
+        val spans = mutableListOf<Pair<IntRange, SpanStyle>>()
+        val lines = blockText.split('\n')
+        var lineStart = 0
+        for (line in lines) {
+            val lineDocStart = docOffset + lineStart
+            val isFence = line.trimStart().startsWith("```")
+            if (isFence) {
+                spans += (lineDocStart until lineDocStart + line.length) to config.marker
+            } else {
+                spans += (lineDocStart until lineDocStart + line.length) to config.codeBlock
+            }
+            lineStart += line.length + 1
         }
         return spans
     }

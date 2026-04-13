@@ -105,7 +105,7 @@ internal class RawMarkdownOutputTransformation(
 
         // 비활성 오버레이 블록 범위 수집
         // applyBlockTransparent=false(오버레이 미생성)이면 비워서 blockTransparent/높이축소 스킵
-        val overlayBlockTypes = setOf(BlockType.CALLOUT, BlockType.TABLE)
+        val overlayBlockTypes = setOf(BlockType.CALLOUT, BlockType.TABLE, BlockType.CODE_BLOCK)
         val overlayBlockRanges = if (!applyBlockTransparent) emptyList() else cachedBlocks
             .filter { it.textRange !in activeRanges && it.type in overlayBlockTypes }
             .map { it.textRange }
@@ -127,12 +127,13 @@ internal class RawMarkdownOutputTransformation(
         }
         inlineCodeRanges = codeRanges
 
-        // 높이 축소 대상 줄 수집: TABLE 구분자
+        // 높이 축소 대상 줄 수집: TABLE 구분자, CODE_BLOCK 펜스
         val collapseRanges = mutableListOf<IntRange>()
         for (block in cachedBlocks) {
             if (block.textRange in activeRanges) continue
             when (block.type) {
                 BlockType.TABLE -> findTableSeparatorRange(text, block.textRange)?.let { collapseRanges += it }
+                BlockType.CODE_BLOCK -> collapseRanges += findCodeFenceRanges(text, block.textRange)
                 else -> {}
             }
         }
@@ -163,6 +164,35 @@ internal class RawMarkdownOutputTransformation(
             }
         }
 
+    }
+
+    /**
+     * 코드 블록에서 펜스 줄(``` 으로 시작하는 줄)의 범위를 찾는다.
+     * 첫 줄(여는 펜스)과 마지막 줄(닫는 펜스)을 반환한다.
+     */
+    private fun findCodeFenceRanges(text: String, blockRange: IntRange): List<IntRange> {
+        val result = mutableListOf<IntRange>()
+        val blockStart = blockRange.first
+        val blockEnd = blockRange.last
+
+        // 여는 펜스: 첫 줄
+        val firstNewline = text.indexOf('\n', blockStart)
+        val firstLineEnd = if (firstNewline == -1 || firstNewline > blockEnd) blockEnd else firstNewline
+        result += blockStart..firstLineEnd
+
+        // 닫는 펜스: 마지막 줄 (첫 줄과 다를 때만)
+        if (firstLineEnd < blockEnd) {
+            val lastNewline = text.lastIndexOf('\n', blockEnd)
+            if (lastNewline > blockStart) {
+                val lastLineStart = lastNewline + 1
+                val lastLine = text.substring(lastLineStart, (blockEnd + 1).coerceAtMost(text.length))
+                if (lastLine.trimStart().startsWith("```")) {
+                    result += lastLineStart..blockEnd
+                }
+            }
+        }
+
+        return result
     }
 
     /**

@@ -131,10 +131,15 @@ internal fun TableOverlay(
         Modifier
     }
 
+    // 구분자 줄(| --- |)이 marker로 축소된 높이를 상하 padding으로 보정
+    // lineHeight ÷ 2 = 상하 균등 분배
+    val separatorPadding = resolveLineHeightDp(textStyle) / 2
+
     Column(
         modifier = modifier
             .fillMaxWidth()
             .then(scrollForwarder)
+            .padding(vertical = separatorPadding)  // border 외부: 축소된 구분자 줄 높이 보정
             .border(1.dp, Color(0x33000000))
             .onFocusChanged { isTableFocused = it.hasFocus }
             .pointerInput(Unit) {
@@ -176,7 +181,7 @@ private fun RowScope.TableCell(
                 .weight(1f)
                 .fillMaxHeight()
                 .border(0.5.dp, textStyle.color)
-                .padding(6.dp),
+                .padding(horizontal = 6.dp),
             lineLimits = TextFieldLineLimits.SingleLine,
             cursorBrush = SolidColor(textStyle.color),
         )
