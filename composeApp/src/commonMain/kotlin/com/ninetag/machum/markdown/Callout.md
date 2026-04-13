@@ -173,13 +173,28 @@ textFieldState.edit { replace(blockStart, blockEnd, newRaw) }
 포커스 없으면: titleState / bodyEditorState 업데이트
 ```
 
-### 4.3 포커스 이탈 시 즉시 동기화
+### 4.3 포커스 이탈 시 조건부 동기화
 
 ```
 isCalloutFocused: true → false
   ↓ LaunchedEffect(isCalloutFocused)
-syncCalloutToRaw() 즉시 호출 (debounce 대기 중인 변경도 포함)
+  ↓ 내용 변경 여부 확인 (title/body가 원본 data와 다른 경우에만)
+syncCalloutToRaw() 호출
 ```
+
+내용이 변경되지 않았으면 sync를 건너뛴다 → 메인 TextFieldState에 불필요한 `replace()` 방지 → 한글 IME 조합 깨짐 방지.
+
+### 4.4 오버레이 깜빡임 방지
+
+`MarkdownBasicTextFieldCore`의 오버레이 루프에서 두 가지 기법 적용:
+
+1. **안정적인 key**: `key(block.blockRange.type, index)` 사용.
+   `textRange.first`는 블록 위에서 타이핑할 때마다 변경 → 오버레이 파괴/재생성 → 깜빡임.
+   블록 타입 + 인덱스는 안정적 → recomposition만 발생.
+
+2. **stale TextLayoutResult 시 이전 데이터 유지**:
+   텍스트 변경 후 TextLayoutResult는 한 프레임 뒤 갱신.
+   `layout.layoutInput.text.length != rawText.length`이면 `lastValidOverlayBlocks` 반환 → 깜빡임 없이 다음 프레임에서 정확한 위치로 갱신.
 
 ---
 

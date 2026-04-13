@@ -118,15 +118,22 @@ internal fun MarkdownBasicTextFieldCore(
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
     val scrollOffset by remember { derivedStateOf { scrollState.value.toFloat() } }
 
+    // 이전 유효 오버레이 데이터를 보관 — stale layout 시 깜빡임 방지
+    var lastValidOverlayBlocks by remember { mutableStateOf<List<OverlayBlockData>>(emptyList()) }
+
     val overlayBlocks: List<OverlayBlockData> by remember {
         derivedStateOf {
             if (overlayDepth >= MAX_OVERLAY_DEPTH) return@derivedStateOf emptyList()
-            val layout = textLayoutResult ?: return@derivedStateOf emptyList()
+            val layout = textLayoutResult ?: return@derivedStateOf lastValidOverlayBlocks
             val rawText = state.textFieldState.text.toString()
+
+            // TextLayoutResult가 현재 텍스트와 일치하지 않으면 이전 데이터 유지
+            if (layout.layoutInput.text.length != rawText.length) return@derivedStateOf lastValidOverlayBlocks
+
             val activeRanges = outputTransformation.activeBlockRanges
             val offset = scrollOffset
 
-            outputTransformation.blockRanges
+            val result = outputTransformation.blockRanges
                 .filter { it.textRange !in activeRanges }
                 .mapNotNull { block ->
                     val rect = OverlayPositionCalculator.compute(layout, block.textRange, offset)
@@ -139,6 +146,8 @@ internal fun MarkdownBasicTextFieldCore(
                     )
                     OverlayBlockParser.parse(block, blockText, rect)
                 }
+            lastValidOverlayBlocks = result
+            result
         }
     }
 
@@ -179,8 +188,9 @@ internal fun MarkdownBasicTextFieldCore(
             onTextLayout = { textLayoutResult = it() },
         )
 
-        for (block in overlayBlocks) {
-            key(block.blockRange.textRange.first) {
+        for ((index, block) in overlayBlocks.withIndex()) {
+            // 블록 타입 + 인덱스로 안정적인 key 사용 (textRange.first는 위 텍스트 편집 시 매번 변경 → 깜빡임)
+            key(block.blockRange.type, index) {
                 BlockOverlay(
                     data = block,
                     textFieldState = state.textFieldState,

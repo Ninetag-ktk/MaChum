@@ -183,6 +183,27 @@ fun computeOverlayRect(layout: TextLayoutResult, range: IntRange, scrollOffset: 
 
 뷰포트 밖 블록은 오버레이를 생성하지 않음 (성능 최적화).
 
+### 오버레이 깜빡임 방지
+
+오버레이 위치/데이터 계산 시 두 가지 기법으로 깜빡임을 방지한다.
+
+**1. 안정적인 key 사용**
+오버레이 루프에서 `key(block.blockRange.type, index)` 사용.
+`textRange.first`를 key로 사용하면, 블록 위에서 타이핑할 때마다 오프셋이 변경되어 오버레이가 파괴→재생성된다.
+블록 타입 + 순서 인덱스는 내용이 같으면 안정적으로 유지되어 recomposition만 발생 (재생성 아님).
+
+**2. stale TextLayoutResult 시 이전 데이터 유지**
+텍스트 변경 후 `TextLayoutResult`는 한 프레임 뒤에 갱신된다.
+`layout.layoutInput.text.length != rawText.length`이면 stale layout으로 판단하고,
+`lastValidOverlayBlocks`(이전 유효 데이터)를 반환하여 오버레이가 사라졌다 나타나는 것을 방지한다.
+다음 프레임에서 새 TextLayoutResult가 도착하면 정확한 위치로 갱신.
+
+```kotlin
+// MarkdownBasicTextFieldCore 내 overlayBlocks derivedStateOf
+if (layout.layoutInput.text.length != rawText.length)
+    return@derivedStateOf lastValidOverlayBlocks  // 이전 데이터 유지
+```
+
 ---
 
 ### Callout `> [!type]` ✅ 구현 완료 (Phase 5 재귀 오버레이 + UI 개선)

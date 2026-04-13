@@ -17,6 +17,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.input.TextFieldLineLimits
@@ -43,6 +46,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -51,6 +55,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
@@ -122,14 +127,17 @@ internal fun CalloutOverlay(
         }
     }
 
-    // 포커스 이탈 시 즉시 동기화
+    // 포커스 이탈 시 즉시 동기화 (내용이 변경된 경우에만)
     LaunchedEffect(isCalloutFocused) {
         if (!activating && !isCalloutFocused) {
-            syncCalloutToRaw(
-                textFieldState, currentData,
-                titleState.text.toString(),
-                bodyEditorState.textFieldState.text.toString(),
-            )
+            val currentTitle = titleState.text.toString()
+            val currentBody = bodyEditorState.textFieldState.text.toString()
+            val originalBody = currentData.bodyLines.joinToString("\n")
+            if (currentTitle != currentData.title || currentBody != originalBody) {
+                syncCalloutToRaw(
+                    textFieldState, currentData, currentTitle, currentBody,
+                )
+            }
         }
     }
 
@@ -226,50 +234,101 @@ internal fun CalloutOverlay(
         Modifier
     }
 
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .then(scrollForwarder)
-            .background(decoStyle.containerColor, calloutShape)
-            .border(1.dp, decoStyle.accentColor, calloutShape)
-            .onFocusChanged { isCalloutFocused = it.hasFocus }
-            .padding(horizontal = 8.dp, vertical = 4.dp)
-    ) {
+    if (data.calloutType == "DIALOGUE") {
         Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Top,
+            modifier = modifier
+                .fillMaxWidth()
+                .wrapContentHeight()
+                .padding(horizontal = 8.dp)
+                .then(scrollForwarder)
+                .background(decoStyle.containerColor, calloutShape)
+                .onFocusChanged { isCalloutFocused = it.hasFocus }
+                .padding(horizontal = 8.dp, vertical = textStyle.fontSize.value.dp)
         ) {
-            Icon(
-                imageVector = calloutIcon(data.calloutType),
-                contentDescription = data.calloutType,
-                tint = decoStyle.accentColor,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(Modifier.width(4.dp))
             BasicTextField(
                 state = titleState,
-                textStyle = textStyle.merge(TextStyle(fontWeight = FontWeight.Bold)),
+                textStyle = textStyle.merge(TextStyle(
+                    fontWeight = FontWeight.Bold,
+                    lineHeight = 1.5.em,
+                    lineHeightStyle = LineHeightStyle(
+                        alignment = LineHeightStyle.Alignment.Proportional,
+                        trim = LineHeightStyle.Trim.Both,
+                    ),
+                )),
                 modifier = Modifier
-                    .weight(1f)
+                    .wrapContentWidth()
+                    .widthIn(max = textStyle.fontSize.value.dp * 5)
                     .focusRequester(titleFocusRequester)
                     .then(titleKeyModifier)
+                    .then(longPressModifier)
+                    .padding(end = 4.dp),
+                lineLimits = TextFieldLineLimits.MultiLine(maxHeightInLines = 2),
+                cursorBrush = SolidColor(textStyle.color),
+            )
+            MarkdownBasicTextFieldCore(
+                state = bodyEditorState,
+                modifier = Modifier
+                    .weight(1f)
+                    .wrapContentHeight()
+                    .focusRequester(bodyFocusRequester)
+                    .then(bodyKeyModifier)
                     .then(longPressModifier),
-                lineLimits = TextFieldLineLimits.SingleLine,
+                textStyle = textStyle.merge(TextStyle()),
+                cursorBrush = SolidColor(textStyle.color),
+                styleConfig = styleConfig,
+                parentScrollState = scrollState,
+                overlayDepth = 1
             )
         }
-
-        MarkdownBasicTextFieldCore(
-            state = bodyEditorState,
-            modifier = Modifier
+    } else {
+        Column(
+            modifier = modifier
                 .fillMaxWidth()
-                .focusRequester(bodyFocusRequester)
-                .then(bodyKeyModifier)
-                .then(longPressModifier),
-            textStyle = textStyle.merge(TextStyle(fontSize = 0.9.em)),
-            styleConfig = styleConfig,
-            parentScrollState = scrollState,
-            overlayDepth = overlayDepth + 1,
-        )
+                .then(scrollForwarder)
+                .background(decoStyle.containerColor, calloutShape)
+                .border(1.dp, decoStyle.accentColor, calloutShape)
+                .onFocusChanged { isCalloutFocused = it.hasFocus }
+                .padding(horizontal = 8.dp, vertical = 4.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(
+                    imageVector = calloutIcon(data.calloutType),
+                    contentDescription = data.calloutType,
+                    tint = decoStyle.accentColor,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(4.dp))
+                BasicTextField(
+                    state = titleState,
+                    textStyle = textStyle.merge(TextStyle(fontWeight = FontWeight.Bold)),
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(titleFocusRequester)
+                        .then(titleKeyModifier)
+                        .then(longPressModifier),
+                    lineLimits = TextFieldLineLimits.SingleLine,
+                    cursorBrush = SolidColor(textStyle.color),
+                )
+            }
+
+            MarkdownBasicTextFieldCore(
+                state = bodyEditorState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(bodyFocusRequester)
+                    .then(bodyKeyModifier)
+                    .then(longPressModifier),
+                textStyle = textStyle.merge(TextStyle(fontSize = 0.9.em)),
+                styleConfig = styleConfig,
+                parentScrollState = scrollState,
+                overlayDepth = overlayDepth + 1,
+                cursorBrush = SolidColor(textStyle.color),
+            )
+        }
     }
 }
 

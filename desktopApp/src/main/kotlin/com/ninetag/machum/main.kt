@@ -25,9 +25,9 @@ fun main() {
     application {
         val fileManager = koinInject<FileManager>()
         val bookmark by fileManager.bookmarks.collectAsState()
-        val vaultData by remember {fileManager.bookmarks.map { it?.vaultData }}.collectAsState(null)
+        val vaultData by remember {fileManager.bookmarks.map { it.vaultData }}.collectAsState(null)
 
-        bookmark?.let {
+        bookmark.let {
             when (vaultData) {
                 null -> {
                     // Vault 선택 팝업
