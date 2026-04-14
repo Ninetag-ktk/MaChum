@@ -53,12 +53,15 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
@@ -235,8 +238,10 @@ internal fun CalloutOverlay(
     }
 
     if (data.calloutType == "DIALOGUE") {
-        // 헤더 줄 축소 보정: lineHeight 만큼 상하 패딩
-        val headerPadding = resolveLineHeightDp(textStyle)/2
+        // 헤더 줄 높이 보정: fontSize × 0.5 상하 패딩
+        val headerPadding = with(LocalDensity.current) {
+            if (textStyle.fontSize.isSp) textStyle.fontSize.toDp() * 0.5f else 8.dp
+        }
         Row(
             verticalAlignment = Alignment.Top,
             modifier = modifier
@@ -276,7 +281,9 @@ internal fun CalloutOverlay(
                     .focusRequester(bodyFocusRequester)
                     .then(bodyKeyModifier)
                     .then(longPressModifier),
-                textStyle = textStyle.merge(TextStyle()),
+                textStyle = textStyle.merge(TextStyle(
+                    lineHeight = resolveAbsoluteLineHeight(textStyle),
+                )),
                 cursorBrush = SolidColor(textStyle.color),
                 styleConfig = styleConfig,
                 parentScrollState = scrollState,
@@ -320,20 +327,19 @@ internal fun CalloutOverlay(
                 )
             }
 
-            // body fontSize = title × 0.9, lineHeight = 부모 lineHeight × 0.9
-            // sp 절대값으로 계산하여 중첩 시 누적
-            // depth=0: lineHeight 변경 없음 → 부모 lineHeight(24sp) 유지 → 투명 텍스트와 일치
-            // depth>=1: lineHeight × 0.9 → 중첩 Callout 컴팩트
+            // body fontSize = title × 0.9
+            // lineHeight는 부모의 절대 sp 값을 유지 → raw text와 줄 높이 일치
+            // (em으로 두면 자식 Core의 normalizedTextStyle이 축소된 fontSize 기준으로 재계산)
             val bodyFontSize = if (textStyle.fontSize.isSp) {
                 textStyle.fontSize * 0.9f
             } else {
                 0.9.em
             }
-            val bodyTextStyle = if (overlayDepth >= 1 && textStyle.lineHeight.isSp) {
-                textStyle.merge(TextStyle(fontSize = bodyFontSize, lineHeight = textStyle.lineHeight * 0.9f))
-            } else {
-                textStyle.merge(TextStyle(fontSize = bodyFontSize))
-            }
+            val parentLineHeight = resolveAbsoluteLineHeight(textStyle)
+            val bodyTextStyle = textStyle.merge(TextStyle(
+                fontSize = bodyFontSize,
+                lineHeight = parentLineHeight,
+            ))
 
             MarkdownBasicTextFieldCore(
                 state = bodyEditorState,
@@ -364,6 +370,22 @@ private fun calloutIcon(type: String) = when (type.uppercase()) {
     "QUESTION"  -> Icons.AutoMirrored.Outlined.Help
     "SUCCESS"   -> Icons.Outlined.Check
     else        -> Icons.Outlined.Info
+}
+
+/**
+ * textStyle의 lineHeight를 절대 sp 값으로 해석한다.
+ * em/Unspecified인 경우 fontSize 기준으로 변환하여,
+ * 자식 Core의 normalizedTextStyle이 축소된 fontSize로 재계산하는 것을 방지한다.
+ */
+private fun resolveAbsoluteLineHeight(textStyle: TextStyle): TextUnit {
+    val lh = textStyle.lineHeight
+    val fs = textStyle.fontSize
+    return when {
+        lh.isSp -> lh
+        lh.isEm && fs.isSp -> fs * lh.value
+        fs.isSp -> fs * 1.5f  // normalizedTextStyle 기본값 (1.5em)
+        else -> TextUnit.Unspecified
+    }
 }
 
 private fun syncCalloutToRaw(

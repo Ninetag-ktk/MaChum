@@ -144,14 +144,17 @@ internal object MarkdownPatternScanner {
                 val calloutText = calloutLines.joinToString("\n")
                 val calloutEnd = calloutStart + calloutText.length
 
-                spans += InlineStyleScanner.calloutSpans(calloutText, calloutStart, config)
+                spans += InlineStyleScanner.calloutSpans(calloutText, calloutStart, config, depth = calloutDepth, calloutType = calloutType)
                 // body 줄이 있을 때만 CALLOUT 블록(오버레이 대상)으로 등록
                 // 헤더만 있는 Callout은 인라인 스타일로만 렌더링
                 if (calloutLines.size >= 2) {
                     blocks += BlockRange(
                         type = BlockType.CALLOUT,
                         textRange = calloutStart until calloutEnd,
-                        meta = mapOf("calloutType" to calloutType),
+                        meta = mapOf(
+                            "calloutType" to calloutType,
+                            "depth" to calloutDepth.toString(),
+                        ),
                     )
                 }
 

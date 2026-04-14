@@ -112,12 +112,22 @@ internal class RawMarkdownOutputTransformation(
 
         // 비활성 줄의 인라인 스팬 적용
         // 오버레이 블록 내부의 스팬은 건너뜀 (MARKER 0.01sp가 줄 높이를 깨뜨리므로)
+        // 단, calloutIndicator와 fontSize(em) 스팬은 줄 높이 맞춤 용도이므로 유지
         val codeRanges = mutableListOf<IntRange>()
         for ((range, style) in cachedSpans) {
             val inOverlayBlock = overlayBlockRanges.any { blockRange ->
                 range.first >= blockRange.first && range.last <= blockRange.last
             }
-            if (inOverlayBlock) continue
+            if (inOverlayBlock) {
+                // 줄 높이 맞춤 용도의 스팬만 허용 (나머지는 오버레이가 렌더링 담당)
+                // - calloutIndicator: ">" 인디케이터
+                // - fontSize(em): body/header fontSize 보상
+                // - blockTransparent: header prefix (색만 투명, 크기 유지)
+                val isIndicator = style == config.calloutIndicator
+                val isFontSize = style.fontSize.isEm
+                val isBlockTransparent = style == config.blockTransparent
+                if (!isIndicator && !isFontSize && !isBlockTransparent) continue
+            }
             // inline code 범위 수집 (DrawBehind RoundRect 배경용)
             if (style == config.codeInline) {
                 val inRawZone = rawZones.any { rz -> range.first >= rz.first && range.last <= rz.last }

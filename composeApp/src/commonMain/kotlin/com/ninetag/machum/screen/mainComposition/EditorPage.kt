@@ -10,7 +10,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.ninetag.machum.markdown.ui.MarkdownTextField
+import com.ninetag.machum.markdown.ui.MarkdownBlockTextFieldM3
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.name
 import kotlinx.coroutines.FlowPreview
@@ -40,7 +40,7 @@ fun EditorPage(file: PlatformFile) {
                 .collectLatest { viewModel.updateBody(file.name, it) }
         }
 
-        MarkdownTextField(
+        MarkdownBlockTextFieldM3(
             value = noteFile.body,
             onValueChange = { pendingMarkdown.value = it },
             modifier = Modifier

@@ -5,7 +5,6 @@ import com.ninetag.machum.markdown.state.*
 import com.ninetag.machum.markdown.service.util.handleEditorKeyEvent
 
 import androidx.compose.foundation.ScrollState
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.rememberScrollState
@@ -174,10 +173,10 @@ internal fun MarkdownBasicTextFieldCore(
     // 오버레이에서 부모 BasicTextField로 포커스를 되돌리기 위한 FocusRequester
     val editorFocusRequester = remember { FocusRequester() }
 
-    // ── [OVERLAY_LAYOUT] depth별 레이아웃 전략 ──
-    // depth=0: Box + clipToBounds (에디터 영역 밖 클리핑, 오버레이는 투명 텍스트와 높이 일치)
-    // depth>0: OverlayAwareLayout (오버레이의 offset 위치+크기를 부모 높이 측정에 반영)
-    //          → 중첩 Callout의 chrome(padding/icon)이 투명 텍스트보다 커도 부모가 자동 확장
+    // ── [OVERLAY_LAYOUT] ──
+    // 모든 depth에서 Layout 사용: overlay의 offset 위치 + 크기를 부모 높이 측정에 반영
+    // → overlay chrome(padding/icon)이 투명 텍스트보다 커도 부모가 자동 확장
+    // depth=0: clipToBounds로 뷰포트 밖 클리핑 유지
 
     // 공통 content: BasicTextField + overlay 블록들
     val editorContent: @Composable () -> Unit = {
@@ -237,22 +236,20 @@ internal fun MarkdownBasicTextFieldCore(
         }
     }
 
-    if (overlayDepth == 0) {
-        // [OVERLAY_LAYOUT:depth=0] 기존 Box + clipToBounds
-        Box(modifier = modifier.clipToBounds(), content = { editorContent() })
-    } else {
-        // [OVERLAY_LAYOUT:depth>0] offset 배치된 overlay의 높이를 부모 측정에 반영
-        // BasicTextField(child 0)는 (0,0)에 배치, overlay(child 1..N)는 viewportRect 위치에 배치
-        // 부모 높이 = max(BasicTextField 높이, 각 overlay의 top + height)
-        Layout(
-            content = editorContent,
-            modifier = modifier,
-        ) { measurables, constraints ->
-            val placeables = measurables.map { it.measure(constraints.copy(minHeight = 0)) }
-            val textFieldHeight = placeables.firstOrNull()?.height ?: 0
+    // ── [OVERLAY_LAYOUT] ──
+    // depth=0: BasicTextField가 자체 ScrollState로 스크롤 관리 → Layout 높이 = TextField 높이
+    //          clipToBounds로 뷰포트 밖 클리핑. overlay 높이 오차는 lineHeight 맞춤으로 해소.
+    // depth>0: overlay의 offset + 크기를 부모 높이에 반영 → chrome 오차만큼 자동 확장
+    Layout(
+        content = editorContent,
+        modifier = if (overlayDepth == 0) modifier.clipToBounds() else modifier,
+    ) { measurables, constraints ->
+        val placeables = measurables.map { it.measure(constraints.copy(minHeight = 0)) }
+        val textFieldHeight = placeables.firstOrNull()?.height ?: 0
 
-            // overlay의 offset(viewportRect.top) + 측정 높이 → 실제 bottom 계산
-            var maxBottom = textFieldHeight
+        var maxBottom = textFieldHeight
+        if (overlayDepth > 0) {
+            // depth>0에서만 overlay 높이를 부모 측정에 반영
             for (i in 1..placeables.lastIndex) {
                 val blockIndex = i - 1
                 if (blockIndex < overlayBlocks.size) {
@@ -261,14 +258,12 @@ internal fun MarkdownBasicTextFieldCore(
                     if (bottom > maxBottom) maxBottom = bottom
                 }
             }
+        }
 
-            layout(constraints.maxWidth, maxBottom) {
-                // BasicTextField at (0, 0)
-                placeables.firstOrNull()?.place(0, 0)
-                // overlay는 자체 Modifier.offset이 위치를 결정
-                for (i in 1..placeables.lastIndex) {
-                    placeables[i].place(0, 0)
-                }
+        layout(constraints.maxWidth, maxBottom) {
+            placeables.firstOrNull()?.place(0, 0)
+            for (i in 1..placeables.lastIndex) {
+                placeables[i].place(0, 0)
             }
         }
     }

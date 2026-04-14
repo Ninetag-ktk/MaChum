@@ -71,18 +71,33 @@ id: a1b2c3d4
 Workflows are markdown files parsed into a `HeaderNode` tree (levels 1–4 via `#`–`####`). Leaf nodes become `WorkflowStep`s with dot-notation numbering (e.g., `"1-2-3"`). Blockquotes (`>`) become step descriptions. The tree serializes back to markdown via `toMarkdown()`.
 
 ### Markdown Editor Engine (`markdown/`)
-The `markdown/editor/` package implements a live-preview markdown editor using raw text + symbol transparency (OutputTransformation). Key components:
-- **`MarkdownPatternScanner`** — scans entire document for block/inline patterns, produces `ScanResult` (spans + block ranges). Also contains `BlockType`, `BlockRange`, `ScanResult` data classes.
-- **`InlineStyleScanner`** — computes per-block `SpanStyle` ranges (MARKER transparent + content styled).
-- **`RawMarkdownOutputTransformation`** — `OutputTransformation` impl; active line shows raw, inactive lines show styled preview.
-- **`OverlayBlockParser`** — parses raw text into `OverlayBlockData` (Callout/Table/CodeBlock) for overlay composables. Contains `OverlayBlockData` sealed class.
-- **`overlay/`** — Composable overlays (Callout, Table, CodeBlock) with internal TextFields for direct editing + raw markdown sync.
+**블록 기반 에디터로 전환 완료 (Phase 1+2 부분).** 문서를 블록 리스트(`List<EditorBlock>`)로 관리하고 각 블록이 독립 Composable로 렌더링된다. 상세 설계: `markdown/CLAUDE_sub.md`, 체크리스트: `markdown/compact.md`.
 
-Sealed types: `MarkdownBlock` and `InlineToken` in `markdown/token/` (used by `InlineStyleScanner` and `MarkdownPatternScanner`).
+블록 에디터 핵심 컴포넌트 (구현 완료):
+- **`EditorBlock`** (`state/`) — sealed class: Text, Callout, Code, Table, HorizontalRule, Embed. 각 블록이 자체 TextFieldState 보유.
+- **`MarkdownBlockParser`** (`state/`) — raw markdown → `List<EditorBlock>` 파싱 (Callout body 재귀)
+- **`BlockOperations`** (`state/`) — 블록 분할/병합 로직 (```, `> [!TYPE]`, `---`, `\n\n`, Backspace)
+- **`MarkdownBlockEditor`** (`ui/`) — LazyColumn 기반 블록 렌더링 + FocusRequester 맵 + BlockNavigation
+- **`MarkdownBlockTextField`** / **`MarkdownBlockTextFieldM3`** (`ui/`) — 공개 API (value/onValueChange)
+- **`TextBlockEditor`** (`ui/`) — BasicTextField + OutputTransformation (인라인 서식) + 패턴 감지
+- **`CalloutBlockEditor`** (`ui/block/`) — Standard + DIALOGUE 변형, 재귀적 body
+- **`CodeBlockEditor`**, **`TableBlockEditor`**, **`HorizontalRuleDivider`** (`ui/block/`)
+
+v1 컴포넌트 (EditorPage에서 미사용, 제거 예정):
+- `MarkdownBasicTextField`, `MarkdownTextField`, `MarkdownEditorState`
+- `OverlayBlockParser`, `OverlayPositionCalculator`, `OverlayScrollForwarder`
+- `BlockOverlay`, `CalloutOverlay`, `CodeBlockOverlay`, `TableOverlay`
+
+v1에서 블록 에디터가 재활용하는 컴포넌트:
+- `InlineStyleScanner`, `MarkdownPatternScanner` — TextBlockEditor의 OutputTransformation 내부
+- `RawMarkdownOutputTransformation` — TextBlockEditor에서 `applyBlockTransparent=false`로 사용
+- `EditorInputTransformation`, `EditorKeyboardShortcuts`, `RawStyleToggle` — TextBlockEditor에서 사용
+- `BlockDecorationDrawer` — TextBlockEditor drawBehind
+- `MarkdownStyleConfig` — 전체 스타일 설정
 
 ### Editor (`screen/mainComposition/`)
 - **`MainViewModel`**: manages file list, active page index, and a note cache (`Map<String, NoteFile>`). Debounces saves 500ms via a `_saveRequest` StateFlow.
-- **`EditorPage`**: block-based editor — double newline (`\n\n`) splits a block; each block shows markdown preview (unselected) or `BasicTextField` (selected). Uses `mikepenz` markdown renderer for previews.
+- **`EditorPage`**: Uses `MarkdownBlockTextFieldM3` (block-based editor). `key(file.name)` for file switching, `MutableStateFlow` + `debounce(500ms)` for save.
 
 ### Dependency Injection
 Koin 4.x. Module in `di/commonModule.kt`:
