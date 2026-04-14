@@ -14,6 +14,17 @@ sealed class EditorBlock {
     abstract val id: String
     abstract fun toMarkdown(): String
 
+    companion object {
+        /**
+         * Block→Block 사이 빈 줄을 표현하는 마커 문자 (Zero-Width Space).
+         *
+         * 독립 TextField에서 "" = 높이 0, "\n" = 2줄 높이 → 정확히 1줄 높이 불가.
+         * ZWSP는 보이지 않으면서 1줄 높이를 차지하여 빈 줄 1개를 정확히 렌더링.
+         * [toMarkdown] 시 "" (빈 문자열)로 치환하여 원본 빈 줄을 복원한다.
+         */
+        const val BLANK_LINE_MARKER = "\u200B"
+    }
+
     /**
      * 일반 텍스트 블록.
      * Heading, BulletList, OrderedList, Blockquote, 일반 텍스트를 포함한다.
@@ -23,7 +34,8 @@ sealed class EditorBlock {
         override val id: String = generateId(),
         val textFieldState: TextFieldState,
     ) : EditorBlock() {
-        override fun toMarkdown(): String = textFieldState.text.toString()
+        override fun toMarkdown(): String =
+            textFieldState.text.toString().replace(BLANK_LINE_MARKER, "")
     }
 
     /**
@@ -96,6 +108,20 @@ sealed class EditorBlock {
 @OptIn(kotlin.uuid.ExperimentalUuidApi::class)
 private fun generateId(): String = Uuid.random().toString()
 
-/** 블록 리스트를 raw markdown 문자열로 직렬화한다. 블록 사이에 빈 줄(\n\n)을 삽입. */
-fun List<EditorBlock>.toMarkdown(): String =
-    joinToString("\n\n") { it.toMarkdown() }
+/**
+ * 블록 리스트를 raw markdown 문자열로 직렬화한다.
+ *
+ * 모든 블록 사이에 "\n" 조인. 빈 줄은 TextBlock 안의 \n이 담당:
+ * - Text("text1\n") + "\n" + Code = "text1\n\n```..." (trailing \n + join = \n\n = 빈 줄 1개)
+ * - Code + "\n" + Text("\ntext2") = "```...\n\ntext2" (join + leading \n = \n\n = 빈 줄 1개)
+ * - Code + "\n" + Text(ZWSP) + "\n" + Code = "```...\n\n```..." (Block간 빈 줄 = ZWSP → "" 치환)
+ */
+fun List<EditorBlock>.toMarkdown(): String {
+    if (isEmpty()) return ""
+    return buildString {
+        for ((i, block) in this@toMarkdown.withIndex()) {
+            if (i > 0) append('\n')
+            append(block.toMarkdown())
+        }
+    }
+}

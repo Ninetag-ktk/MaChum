@@ -15,16 +15,16 @@
 
 | 컴포넌트 | 파일 | 역할 |
 |---|---|---|
-| `EditorBlock` | `state/EditorBlock.kt` | 블록 모델 sealed class + `toMarkdown()` |
-| `MarkdownBlockParser` | `state/MarkdownBlockParser.kt` | raw markdown → `List<EditorBlock>` |
-| `BlockOperations` | `state/BlockOperations.kt` | 블록 분할/병합/재파싱 |
-| `MarkdownBlockEditor` | `ui/MarkdownBlockEditor.kt` | LazyColumn 블록 dispatcher |
+| `EditorBlock` | `state/EditorBlock.kt` | 블록 모델 sealed class + BLANK_LINE_MARKER + `toMarkdown()` |
+| `MarkdownBlockParser` | `state/MarkdownBlockParser.kt` | raw markdown → `List<EditorBlock>` (pendingNewlines 방식) |
+| `BlockOperations` | `state/BlockOperations.kt` | 블록 분할/병합/재파싱 (특수블록 우선 포커스) |
+| `MarkdownBlockEditor` | `ui/MarkdownBlockEditor.kt` | LazyColumn 블록 dispatcher + escape 콜백 |
 | `MarkdownBlockTextField` | `ui/MarkdownBlockTextField.kt` | 공개 API + M3 래퍼 |
-| `TextBlockEditor` | `ui/TextBlockEditor.kt` | 텍스트 블록 (인라인 서식) |
-| `CalloutBlockEditor` | `ui/block/CalloutBlockEditor.kt` | Callout (Standard + DIALOGUE) |
-| `CodeBlockEditor` | `ui/block/CodeBlockEditor.kt` | CodeBlock (monospace) |
-| `TableBlockEditor` | `ui/block/TableBlockEditor.kt` | Table (셀별 TextField) |
-| `HorizontalRuleDivider` | `ui/block/HorizontalRuleDivider.kt` | HR (Divider) |
+| `TextBlockEditor` | `ui/TextBlockEditor.kt` | 텍스트 블록 (인라인 서식 + ←↑↓ 블록 이동) |
+| `CalloutBlockEditor` | `ui/block/CalloutBlockEditor.kt` | Callout (Standard ↓↑ / DIALOGUE ←→, Enter body 생성) |
+| `CodeBlockEditor` | `ui/block/CodeBlockEditor.kt` | CodeBlock (monospace, ↑↓ 블록 이동) |
+| `TableBlockEditor` | `ui/block/TableBlockEditor.kt` | Table (2D focusGrid, Tab/Enter 행 추가, +버튼) |
+| `HorizontalRuleDivider` | `ui/block/HorizontalRuleDivider.kt` | HR (미사용 — TextBlock 인라인 렌더링으로 전환) |
 
 ### v1에서 재활용하는 컴포넌트
 
@@ -63,7 +63,7 @@
 | Callout `> [!type]` | ✅ CalloutBlockEditor |
 | CodeBlock ` ``` ` | ✅ CodeBlockEditor |
 | Table `\|` | ✅ TableBlockEditor |
-| HorizontalRule `---` | ✅ HorizontalRuleDivider |
+| HorizontalRule `---` | ✅ TextBlock 인라인 렌더링 (blockTransparent + DrawBehind Divider) |
 | Embed `![[파일명]]` | ⬜ Phase 3 |
 
 ---

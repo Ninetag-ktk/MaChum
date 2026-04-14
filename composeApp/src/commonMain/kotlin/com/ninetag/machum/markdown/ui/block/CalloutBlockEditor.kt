@@ -2,11 +2,22 @@ package com.ninetag.machum.markdown.ui.block
 
 import com.ninetag.machum.markdown.service.MarkdownStyleConfig
 import com.ninetag.machum.markdown.state.EditorBlock
+import com.ninetag.machum.markdown.ui.BlockNavigation
 import com.ninetag.machum.markdown.ui.MarkdownBlockEditor
 
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -57,15 +68,16 @@ internal fun CalloutBlockEditor(
     cursorBrush: Brush = SolidColor(Color.Black),
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester = remember { FocusRequester() },
+    navigation: BlockNavigation = BlockNavigation(),
     onBlocksChanged: (List<EditorBlock>) -> Unit = {},
 ) {
     val decoStyle = styleConfig.calloutDecorationStyle(block.calloutType)
     val shape = RoundedCornerShape(8.dp)
 
     if (block.calloutType.equals("DIALOGUE", ignoreCase = true)) {
-        DialogueCallout(block, decoStyle, styleConfig, textStyle, cursorBrush, shape, modifier)
+        DialogueCallout(block, decoStyle, styleConfig, textStyle, cursorBrush, shape, modifier, navigation, focusRequester, onBlocksChanged)
     } else {
-        StandardCallout(block, decoStyle, styleConfig, textStyle, cursorBrush, shape, modifier)
+        StandardCallout(block, decoStyle, styleConfig, textStyle, cursorBrush, shape, modifier, navigation, focusRequester, onBlocksChanged)
     }
 }
 
@@ -78,7 +90,53 @@ private fun StandardCallout(
     cursorBrush: Brush,
     shape: RoundedCornerShape,
     modifier: Modifier,
+    navigation: BlockNavigation,
+    titleFocusRequester: FocusRequester,
+    onBlocksChanged: (List<EditorBlock>) -> Unit,
 ) {
+    // body 첫 블록에 포커스를 보내기 위한 FocusRequester
+    val bodyFocusRequester = remember { FocusRequester() }
+
+    // body 생성 후 지연 포커스
+    var pendingBodyFocus by remember { mutableStateOf(0) }
+    LaunchedEffect(pendingBodyFocus) {
+        if (pendingBodyFocus > 0) {
+            kotlinx.coroutines.delay(50)
+            try { bodyFocusRequester.requestFocus() } catch (_: Exception) {}
+        }
+    }
+
+    // Title 키 핸들러: Enter/↓→body, ↑→이전 블록
+    val titleKeyHandler = Modifier.onPreviewKeyEvent { event ->
+        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+        when (event.key) {
+            Key.Enter -> {
+                if (block.bodyBlocks.isEmpty()) {
+                    // body가 없으면 빈 TextBlock으로 생성 + 지연 포커스
+                    onBlocksChanged(listOf(EditorBlock.Text(textFieldState = TextFieldState(""))))
+                    pendingBodyFocus++
+                } else {
+                    // body가 있으면 바로 포커스
+                    try { bodyFocusRequester.requestFocus() } catch (_: Exception) {}
+                }
+                true
+            }
+            Key.DirectionDown -> {
+                if (block.bodyBlocks.isNotEmpty()) {
+                    try { bodyFocusRequester.requestFocus() } catch (_: Exception) {}
+                } else {
+                    navigation.onMoveToNext()
+                }
+                true
+            }
+            Key.DirectionUp -> {
+                navigation.onMoveToPrevious()
+                true
+            }
+            else -> false
+        }
+    }
+
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -101,7 +159,9 @@ private fun StandardCallout(
             BasicTextField(
                 state = block.titleState,
                 textStyle = textStyle.merge(TextStyle(fontWeight = FontWeight.Bold)),
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f)
+                    .focusRequester(titleFocusRequester)
+                    .then(titleKeyHandler),
                 lineLimits = TextFieldLineLimits.SingleLine,
                 cursorBrush = cursorBrush,
             )
@@ -111,11 +171,14 @@ private fun StandardCallout(
         if (block.bodyBlocks.isNotEmpty()) {
             MarkdownBlockEditor(
                 blocks = block.bodyBlocks,
-                onBlocksChanged = { /* Phase 2: 블록 분할/병합 */ },
+                onBlocksChanged = onBlocksChanged,
                 styleConfig = styleConfig,
                 textStyle = textStyle.merge(TextStyle(fontSize = textStyle.fontSize * 0.9f)),
                 cursorBrush = cursorBrush,
                 isNested = true,
+                onEscapeToPrevious = { titleFocusRequester.requestFocus() },
+                onEscapeToNext = navigation.onMoveToNext,
+                firstBlockFocusRequester = bodyFocusRequester,
             )
         }
     }
@@ -130,7 +193,47 @@ private fun DialogueCallout(
     cursorBrush: Brush,
     shape: RoundedCornerShape,
     modifier: Modifier,
+    navigation: BlockNavigation,
+    titleFocusRequester: FocusRequester,
+    onBlocksChanged: (List<EditorBlock>) -> Unit,
 ) {
+    val bodyFocusRequester = remember { FocusRequester() }
+
+    // body 생성 후 지연 포커스
+    var pendingBodyFocus by remember { mutableStateOf(0) }
+    LaunchedEffect(pendingBodyFocus) {
+        if (pendingBodyFocus > 0) {
+            kotlinx.coroutines.delay(50)
+            try { bodyFocusRequester.requestFocus() } catch (_: Exception) {}
+        }
+    }
+
+    // Dialogue: ←→로 title↔body, ↑↓는 Callout 탈출, Enter→body 생성/이동
+    val titleKeyHandler = Modifier.onPreviewKeyEvent { event ->
+        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+        val sel = block.titleState.selection
+        when (event.key) {
+            Key.Enter -> {
+                if (block.bodyBlocks.isEmpty()) {
+                    onBlocksChanged(listOf(EditorBlock.Text(textFieldState = TextFieldState(""))))
+                    pendingBodyFocus++
+                } else {
+                    try { bodyFocusRequester.requestFocus() } catch (_: Exception) {}
+                }
+                true
+            }
+            Key.DirectionRight -> {
+                if (sel.collapsed && sel.start >= block.titleState.text.length && block.bodyBlocks.isNotEmpty()) {
+                    try { bodyFocusRequester.requestFocus() } catch (_: Exception) {}
+                    true
+                } else false
+            }
+            Key.DirectionDown -> { navigation.onMoveToNext(); true }
+            Key.DirectionUp -> { navigation.onMoveToPrevious(); true }
+            else -> false
+        }
+    }
+
     Row(
         verticalAlignment = Alignment.Top,
         modifier = modifier
@@ -145,19 +248,25 @@ private fun DialogueCallout(
             modifier = Modifier
                 .wrapContentWidth()
                 .widthIn(max = textStyle.fontSize.value.dp * 5)
-                .padding(end = 4.dp),
+                .padding(end = 4.dp)
+                .focusRequester(titleFocusRequester)
+                .then(titleKeyHandler),
             lineLimits = TextFieldLineLimits.MultiLine(maxHeightInLines = 2),
             cursorBrush = cursorBrush,
         )
         if (block.bodyBlocks.isNotEmpty()) {
             MarkdownBlockEditor(
                 blocks = block.bodyBlocks,
-                onBlocksChanged = { /* Phase 2 */ },
+                onBlocksChanged = onBlocksChanged,
                 modifier = Modifier.weight(1f),
                 styleConfig = styleConfig,
                 textStyle = textStyle,
                 cursorBrush = cursorBrush,
                 isNested = true,
+                onEscapeToPrevious = navigation.onMoveToPrevious,  // Dialogue: ↑은 Callout 탈출
+                onEscapeToNext = navigation.onMoveToNext,
+                onEscapeLeft = { titleFocusRequester.requestFocus() },  // ←은 title로
+                firstBlockFocusRequester = bodyFocusRequester,
             )
         }
     }

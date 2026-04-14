@@ -23,8 +23,24 @@ object MarkdownBlockParser {
         val blocks = mutableListOf<EditorBlock>()
         var i = 0
         val textAccum = StringBuilder()
+        var pendingNewlines = 0  // 빈 줄 카운터
 
         fun flushText() {
+            // 보류 중인 빈 줄을 textAccum에 반영
+            if (pendingNewlines > 0) {
+                if (textAccum.isNotEmpty()) {
+                    // text + 빈 줄: trailing \n 추가
+                    repeat(pendingNewlines) { textAccum.append('\n') }
+                } else {
+                    // Block→Block 사이 빈 줄: ZWSP(Zero-Width Space)로 구성된 TextBlock 생성
+                    // "\n"은 TextField에서 2줄 높이지만, ZWSP은 1줄 높이 (정확한 빈 줄 렌더링)
+                    // toMarkdown() 시 ZWSP → "" 치환으로 원본 빈 줄 복원
+                    val marker = EditorBlock.BLANK_LINE_MARKER
+                    val blankLines = (1..pendingNewlines).joinToString("\n") { marker }
+                    textAccum.append(blankLines)
+                }
+            }
+            pendingNewlines = 0
             if (textAccum.isNotEmpty()) {
                 blocks += EditorBlock.Text(textFieldState = TextFieldState(textAccum.toString()))
                 textAccum.clear()
@@ -114,12 +130,9 @@ object MarkdownBlockParser {
                     }
                 }
 
-                // ── HorizontalRule: --- / *** / ___ ──
-                isHorizontalRule(line) -> {
-                    flushText()
-                    blocks += EditorBlock.HorizontalRule()
-                    i++
-                }
+                // ── HorizontalRule(---/***/___)는 TextBlock에 포함 ──
+                // → 인라인 렌더링: 포커스 시 raw "---", 비활성 시 Divider
+                // → MarkdownPatternScanner가 감지, BlockDecorationDrawer가 Divider 그림
 
                 // ── Embed: ![[...]] ──
                 isEmbedLine(line) -> {
@@ -130,15 +143,27 @@ object MarkdownBlockParser {
                     i++
                 }
 
-                // ── 빈 줄: TextBlock 분리 ──
+                // ── 빈 줄: 카운터에 누적 ──
+                // 다음 텍스트가 올 때 정확한 \n 개수를 삽입
                 line.isEmpty() -> {
-                    flushText()
+                    pendingNewlines++
                     i++
                 }
 
                 // ── 나머지: TextBlock에 축적 ──
                 else -> {
-                    if (textAccum.isNotEmpty()) textAccum.append('\n')
+                    // 보류 중인 빈 줄 반영
+                    if (pendingNewlines > 0) {
+                        if (textAccum.isNotEmpty()) {
+                            // text→blank→text: 줄 구분자 \n + 빈 줄 \n × N
+                            textAccum.append('\n')
+                        }
+                        repeat(pendingNewlines) { textAccum.append('\n') }
+                        pendingNewlines = 0
+                    } else if (textAccum.isNotEmpty()) {
+                        // 일반 줄 구분자
+                        textAccum.append('\n')
+                    }
                     textAccum.append(line)
                     i++
                 }
@@ -169,14 +194,7 @@ object MarkdownBlockParser {
     }
 
     // ── 줄 판별 헬퍼 (v1 MarkdownPatternScanner에서 가져옴) ──
-
-    private fun isHorizontalRule(line: String): Boolean {
-        val trimmed = line.trim()
-        if (trimmed.length < 3) return false
-        val ch = trimmed[0]
-        if (ch != '-' && ch != '*' && ch != '_') return false
-        return trimmed.all { it == ch || it == ' ' }
-    }
+    // isHorizontalRule 제거 — HR은 TextBlock 인라인 렌더링으로 전환
 
     private fun isTableLine(line: String): Boolean {
         val trimmed = line.trim()

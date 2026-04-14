@@ -31,7 +31,7 @@ internal object InlineStyleScanner {
         return when (block) {
             is MarkdownBlock.CodeBlock    -> codeBlockSpans(blockText, docOffset, config)
             is MarkdownBlock.Table        -> emptyList()     // 표는 raw 그대로
-            is MarkdownBlock.HorizontalRule -> listOf((docOffset until docOffset + blockText.length) to config.marker)
+            is MarkdownBlock.HorizontalRule -> listOf((docOffset until docOffset + blockText.length) to config.blockTransparent)
             is MarkdownBlock.Embed        -> embedSpans(blockText, docOffset, config)
             is MarkdownBlock.Heading      -> headingSpans(block.level, blockText, docOffset, config)
             else                          -> lineScannedSpans(blockText, docOffset, config)

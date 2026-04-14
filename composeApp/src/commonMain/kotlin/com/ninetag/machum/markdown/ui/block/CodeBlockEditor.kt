@@ -54,6 +54,20 @@ internal fun CodeBlockEditor(
                     true
                 } else false
             }
+            Key.DirectionUp -> {
+                if (sel.collapsed) {
+                    val text = block.codeState.text.toString()
+                    val isFirstLine = text.lastIndexOf('\n', (sel.start - 1).coerceAtLeast(0)) == -1
+                    if (isFirstLine) { navigation.onMoveToPrevious(); true } else false
+                } else false
+            }
+            Key.DirectionDown -> {
+                if (sel.collapsed) {
+                    val text = block.codeState.text.toString()
+                    val isLastLine = text.indexOf('\n', sel.start) == -1
+                    if (isLastLine) { navigation.onMoveToNext(); true } else false
+                } else false
+            }
             else -> false
         }
     }

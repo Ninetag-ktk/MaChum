@@ -79,26 +79,7 @@ object BlockOperations {
             }
         }
 
-        // --- → HorizontalRule 분리
-        if (isHorizontalRule(lastLine)) {
-            val beforeText = lines.dropLast(1).joinToString("\n").trimEnd()
-            val newBlocks = blocks.toMutableList()
-
-            if (beforeText.isNotEmpty()) {
-                newBlocks[blockIndex] = EditorBlock.Text(
-                    id = block.id,
-                    textFieldState = TextFieldState(beforeText),
-                )
-                newBlocks.add(blockIndex + 1, EditorBlock.HorizontalRule())
-                // HR 뒤에 빈 TextBlock 추가 (커서 위치)
-                newBlocks.add(blockIndex + 2, EditorBlock.Text(textFieldState = TextFieldState("")))
-                return SplitResult(newBlocks, focusBlockIndex = blockIndex + 2)
-            } else {
-                newBlocks[blockIndex] = EditorBlock.HorizontalRule()
-                newBlocks.add(blockIndex + 1, EditorBlock.Text(textFieldState = TextFieldState("")))
-                return SplitResult(newBlocks, focusBlockIndex = blockIndex + 1)
-            }
-        }
+        // HR(---)은 TextBlock 인라인 렌더링으로 처리 — 별도 분리 불필요
 
         return null
     }
@@ -166,11 +147,6 @@ object BlockOperations {
             return SplitResult(newBlocks, focusBlockIndex = blockIndex - 1)
         }
 
-        if (current is EditorBlock.HorizontalRule) {
-            newBlocks.removeAt(blockIndex)
-            return SplitResult(newBlocks, focusBlockIndex = blockIndex - 1)
-        }
-
         return null
     }
 
@@ -199,18 +175,14 @@ object BlockOperations {
         newBlocks.removeAt(blockIndex)
         newBlocks.addAll(blockIndex, parsed)
 
-        // 마지막 파싱된 블록에 포커스 (보통 사용자가 마지막에 입력 중)
-        val focusIdx = blockIndex + parsed.lastIndex
+        // 특수 블록(Callout/Code/Table)이 생성된 경우 해당 블록에 포커스
+        // (사용자가 방금 입력한 패턴이 변환된 블록)
+        // 특수 블록이 없으면 마지막 블록에 포커스
+        val specialIdx = parsed.indexOfFirst { it !is EditorBlock.Text }
+        val focusIdx = blockIndex + if (specialIdx >= 0) specialIdx else parsed.lastIndex
         return SplitResult(newBlocks, focusBlockIndex = focusIdx)
     }
 
-    private fun isHorizontalRule(line: String): Boolean {
-        val trimmed = line.trim()
-        if (trimmed.length < 3) return false
-        val ch = trimmed[0]
-        if (ch != '-' && ch != '*' && ch != '_') return false
-        return trimmed.all { it == ch || it == ' ' }
-    }
 }
 
 data class SplitResult(

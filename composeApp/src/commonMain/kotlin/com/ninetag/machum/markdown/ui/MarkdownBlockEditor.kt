@@ -6,7 +6,6 @@ import com.ninetag.machum.markdown.state.EditorBlock
 import com.ninetag.machum.markdown.state.SplitResult
 import com.ninetag.machum.markdown.ui.block.CalloutBlockEditor
 import com.ninetag.machum.markdown.ui.block.CodeBlockEditor
-import com.ninetag.machum.markdown.ui.block.HorizontalRuleDivider
 import com.ninetag.machum.markdown.ui.block.TableBlockEditor
 
 import androidx.compose.foundation.layout.Column
@@ -36,6 +35,7 @@ import androidx.compose.ui.unit.dp
 data class BlockNavigation(
     val onMoveToPrevious: () -> Unit = {},
     val onMoveToNext: () -> Unit = {},
+    val onMoveLeft: () -> Unit = {},
     val onMergeWithPrevious: () -> Unit = {},
     val onSplitBlock: () -> Unit = {},
     val onSplitByEmptyLine: () -> Unit = {},
@@ -54,6 +54,10 @@ internal fun MarkdownBlockEditor(
     textStyle: TextStyle = TextStyle.Default,
     cursorBrush: Brush = SolidColor(Color.Black),
     isNested: Boolean = false,
+    onEscapeToPrevious: () -> Unit = {},
+    onEscapeToNext: () -> Unit = {},
+    onEscapeLeft: () -> Unit = {},
+    firstBlockFocusRequester: FocusRequester? = null,
 ) {
     // 블록 id → FocusRequester 맵 (블록이 추가/삭제되어도 기존 블록의 requester 유지)
     val focusRequesterMap = remember { mutableMapOf<String, FocusRequester>() }
@@ -62,6 +66,10 @@ internal fun MarkdownBlockEditor(
     focusRequesterMap.keys.retainAll(currentIds)
     for (block in blocks) {
         focusRequesterMap.getOrPut(block.id) { FocusRequester() }
+    }
+    // 외부에서 첫 블록의 FocusRequester를 지정한 경우 (Callout body 등)
+    if (firstBlockFocusRequester != null && blocks.isNotEmpty()) {
+        focusRequesterMap[blocks.first().id] = firstBlockFocusRequester
     }
 
     // 포커스 지연 요청: 블록 분할/병합/이동 후 대상 블록에 포커스
@@ -102,12 +110,24 @@ internal fun MarkdownBlockEditor(
                 if (index > 0) {
                     pendingFocusBlockId = blocks[index - 1].id
                     focusRequestCounter++
+                } else {
+                    onEscapeToPrevious()
                 }
             },
             onMoveToNext = {
                 if (index < blocks.lastIndex) {
                     pendingFocusBlockId = blocks[index + 1].id
                     focusRequestCounter++
+                } else {
+                    onEscapeToNext()
+                }
+            },
+            onMoveLeft = {
+                if (index > 0) {
+                    pendingFocusBlockId = blocks[index - 1].id
+                    focusRequestCounter++
+                } else {
+                    onEscapeLeft()
                 }
             },
             onMergeWithPrevious = {
@@ -183,6 +203,7 @@ private fun BlockItem(
             textStyle = textStyle,
             cursorBrush = cursorBrush,
             focusRequester = focusRequester,
+            navigation = navigation,
             onBlocksChanged = { newBodyBlocks ->
                 val newBlocks = allBlocks.toMutableList()
                 newBlocks[blockIndex] = block.copy(bodyBlocks = newBodyBlocks)
@@ -202,8 +223,18 @@ private fun BlockItem(
             styleConfig = styleConfig,
             textStyle = textStyle,
             cursorBrush = cursorBrush,
+            focusRequester = focusRequester,
+            navigation = navigation,
+            onBlockChanged = { newTable ->
+                val newBlocks = allBlocks.toMutableList()
+                newBlocks[blockIndex] = newTable
+                onBlocksChanged(newBlocks)
+            },
         )
-        is EditorBlock.HorizontalRule -> HorizontalRuleDivider()
+        is EditorBlock.HorizontalRule -> {
+            // HR은 TextBlock 인라인 렌더링으로 전환됨 — 이 분기는 도달하지 않음
+            // sealed class 호환성을 위해 유지
+        }
         is EditorBlock.Embed -> {
             TextBlockEditor(
                 block = EditorBlock.Text(

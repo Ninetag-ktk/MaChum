@@ -126,6 +126,12 @@ internal fun TextBlockEditor(
                     } else false
                 } else false
             }
+            Key.DirectionLeft -> {
+                if (sel.collapsed && sel.start == 0) {
+                    navigation.onMoveLeft()
+                    true
+                } else false
+            }
             else -> false
         }
     }
