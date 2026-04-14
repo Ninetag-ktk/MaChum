@@ -21,7 +21,7 @@
 | `MarkdownBlockEditor` | `ui/MarkdownBlockEditor.kt` | LazyColumn 블록 dispatcher + escape 콜백 |
 | `MarkdownBlockTextField` | `ui/MarkdownBlockTextField.kt` | 공개 API + M3 래퍼 |
 | `TextBlockEditor` | `ui/TextBlockEditor.kt` | 텍스트 블록 (인라인 서식 + ←↑↓ 블록 이동) |
-| `CalloutBlockEditor` | `ui/block/CalloutBlockEditor.kt` | Callout (Standard ↓↑ / DIALOGUE ←→, Enter body 생성) |
+| `CalloutBlockEditor` | `ui/block/CalloutBlockEditor.kt` | Callout (Standard ↓↑ / DL ←→, Enter body 생성) |
 | `CodeBlockEditor` | `ui/block/CodeBlockEditor.kt` | CodeBlock (monospace, ↑↓ 블록 이동) |
 | `TableBlockEditor` | `ui/block/TableBlockEditor.kt` | Table (2D focusGrid, Tab/Enter 행 추가, +버튼) |
 | `HorizontalRuleDivider` | `ui/block/HorizontalRuleDivider.kt` | HR (미사용 — TextBlock 인라인 렌더링으로 전환) |

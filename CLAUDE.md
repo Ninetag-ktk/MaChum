@@ -80,7 +80,7 @@ Workflows are markdown files parsed into a `HeaderNode` tree (levels 1–4 via `
 - **`MarkdownBlockEditor`** (`ui/`) — LazyColumn 기반 블록 렌더링 + FocusRequester 맵 + BlockNavigation
 - **`MarkdownBlockTextField`** / **`MarkdownBlockTextFieldM3`** (`ui/`) — 공개 API (value/onValueChange)
 - **`TextBlockEditor`** (`ui/`) — BasicTextField + OutputTransformation (인라인 서식) + 패턴 감지
-- **`CalloutBlockEditor`** (`ui/block/`) — Standard + DIALOGUE 변형, 재귀적 body
+- **`CalloutBlockEditor`** (`ui/block/`) — Standard + DL(Dialogue) 변형, 재귀적 body
 - **`CodeBlockEditor`**, **`TableBlockEditor`**, **`HorizontalRuleDivider`** (`ui/block/`)
 
 v1 컴포넌트 (EditorPage에서 미사용, 제거 예정):

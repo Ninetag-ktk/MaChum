@@ -20,6 +20,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -28,6 +29,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * 블록 간 내비게이션 및 분할/병합 콜백.
@@ -80,11 +82,11 @@ internal fun MarkdownBlockEditor(
     LaunchedEffect(focusRequestCounter) {
         val id = pendingFocusBlockId ?: return@LaunchedEffect
         // composition + layout 완료를 기다린 후 포커스 요청
-        kotlinx.coroutines.delay(50)
+        kotlinx.coroutines.delay(50.milliseconds)
         try {
             focusRequesterMap[id]?.requestFocus()
         } catch (_: IllegalStateException) {
-            kotlinx.coroutines.delay(100)
+            kotlinx.coroutines.delay(100.milliseconds)
             try { focusRequesterMap[id]?.requestFocus() } catch (_: Exception) {}
         }
     }
@@ -105,42 +107,46 @@ internal fun MarkdownBlockEditor(
     fun BlockWithNav(index: Int, block: EditorBlock) {
         val fr = focusRequesterMap[block.id] ?: remember { FocusRequester() }
 
+        // LazyColumn이 아이템 recomposition을 skip해도 콜백이 최신 blocks/index를 참조하도록 보장
+        val currentBlocks by rememberUpdatedState(blocks)
+        val currentIndex by rememberUpdatedState(index)
+
         val nav = BlockNavigation(
             onMoveToPrevious = {
-                if (index > 0) {
-                    pendingFocusBlockId = blocks[index - 1].id
+                if (currentIndex > 0) {
+                    pendingFocusBlockId = currentBlocks[currentIndex - 1].id
                     focusRequestCounter++
                 } else {
                     onEscapeToPrevious()
                 }
             },
             onMoveToNext = {
-                if (index < blocks.lastIndex) {
-                    pendingFocusBlockId = blocks[index + 1].id
+                if (currentIndex < currentBlocks.lastIndex) {
+                    pendingFocusBlockId = currentBlocks[currentIndex + 1].id
                     focusRequestCounter++
                 } else {
                     onEscapeToNext()
                 }
             },
             onMoveLeft = {
-                if (index > 0) {
-                    pendingFocusBlockId = blocks[index - 1].id
+                if (currentIndex > 0) {
+                    pendingFocusBlockId = currentBlocks[currentIndex - 1].id
                     focusRequestCounter++
                 } else {
                     onEscapeLeft()
                 }
             },
             onMergeWithPrevious = {
-                applyResult(BlockOperations.mergeWithPrevious(blocks, index))
+                applyResult(BlockOperations.mergeWithPrevious(currentBlocks, currentIndex))
             },
             onSplitBlock = {
-                applyResult(BlockOperations.trySplitTextBlock(blocks, index))
+                applyResult(BlockOperations.trySplitTextBlock(currentBlocks, currentIndex))
             },
             onSplitByEmptyLine = {
-                applyResult(BlockOperations.trySplitByEmptyLine(blocks, index))
+                applyResult(BlockOperations.trySplitByEmptyLine(currentBlocks, currentIndex))
             },
             onReparse = {
-                applyResult(BlockOperations.tryReparse(blocks, index))
+                applyResult(BlockOperations.tryReparse(currentBlocks, currentIndex))
             },
         )
 
@@ -188,6 +194,10 @@ private fun BlockItem(
     allBlocks: List<EditorBlock>,
     blockIndex: Int,
 ) {
+    // LazyColumn이 아이템 recomposition을 skip해도 클로저가 최신 값을 참조하도록 보장
+    val latestAllBlocks by rememberUpdatedState(allBlocks)
+    val latestBlockIndex by rememberUpdatedState(blockIndex)
+
     when (block) {
         is EditorBlock.Text -> TextBlockEditor(
             block = block,
@@ -205,8 +215,11 @@ private fun BlockItem(
             focusRequester = focusRequester,
             navigation = navigation,
             onBlocksChanged = { newBodyBlocks ->
-                val newBlocks = allBlocks.toMutableList()
-                newBlocks[blockIndex] = block.copy(bodyBlocks = newBodyBlocks)
+                val currentBlocks = latestAllBlocks
+                val idx = latestBlockIndex
+                val currentCallout = currentBlocks[idx] as? EditorBlock.Callout ?: return@CalloutBlockEditor
+                val newBlocks = currentBlocks.toMutableList()
+                newBlocks[idx] = currentCallout.copy(bodyBlocks = newBodyBlocks)
                 onBlocksChanged(newBlocks)
             },
         )
@@ -226,8 +239,10 @@ private fun BlockItem(
             focusRequester = focusRequester,
             navigation = navigation,
             onBlockChanged = { newTable ->
-                val newBlocks = allBlocks.toMutableList()
-                newBlocks[blockIndex] = newTable
+                val currentBlocks = latestAllBlocks
+                val idx = latestBlockIndex
+                val newBlocks = currentBlocks.toMutableList()
+                newBlocks[idx] = newTable
                 onBlocksChanged(newBlocks)
             },
         )

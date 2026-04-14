@@ -141,7 +141,7 @@ internal object InlineStyleScanner {
             SpanStyle(fontSize = bodyFontScale.em)
         } else null
 
-        val isDialogue = calloutType.equals("DIALOGUE", ignoreCase = true)
+        val isDialogue = calloutType.equals("DL", ignoreCase = true)
 
         // header prefix 스타일: 투명 + chrome 높이 보상
         // 모든 타입: prefix를 정상 크기로 유지 (0.01sp 축소 없음)

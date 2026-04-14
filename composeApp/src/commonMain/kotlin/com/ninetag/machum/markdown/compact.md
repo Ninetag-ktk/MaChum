@@ -10,7 +10,7 @@
 - [x] `EditorBlock.toMarkdown()` + `List<EditorBlock>.toMarkdown()`
 - [x] `MarkdownBlockEditor` LazyColumn dispatcher (`ui/MarkdownBlockEditor.kt`)
 - [x] `TextBlockEditor` 인라인 서식 (`ui/TextBlockEditor.kt`)
-- [x] `CalloutBlockEditor` Standard + DIALOGUE (`ui/block/CalloutBlockEditor.kt`)
+- [x] `CalloutBlockEditor` Standard + DL (`ui/block/CalloutBlockEditor.kt`)
 - [x] `CodeBlockEditor` (`ui/block/CodeBlockEditor.kt`)
 - [x] `TableBlockEditor` (`ui/block/TableBlockEditor.kt`)
 - [x] HorizontalRule → TextBlock 인라인 렌더링 (blockTransparent + DrawBehind)
@@ -26,12 +26,12 @@
 - [x] #15 TextBlock Backspace 병합
 - [x] #16 빈 줄 TextBlock 포함 (pendingNewlines + ZWSP 마커 + universal \n 조인)
 - [x] #17 Callout/Code/Table 간 방향키 이동 + Table 셀 내비게이션/행열 추가 UI
-- [x] #18 Callout title ↔ body + Enter body 생성 (Standard ↓↑, Dialogue ←→/↑↓탈출)
+- [x] #18 Callout title ↔ body + Enter body 생성 (Standard ↓↑, DL ←→/↑↓탈출)
 - [x] #18-1 특수 블록 생성 시 자동 포커스 (tryReparse에서 Callout/Code/Table 우선)
 
 **남은 작업:**
 - [x] **#18-2 Table 수정사항 재점검** — data row border 수정, Column 래핑, pendingFocus delay 보정
-- [ ] **#18-3 Callout body 유실 버그** — 두 번째 Callout 생성 시 첫 번째 Callout body 사라짐. no-op→실제 콜백 수정 완료했으나 미해결. 재파싱 타이밍 이슈 의심
+- [x] **#18-3 Callout body 유실 버그** — LazyColumn stale 클로저 캡처. `BlockWithNav`/`BlockItem`에 `rememberUpdatedState(blocks)`/`rememberUpdatedState(index)` 적용 (`MarkdownBlockEditor.kt`)
 - [ ] **#18-4 CodeBlock: 닫는 ``` 전까지 블록 변환하지 않기** — 여는 ``` 만으로 즉시 Code 블록 변환되는 문제
 - [ ] **#18-5 Table: 1줄 `|col|` 입력 시 커서 이탈** — tryReparse가 1줄 Table을 TextBlock으로 처리, 포커스가 아래로 빠짐
 - [ ] **#19 블록 간 이동 시 커서 위치 보정** — ↑→이전 블록 마지막 줄 같은 x, ↓→다음 블록 첫 줄 같은 x
@@ -53,3 +53,4 @@
 - 독립 TextField "\n" = 2줄 높이 → ZWSP(`\u200B`) 1줄 높이 + toMarkdown 시 "" 치환
 - FocusRequester not initialized → Callout title / Table 첫 셀에 focusRequester 연결
 - 특수 블록 생성 후 포커스 이탈 → tryReparse에서 특수 블록 우선 포커스
+- **Callout body 유실 (#18-3)** → LazyColumn stale 클로저. `BlockWithNav`/`BlockItem`에 `rememberUpdatedState` 적용. LazyColumn 아이템 콜백에서 외부 상태 캡처 시 반드시 `rememberUpdatedState` 사용할 것

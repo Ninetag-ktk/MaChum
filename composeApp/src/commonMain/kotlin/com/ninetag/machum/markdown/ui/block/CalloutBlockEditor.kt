@@ -51,6 +51,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * Callout 블록 에디터.
@@ -74,7 +75,7 @@ internal fun CalloutBlockEditor(
     val decoStyle = styleConfig.calloutDecorationStyle(block.calloutType)
     val shape = RoundedCornerShape(8.dp)
 
-    if (block.calloutType.equals("DIALOGUE", ignoreCase = true)) {
+    if (block.calloutType.equals("DL", ignoreCase = true)) {
         DialogueCallout(block, decoStyle, styleConfig, textStyle, cursorBrush, shape, modifier, navigation, focusRequester, onBlocksChanged)
     } else {
         StandardCallout(block, decoStyle, styleConfig, textStyle, cursorBrush, shape, modifier, navigation, focusRequester, onBlocksChanged)
@@ -101,7 +102,7 @@ private fun StandardCallout(
     var pendingBodyFocus by remember { mutableStateOf(0) }
     LaunchedEffect(pendingBodyFocus) {
         if (pendingBodyFocus > 0) {
-            kotlinx.coroutines.delay(50)
+            kotlinx.coroutines.delay(50.milliseconds)
             try { bodyFocusRequester.requestFocus() } catch (_: Exception) {}
         }
     }
@@ -203,7 +204,7 @@ private fun DialogueCallout(
     var pendingBodyFocus by remember { mutableStateOf(0) }
     LaunchedEffect(pendingBodyFocus) {
         if (pendingBodyFocus > 0) {
-            kotlinx.coroutines.delay(50)
+            kotlinx.coroutines.delay(50.milliseconds)
             try { bodyFocusRequester.requestFocus() } catch (_: Exception) {}
         }
     }

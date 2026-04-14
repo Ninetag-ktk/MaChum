@@ -31,7 +31,7 @@ data class Callout(
 | DANGER / CAUTION | 빨강 계열 | 빨강 |
 | QUESTION | 남색 계열 | 남색 |
 | SUCCESS | 초록 계열 | 초록 |
-| DIALOGUE | Row 레이아웃 (title + body 가로 배치) | 타입별 |
+| DL (Dialogue) | Row 레이아웃 (title + body 가로 배치) | 타입별 |
 
 스타일 설정: `service/MarkdownStyleConfig.kt` → `calloutDecorationStyle(type)`
 
@@ -43,7 +43,14 @@ data class Callout(
 
 >> [!TIP] 중첩 Callout
 >> 본문
+
+> [!DL] 화자명
+> 대사 내용
 ```
+
+- Dialogue 타입은 `DL`로 직렬화 (`> [!DL] 화자명`)
+- 대소문자 무관 (`dl`, `DL`, `Dl` 모두 인식)
+- 판별 위치: `CalloutBlockEditor.kt`, `InlineStyleScanner.kt` — `equals("DL", ignoreCase = true)`
 
 ### v1 Callout 구현 (overlay 방식) — 참고
 

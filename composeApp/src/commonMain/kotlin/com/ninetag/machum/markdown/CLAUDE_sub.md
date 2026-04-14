@@ -3,6 +3,23 @@
 > **이 문서는 다른 세션/PC에서 작업을 이어갈 때 참고하는 상세 가이드이다.**
 > 현재 진행 상태, 아키텍처, 각 파일의 역할, 남은 작업을 구체적으로 기술한다.
 
+## 0. 문서 작성 지침
+
+이 설계 문서는 **세션과 PC를 넘어 작업 연속성을 보장하기 위한 것**이다.
+다음 지침을 따른다:
+
+1. **버그를 수정하거나 기능을 구현하면 즉시 이 문서에 반영한다.**
+   - compact.md의 체크리스트 상태 업데이트 (`[ ]` → `[x]`)
+   - 이 문서(CLAUDE_sub.md)의 해당 섹션 업데이트 또는 추가
+2. **해결된 버그는 "4. 해결된 기술적 이슈" 테이블에 반드시 추가한다.**
+   - 증상(어떤 조건에서 무엇이 발생), 근본 원인(왜), 해결(어떤 코드를 어떻게 변경) 3가지를 모두 기술
+   - 코드 위치(파일명:줄번호 범위)를 구체적으로 명시
+3. **중요한 아키텍처 결정이나 패턴은 "주의사항" 형태로 관련 섹션에 기록한다.**
+   - 예: "LazyColumn 아이템 콜백에서 외부 상태를 캡처할 때는 반드시 `rememberUpdatedState`를 사용"
+4. **새 세션에서 이 문서만 읽고도 현재 상태를 완전히 파악할 수 있어야 한다.**
+   - "위에서 설명한 것처럼", "앞서 언급한" 같은 불명확한 참조 금지
+   - 각 항목은 독립적으로 이해 가능하도록 자기 완결적으로 작성
+
 ---
 
 ## 1. 아키텍처 개요
@@ -50,7 +67,7 @@ markdown/
 │   └── TextBlockEditor.kt          ← BasicTextField + 인라인 서식 + 패턴 감지 + ←↑↓ 블록 이동
 │
 └── ui/block/
-    ├── CalloutBlockEditor.kt       ← Callout (Standard ↓↑ / DIALOGUE ←→, Enter body 생성)
+    ├── CalloutBlockEditor.kt       ← Callout (Standard ↓↑ / DL ←→, Enter body 생성)
     ├── CodeBlockEditor.kt          ← CodeBlock (monospace, ↑↓ 블록 이동)
     ├── TableBlockEditor.kt         ← Table (2D focusGrid, Tab/Enter 행 추가, +버튼)
     └── HorizontalRuleDivider.kt    ← HR (미사용 — TextBlock 인라인 렌더링으로 전환)
@@ -121,6 +138,9 @@ InlineOnlyOutputTransformation.kt
 - `onEscapeLeft`: ← 경계 탈출 (Dialogue body → title)
 - `firstBlockFocusRequester`: 외부에서 첫 블록 FocusRequester 지정 (Callout body)
 
+**stale 클로저 방지 (`rememberUpdatedState`):**
+`BlockWithNav`와 `BlockItem` 내부에서 콜백 클로저가 `blocks`/`index`/`allBlocks`/`blockIndex`를 캡처할 때 `rememberUpdatedState`를 사용한다. LazyColumn이 아이템의 직접 파라미터가 동일하면 recomposition을 skip하므로, 외부 스코프에서 캡처한 변수가 stale 상태로 남을 수 있다. `rememberUpdatedState`는 값이 변경될 때 내부 `State`만 갱신하여, 클로저를 재생성하지 않아도 최신 값을 참조하게 한다. (#18-3 해결)
+
 ### 3.5 TextBlockEditor (`ui/TextBlockEditor.kt`)
 
 - 인라인 서식: `RawMarkdownOutputTransformation(applyBlockTransparent=false)`
@@ -135,7 +155,7 @@ InlineOnlyOutputTransformation.kt
 - Body: `MarkdownBlockEditor(isNested=true)`, `firstBlockFocusRequester`로 title에서 진입
 - `onEscapeToPrevious` → title 포커스, `onEscapeToNext` → 다음 블록
 
-**DialogueCallout** (가로 레이아웃):
+**DialogueCallout** (`> [!DL]`, 대소문자 무관, 가로 레이아웃):
 - Title: →(끝)→body, Enter→body 생성/이동, ↑↓→Callout 탈출
 - Body: `onEscapeLeft` → title 포커스, `onEscapeToPrevious` → 이전 블록 (title 아님)
 
@@ -172,6 +192,52 @@ InlineOnlyOutputTransformation.kt
 | 독립 TextField `"\n"` = 2줄 | ZWSP(`\u200B`) 마커 → 1줄 높이 + toMarkdown 시 `""` 치환 |
 | 블록 진입 시 FocusRequester 미연결 | Callout title / Table 첫 셀에 연결 |
 | 특수 블록 생성 후 포커스 이탈 | tryReparse에서 `indexOfFirst { !is Text }` 우선 포커스 |
+| **#18-3 Callout body 유실** | 아래 상세 설명 참고 |
+
+### #18-3 Callout body 유실 버그 — 해결 기록
+
+**증상:** Callout을 새로 작성하고 body에 내용을 입력한 뒤, 아래에 새 Callout을 작성하면 기존 Callout들의 body가 모두 사라짐. 파일에서 로드된(기존) Callout의 body는 유지됨.
+
+**근본 원인: LazyColumn의 recomposition skip으로 인한 stale 클로저 캡처**
+
+`MarkdownBlockEditor.kt`의 `BlockWithNav` 함수 내 `BlockNavigation` 콜백들이 외부 스코프의 `blocks` (MarkdownBlockEditor 파라미터)를 직접 캡처하고 있었다.
+
+```
+1. blocks = [Text, Callout1(body=[]), Text2]  ← BlockWithNav가 compose됨
+   Text2의 onReparse 클로저 → blocks 캡처 (Callout1 body 없음)
+2. 사용자가 Callout1 title에서 Enter → body 생성
+   onBlocksChanged → blocks = [Text, Callout1(body=[Text("hello")]), Text2]
+3. MarkdownBlockEditor recomposition → LazyColumn 재평가
+   Text2 아이템: 같은 key, 같은 block 참조 → recomposition SKIP
+   ★ Text2의 onReparse 클로저는 step 1의 stale blocks를 여전히 캡처
+4. 사용자가 Text2에서 > [!NOTE] 입력 → tryReparse 발동
+   tryReparse(staleBlocks, 2) → staleBlocks[1] = Callout1(body=[]) ← body 없는 참조!
+   newBlocks = [Text, Callout1(body=[]), Callout2] → body 유실
+```
+
+**해결: `rememberUpdatedState`로 최신 참조 보장** (`MarkdownBlockEditor.kt`)
+
+`BlockWithNav`에서:
+```kotlin
+val currentBlocks by rememberUpdatedState(blocks)
+val currentIndex by rememberUpdatedState(index)
+```
+모든 `BlockNavigation` 콜백에서 `blocks`/`index` 대신 `currentBlocks`/`currentIndex`를 사용.
+
+`BlockItem`에서:
+```kotlin
+val latestAllBlocks by rememberUpdatedState(allBlocks)
+val latestBlockIndex by rememberUpdatedState(blockIndex)
+```
+Callout `onBlocksChanged`와 Table `onBlockChanged` 클로저에서 사용.
+
+`rememberUpdatedState`는 값이 변경될 때 내부 `State`를 갱신하지만, 그 `State`를 읽는 클로저 자체는 재생성하지 않아도 최신 값을 참조한다. 따라서 LazyColumn이 아이템 recomposition을 skip해도 콜백이 항상 최신 `blocks`를 사용한다.
+
+**⚠️ 주의사항 (향후 작업 시):**
+LazyColumn 아이템 내에서 외부 상태(`blocks`, `index` 등)를 콜백 클로저에 캡처할 때는
+**반드시 `rememberUpdatedState`를 사용**해야 한다. Compose의 LazyColumn은 아이템의
+직접 파라미터가 변경되지 않으면 recomposition을 skip할 수 있어, 외부 스코프에서
+캡처한 변수가 stale 상태로 남는다.
 
 ---
 
@@ -195,7 +261,7 @@ EditorBlock, Parser, toMarkdown, BlockEditor, TextBlock, Callout, Code, Table, H
 
 **남은 작업:**
 - ~~#18-2 Table 수정사항 재점검~~ ✅ data row border 수정, Column 래핑, pendingFocus delay 보정
-- **#18-3 Callout body 유실 버그** ⬜ — 아래 디버그 가이드 참고
+- ~~#18-3 Callout body 유실 버그~~ ✅ — LazyColumn stale 클로저 → `rememberUpdatedState` 적용 (섹션 4 참고)
 - **#18-4 CodeBlock: 닫는 ``` 전까지 블록 변환하지 않기** ⬜
 - **#18-5 Table: 1줄 `|col|` 입력 시 커서 이탈** ⬜
 - **#19 블록 간 이동 시 커서 위치 보정** — ↑→이전 블록 마지막 줄 같은 x, ↓→다음 블록 첫 줄 같은 x. `TextLayoutResult.getHorizontalPosition()` → `getOffsetForPosition()` 사용
@@ -210,104 +276,7 @@ EditorBlock, Parser, toMarkdown, BlockEditor, TextBlock, Callout, Code, Table, H
 
 ---
 
-## 6. #18-3 Callout body 유실 버그 — 디버그 가이드
-
-### 증상
-
-Callout을 작성하고 body에 내용을 입력한 뒤, 그 아래에 새 Callout을 작성하면
-첫 번째 Callout의 body 내용이 사라진다.
-
-### 이미 적용한 수정 (미해결)
-
-`CalloutBlockEditor`의 body `MarkdownBlockEditor`에 전달되는 `onBlocksChanged`가
-`{ /* Phase 2 */ }` (no-op)이었음 → 실제 콜백(`onBlocksChanged`)으로 교체 완료.
-**그러나 증상이 여전히 재현됨.**
-
-### 의심 원인: MarkdownBlockTextField 재파싱
-
-`ui/MarkdownBlockTextField.kt:52`:
-```kotlin
-if (value != lastExternalValue && value != lastInternalValue) {
-    blocks = MarkdownBlockParser.parse(value)  // 전체 재파싱
-    lastExternalValue = value
-    lastInternalValue = value
-}
-```
-
-이 조건이 의도치 않게 true가 되면 **모든 블록이 새로 생성**되어 기존 TextFieldState가 유실된다.
-
-가능한 시나리오:
-1. 사용자가 Callout1 body 입력 → `snapshotFlow { blocks.toMarkdown() }` → `onValueChange("md_v1")`
-2. 사용자가 아래 TextBlock에서 Callout2 입력 → tryReparse → `onValueChange("md_v2")`
-3. EditorPage의 `debounce(500ms)` 후 `value = "md_v2"` 설정
-4. 이 시점에서 `lastInternalValue`가 이미 다른 값으로 업데이트되었다면 → 재파싱 발생 가능
-
-### 디버그 로깅 추가 위치
-
-**1단계: 재파싱 발생 시점 확인**
-
-`ui/MarkdownBlockTextField.kt` — value 변경 감지 블록에 로그 추가:
-```kotlin
-if (value != lastExternalValue && value != lastInternalValue) {
-    println("[MBT] RE-PARSE triggered!")
-    println("[MBT]   value:            ${value.take(80)}")
-    println("[MBT]   lastExternalValue: ${lastExternalValue.take(80)}")
-    println("[MBT]   lastInternalValue: ${lastInternalValue.take(80)}")
-    blocks = MarkdownBlockParser.parse(value)
-    lastExternalValue = value
-    lastInternalValue = value
-}
-```
-
-**2단계: onValueChange 호출 추적**
-
-`ui/MarkdownBlockTextField.kt` — snapshotFlow 콜렉터에 로그:
-```kotlin
-.collectLatest { markdown ->
-    println("[MBT] snapshotFlow emit: ${markdown.take(80)}")
-    lastInternalValue = markdown
-    onValueChange(markdown)
-}
-```
-
-**3단계: Callout body onBlocksChanged 호출 추적**
-
-`ui/MarkdownBlockEditor.kt` — BlockItem의 Callout onBlocksChanged에 로그:
-```kotlin
-onBlocksChanged = { newBodyBlocks ->
-    println("[BME] Callout body changed: ${newBodyBlocks.size} blocks")
-    val newBlocks = allBlocks.toMutableList()
-    newBlocks[blockIndex] = block.copy(bodyBlocks = newBodyBlocks)
-    onBlocksChanged(newBlocks)
-}
-```
-
-**4단계: EditorPage value 업데이트 추적**
-
-`screen/mainComposition/EditorPage.kt` — onValueChange와 value 전달 부분에 로그:
-```kotlin
-onValueChange = { markdown ->
-    println("[EP] onValueChange: ${markdown.take(80)}")
-    pendingMarkdown.value = markdown
-}
-```
-
-### 확인해야 할 것
-
-1. **RE-PARSE가 발생하는가?** — `[MBT] RE-PARSE triggered!` 로그가 Callout2 생성 시점에 찍히는지
-2. **재파싱 시 value는 무엇인가?** — body 내용이 포함된 최신 markdown인지, 이전 버전인지
-3. **snapshotFlow emit 순서** — Callout1 body 변경과 Callout2 생성의 emit 순서
-4. **EditorPage의 value가 돌아오는 타이밍** — debounce 후 value가 설정될 때 lastInternalValue와 일치하는지
-
-### 예상 해결 방향
-
-- 재파싱이 원인이면: `MarkdownBlockTextField`에서 외부 value가 현재 blocks의 toMarkdown()과 의미적으로 같은지 비교 (단순 문자열 비교가 아닌)
-- 또는: EditorPage에서 value를 다시 설정하지 않도록 변경 (단방향 흐름: blocks → markdown → 파일, 파일 → value는 파일 전환 시에만)
-- 클로저 캡처 문제면: `allBlocks`/`block` 참조가 stale한 시점 확인 후 최신 참조 사용
-
----
-
-## 7. Cross-Block Selection (Phase 3, #21)
+## 6. Cross-Block Selection (Phase 3, #21)
 
 문서 레벨 가상 selection: `DocumentSelection(startBlockId, startOffset, endBlockId, endOffset)`
 시각: 시작 블록 네이티브 selection, 중간 블록 DrawBehind 전체, 끝 블록 DrawBehind 부분.
@@ -315,13 +284,13 @@ onValueChange = { markdown ->
 
 ---
 
-## 8. Undo/Redo (Phase 3, #22)
+## 7. Undo/Redo (Phase 3, #22)
 
 `UndoManager(maxHistory=50)` — `blocks.toMarkdown()` 스냅샷. undo 시 재파싱으로 복원.
 
 ---
 
-## 9. EditorPage 연동
+## 8. EditorPage 연동
 
 ```kotlin
 MarkdownBlockTextFieldM3(
