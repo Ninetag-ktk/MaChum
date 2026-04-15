@@ -92,14 +92,10 @@ markdown/
     └── BlockDecorationDrawer.kt     ← DrawBehind (blockquote 테두리, HR Divider, inline code 배경)
 ```
 
-### v1 전용 (제거 예정)
+### v1 전용 — 삭제 완료
 
-```
-MarkdownBasicTextField.kt, MarkdownTextField.kt, MarkdownEditorState.kt
-OverlayBlockParser.kt, OverlayPositionCalculator.kt, OverlayScrollForwarder.kt
-BlockOverlay.kt, CalloutOverlay.kt, CodeBlockOverlay.kt, TableOverlay.kt
-InlineOnlyOutputTransformation.kt
-```
+v1 미사용 파일 12개 삭제 완료. 상세: `REFACTOR.md` 참고.
+리팩토링 대상 (v1 로직이 남아있는 재활용 파일 6개)도 `REFACTOR.md`에 정리.
 
 ---
 
@@ -360,6 +356,7 @@ EditorBlock, Parser, toMarkdown, BlockEditor, TextBlock, Callout, Code, Table, H
 - #22 Undo/Redo (아래 섹션 7 참고)
 - #23 Embed 블록 렌더링
 - #24 v1 코드 제거
+- #25 하드코딩 컬러 M3 테마 적용 (아래 섹션 9 참고)
 
 ---
 
@@ -388,3 +385,28 @@ MarkdownBlockTextFieldM3(
 ```
 
 `key(file.name)`: 파일 전환 시 에디터 리셋. `MutableStateFlow` → `debounce(500ms)` → 파일 저장.
+
+---
+
+## 9. 하드코딩 컬러 M3 테마 적용 (Phase 3, #25)
+
+현재 `MarkdownStyleConfig`의 기본값과 `BlockDecorationDrawer`에 하드코딩된 컬러가 있다.
+`defaultMaterialBlockStyleConfig()` (`MarkdownBlockTextField.kt`)에서 M3 테마 컬러로 덮어쓰는 항목도 있지만, 누락된 항목이 남아 있다.
+
+**M3에서 이미 덮어쓰는 항목 (변경 불필요):**
+- `link`, `highlight`, `codeInline`, `codeInlineBackground`, `codeBlockBackground`
+- `calloutStyles` (NOTE/TIP/IMPORTANT 등 8개 타입)
+
+**M3 테마 적용 필요 (하드코딩 → `MaterialTheme.colorScheme` 참조로 변경):**
+
+| 파일 | 항목 | 현재 값 | 방향 |
+|---|---|---|---|
+| `MarkdownStyleConfig.kt:48` | `bulletPrefix` | `Color(0x66000000)` | `onSurface.copy(alpha=0.4f)` |
+| `MarkdownStyleConfig.kt:49` | `orderedPrefix` | `Color(0x66000000)` | `onSurface.copy(alpha=0.4f)` |
+| `MarkdownStyleConfig.kt:50` | `blockquoteAccent` | `Color(0xFF9E9E9E)` | `onSurfaceVariant` |
+| `MarkdownStyleConfig.kt:55` | `codeBlockBackground` | `Color(0x11000000)` | 이미 M3 덮어쓰지만 기본값도 수정 |
+| `MarkdownStyleConfig.kt:67-74` | `defaultCalloutStyles()` | 하드코딩 8색 | 이미 M3 덮어쓰지만 기본값도 수정 |
+| `BlockDecorationDrawer.kt:201` | HR 구분선 | `Color(0x33000000)` | `MarkdownStyleConfig`에 `hrColor` 필드 추가, M3에서 `outlineVariant` 등으로 설정 |
+
+**적용 제외:**
+- `calloutIndicator` (`Color(0x33000000)`) — 하드코딩 유지

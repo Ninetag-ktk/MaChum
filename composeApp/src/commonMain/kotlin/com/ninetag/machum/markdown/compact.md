@@ -46,7 +46,8 @@
 - [ ] #21 Cross-block selection + 복사/잘라내기
 - [ ] #22 Undo/Redo (문서 스냅샷)
 - [ ] #23 Embed 블록 렌더링
-- [ ] #24 v1 코드 제거 + 패키지 정리
+- [ ] #24 v1 코드 제거 + 패키지 정리 — v1 미사용 파일 12개 삭제 완료. 재활용 파일 6개의 v1 로직 정리 남음 (`REFACTOR.md` 참고)
+- [ ] #25 하드코딩 컬러 M3 테마 적용 — `bulletPrefix`, `orderedPrefix`, `blockquoteAccent`, HR 구분선 등. `calloutIndicator`는 제외
 
 ---
 
