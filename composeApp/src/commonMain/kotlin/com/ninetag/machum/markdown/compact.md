@@ -30,11 +30,14 @@
 - [x] #18-1 특수 블록 생성 시 자동 포커스 (tryReparse에서 Callout/Code/Table 우선)
 
 **남은 작업:**
-- [x] **#18-2 Table 수정사항 재점검** — data row border 수정, Column 래핑, pendingFocus delay 보정
+- [ ] **#18-2 Table 수정사항 재점검** — +버튼 공간/높이 ✅. 아래 미해결:
+  - [ ] Tab 마지막 셀에서 행 추가 안 됨 (onPreviewKeyEvent에서 Tab이 소비되지 않는 것으로 추정)
+  - [ ] 열 추가 시 기존 셀 간격이 벌어짐 (border 중복 또는 weight 재계산 문제)
+- [x] **#18-6 빈 줄 Enter 롤백** — `endsWith("\n\n")` 자동 분리 비활성화. #16과 충돌하므로 #20 Smart Enter에서 재설계
 - [x] **#18-3 Callout body 유실 버그** — LazyColumn stale 클로저 캡처. `BlockWithNav`/`BlockItem`에 `rememberUpdatedState(blocks)`/`rememberUpdatedState(index)` 적용 (`MarkdownBlockEditor.kt`)
-- [ ] **#18-4 CodeBlock: 닫는 ``` 전까지 블록 변환하지 않기** — 여는 ``` 만으로 즉시 Code 블록 변환되는 문제
-- [ ] **#18-5 Table: 1줄 `|col|` 입력 시 커서 이탈** — tryReparse가 1줄 Table을 TextBlock으로 처리, 포커스가 아래로 빠짐
-- [ ] **#19 블록 간 이동 시 커서 위치 보정** — ↑→이전 블록 마지막 줄 같은 x, ↓→다음 블록 첫 줄 같은 x
+- [x] **#18-4 CodeBlock: 닫는 ``` 전까지 블록 변환하지 않기** — 닫는 펜스 lookahead 후 없으면 TextBlock 유지
+- [x] **#18-5 Table: 1줄 `|col|` 입력 시 커서 이탈** — 2줄+ lookahead 후에만 flushText + Table 생성
+- [x] **#19 블록 간 이동 시 커서 위치 보정** — Text→Text x유지, Block진입↓처음/↑마지막, isFirstLine 버그 수정, Callout ↑→body 마지막, 스크롤 보정
 - [ ] **#20 Smart Enter 블록 단위 확장** — 빈 CodeBlock Enter→탈출, Callout Enter 2회→탈출
 
 ### Phase 3: 고급 기능

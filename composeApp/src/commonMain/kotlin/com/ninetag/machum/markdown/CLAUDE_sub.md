@@ -121,7 +121,11 @@ InlineOnlyOutputTransformation.kt
 - `flushText()`: textAccum 비어있고 pending 있으면 ZWSP TextBlock 생성 (Block→Block 빈 줄)
 - 특수 블록 직전 trailing `\n` 유지 (trimEnd 없음)
 
-줄 단위 블록 감지: ` ``` ` → Code, `> [!TYPE]` → Callout, `|` → Table, `![[]]` → Embed
+줄 단위 블록 감지 (lookahead로 유효성 확인 후 변환):
+- ` ``` ` → 닫는 ``` 존재 시에만 Code 블록 (없으면 TextBlock 유지)
+- `> [!TYPE]` → Callout
+- `|` → 2줄 이상일 때만 Table 블록 (1줄이면 TextBlock 유지, flushText 안 함)
+- `![[]]` → Embed
 
 ### 3.3 BlockOperations (`state/BlockOperations.kt`)
 
@@ -157,7 +161,8 @@ InlineOnlyOutputTransformation.kt
 
 **DialogueCallout** (`> [!DL]`, 대소문자 무관, 가로 레이아웃):
 - Title: →(끝)→body, Enter→body 생성/이동, ↑↓→Callout 탈출
-- Body: `onEscapeLeft` → title 포커스, `onEscapeToPrevious` → 이전 블록 (title 아님)
+- Body: `onEscapeLeft` → title 포커스(맨 끝), `onEscapeToPrevious` → 이전 블록 (title 아님)
+- ↑ 진입: title에 포커스 (Standard Callout과 동일). →로 body 이동 가능
 
 공통: `pendingBodyFocus` + `LaunchedEffect(delay 50ms)` — body 생성 직후 지연 포커스
 
@@ -193,6 +198,11 @@ InlineOnlyOutputTransformation.kt
 | 블록 진입 시 FocusRequester 미연결 | Callout title / Table 첫 셀에 연결 |
 | 특수 블록 생성 후 포커스 이탈 | tryReparse에서 `indexOfFirst { !is Text }` 우선 포커스 |
 | **#18-3 Callout body 유실** | 아래 상세 설명 참고 |
+| CodeBlock 여는 ``` 만으로 즉시 변환 | 닫는 ``` lookahead 추가. 없으면 TextBlock 유지 (`MarkdownBlockParser.kt`) |
+| Table 1줄 `\|col\|` 입력 시 커서 이탈 | flushText를 2줄+ lookahead 후에만 호출 (`MarkdownBlockParser.kt`) |
+| Table +버튼 안 보임 | `focusedCellCount` 카운터 방식 → 외부 Column `onFocusChanged { hasFocus }` 방식 |
+| Table Tab/행 추가 stale block | `rememberUpdatedState(block)` 적용 (`TableBlockEditor.kt`) |
+| Table 상단 빈 줄 Enter 롤백 | `trySplitByEmptyLine`의 `trimEnd()` 제거 + 빈 텍스트면 분리 안 함 (`BlockOperations.kt`) |
 
 ### #18-3 Callout body 유실 버그 — 해결 기록
 
@@ -260,11 +270,20 @@ EditorBlock, Parser, toMarkdown, BlockEditor, TextBlock, Callout, Code, Table, H
 - #18-1 특수 블록 생성 시 자동 포커스
 
 **남은 작업:**
-- ~~#18-2 Table 수정사항 재점검~~ ✅ data row border 수정, Column 래핑, pendingFocus delay 보정
+- **#18-2 Table 수정사항 재점검** — +버튼 공간/높이 ✅. 미해결:
+  - Tab 마지막 셀 행 추가 안 됨: `onPreviewKeyEvent`에서 Tab이 정상 소비되지 않는 것으로 추정. Desktop Compose의 Tab 포커스 이동과 충돌 가능. 대안: Tab 대신 다른 키(예: Ctrl+Enter) 또는 `focusProperties { canFocus = false }` 등으로 Tab 포커스 이동 차단 검토
+  - 열 추가 시 기존 셀 간격 벌어짐: 모든 셀에 `border(0.5.dp)` 적용 중 → 열 추가 시 인접 셀 border가 중복(0.5+0.5=1dp). 해결 방향: 셀별 border 대신 Row/Column divider 사용, 또는 start/top border만 적용
+- ~~#18-6 빈 줄 Enter 롤백~~ ✅ `endsWith("\n\n")` 자동 분리 비활성화. #16(빈 줄 TextBlock 포함)과 충돌하므로 #20 Smart Enter에서 재설계
 - ~~#18-3 Callout body 유실 버그~~ ✅ — LazyColumn stale 클로저 → `rememberUpdatedState` 적용 (섹션 4 참고)
-- **#18-4 CodeBlock: 닫는 ``` 전까지 블록 변환하지 않기** ⬜
-- **#18-5 Table: 1줄 `|col|` 입력 시 커서 이탈** ⬜
-- **#19 블록 간 이동 시 커서 위치 보정** — ↑→이전 블록 마지막 줄 같은 x, ↓→다음 블록 첫 줄 같은 x. `TextLayoutResult.getHorizontalPosition()` → `getOffsetForPosition()` 사용
+- ~~#18-4 CodeBlock: 닫는 ``` 전까지 블록 변환하지 않기~~ ✅ 닫는 펜스 lookahead, 없으면 TextBlock 유지
+- ~~#18-5 Table 1줄 입력 시 커서 이탈~~ ✅ 2줄+ lookahead 후에만 flushText + Table 생성
+- **#19 블록 간 이동 시 커서 위치 보정** — 부분 완료. 미해결 아래:
+  - ✅ Text→Text x좌표 유지 (`CursorHint.AtX` + `getOffsetForPosition`)
+  - ✅ Block→Text: ↓ 맨 처음, ↑ 맨 마지막
+  - ✅ Callout title→body: body 맨 처음, body→title: title 맨 마지막
+  - ✅ **↑로 Code/Callout 진입**: `isFirstLine` 버그 수정 — `sel.start == 0 || lastIndexOf(...) == -1`
+  - ✅ **Callout ↑ 진입 시 body 마지막**: `lastBlockFocusRequester`로 block-level FR을 body 마지막에 연결. body 없으면 title에 연결. Standard/Dialogue 공통
+  - ✅ **스크롤 보정**: `animateScrollBy(±80f)` → 안 보이면 `animateScrollToItem` fallback
 - **#20 Smart Enter 블록 단위 확장** — 빈 CodeBlock Enter→탈출, Callout Enter 2회→탈출
 
 ### Phase 3: 고급 기능

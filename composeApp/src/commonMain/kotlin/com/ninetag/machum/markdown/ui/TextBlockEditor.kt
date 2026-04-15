@@ -53,6 +53,7 @@ internal fun TextBlockEditor(
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester = remember { FocusRequester() },
     navigation: BlockNavigation = BlockNavigation(),
+    cursorHint: CursorHint? = null,
 ) {
     val normalizedTextStyle = remember(textStyle) {
         val effectiveLineHeight = if (textStyle.lineHeight.isUnspecified) 1.5.em else textStyle.lineHeight
@@ -78,18 +79,36 @@ internal fun TextBlockEditor(
 
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
 
+    // 포커스 시 커서 힌트 적용 (AtX: TextLayoutResult로 정밀 위치 계산)
+    LaunchedEffect(cursorHint, isFocused) {
+        if (!isFocused || cursorHint == null) return@LaunchedEffect
+        if (cursorHint is CursorHint.AtX) {
+            // TextLayoutResult가 준비될 때까지 잠시 대기
+            kotlinx.coroutines.delay(20)
+            val layout = textLayoutResult ?: return@LaunchedEffect
+            val targetLine = if (cursorHint.lastLine) layout.lineCount - 1 else 0
+            val lineTop = layout.getLineTop(targetLine)
+            val lineBottom = layout.getLineBottom(targetLine)
+            val y = (lineTop + lineBottom) / 2
+            val offset = layout.getOffsetForPosition(
+                androidx.compose.ui.geometry.Offset(cursorHint.x, y)
+            )
+            block.textFieldState.edit {
+                selection = androidx.compose.ui.text.TextRange(offset)
+            }
+        }
+        // Start/End는 MarkdownBlockEditor의 LaunchedEffect에서 처리
+    }
+
     // 블록 분할 패턴 감지: 텍스트를 재파싱하여 블록 서식이 포함되면 분리
+    // 주의: endsWith("\n\n") 자동 분리는 비활성화됨 (#16 빈 줄 TextBlock 포함과 충돌)
+    // 블록 생성은 #20 Smart Enter에서 처리 예정
     LaunchedEffect(block.textFieldState) {
         snapshotFlow { block.textFieldState.text.toString() }
             .distinctUntilChanged()
             .debounce(150.milliseconds)
             .collectLatest { text ->
-                // 빈 줄 두 개 → TextBlock 분리 (우선 처리)
-                if (text.endsWith("\n\n")) {
-                    navigation.onSplitByEmptyLine()
-                    return@collectLatest
-                }
-                // 텍스트에 블록 패턴(callout, codeblock, table, HR)이 포함되면 재파싱으로 분리
+                // 텍스트에 블록 패턴(callout, codeblock, table)이 포함되면 재파싱으로 분리
                 navigation.onReparse()
             }
     }
@@ -109,9 +128,13 @@ internal fun TextBlockEditor(
             Key.DirectionUp -> {
                 if (sel.collapsed) {
                     val text = block.textFieldState.text.toString()
-                    val isFirstLine = text.lastIndexOf('\n', (sel.start - 1).coerceAtLeast(0)) == -1
+                    // sel.start == 0이면 무조건 첫 줄 (leading \n이 있어도)
+                    val isFirstLine = sel.start == 0 || text.lastIndexOf('\n', sel.start - 1) == -1
                     if (isFirstLine) {
-                        navigation.onMoveToPrevious()
+                        val cursorX = textLayoutResult?.let { layout ->
+                            layout.getHorizontalPosition(sel.start, usePrimaryDirection = true)
+                        } ?: 0f
+                        navigation.onMoveToPreviousWithX(cursorX)
                         true
                     } else false
                 } else false
@@ -121,7 +144,10 @@ internal fun TextBlockEditor(
                     val text = block.textFieldState.text.toString()
                     val isLastLine = text.indexOf('\n', sel.start) == -1
                     if (isLastLine) {
-                        navigation.onMoveToNext()
+                        val cursorX = textLayoutResult?.let { layout ->
+                            layout.getHorizontalPosition(sel.start, usePrimaryDirection = true)
+                        } ?: 0f
+                        navigation.onMoveToNextWithX(cursorX)
                         true
                     } else false
                 } else false

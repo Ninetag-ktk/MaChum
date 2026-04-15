@@ -51,21 +51,40 @@ object MarkdownBlockParser {
             val line = lines[i]
 
             when {
-                // ── CodeBlock: ``` 펜스 ──
+                // ── CodeBlock: ``` 펜스 (닫는 펜스가 있을 때만 변환) ──
                 line.trimStart().startsWith("```") -> {
-                    flushText()
-                    val lang = line.trim().removePrefix("```").trim()
-                    val codeLines = mutableListOf<String>()
-                    i++
-                    while (i < lines.size && !lines[i].trimStart().startsWith("```")) {
-                        codeLines.add(lines[i])
+                    // 닫는 ``` 존재 여부를 먼저 확인
+                    var closingIdx = i + 1
+                    while (closingIdx < lines.size && !lines[closingIdx].trimStart().startsWith("```")) {
+                        closingIdx++
+                    }
+                    if (closingIdx < lines.size) {
+                        // 닫는 펜스 있음 → CodeBlock 생성
+                        flushText()
+                        val lang = line.trim().removePrefix("```").trim()
+                        val codeLines = mutableListOf<String>()
+                        i++
+                        while (i < lines.size && !lines[i].trimStart().startsWith("```")) {
+                            codeLines.add(lines[i])
+                            i++
+                        }
+                        if (i < lines.size) i++ // 닫는 펜스 건너뜀
+                        blocks += EditorBlock.Code(
+                            language = lang,
+                            codeState = TextFieldState(codeLines.joinToString("\n")),
+                        )
+                    } else {
+                        // 닫는 펜스 없음 → TextBlock에 유지
+                        if (pendingNewlines > 0) {
+                            if (textAccum.isNotEmpty()) textAccum.append('\n')
+                            repeat(pendingNewlines) { textAccum.append('\n') }
+                            pendingNewlines = 0
+                        } else if (textAccum.isNotEmpty()) {
+                            textAccum.append('\n')
+                        }
+                        textAccum.append(line)
                         i++
                     }
-                    if (i < lines.size) i++ // 닫는 펜스 건너뜀
-                    blocks += EditorBlock.Code(
-                        language = lang,
-                        codeState = TextFieldState(codeLines.joinToString("\n")),
-                    )
                 }
 
                 // ── Callout: > [!TYPE] ──
@@ -112,21 +131,30 @@ object MarkdownBlockParser {
                     )
                 }
 
-                // ── Table: | 시작 ──
+                // ── Table: | 시작 (2줄 이상일 때만 변환) ──
                 isTableLine(line) -> {
-                    flushText()
-                    val tableLines = mutableListOf(line)
-                    i++
-                    while (i < lines.size && isTableLine(lines[i])) {
-                        tableLines.add(lines[i])
-                        i++
-                    }
-                    if (tableLines.size >= 2) {
+                    // 유효한 테이블(2줄+) 여부를 먼저 확인 — flushText 전에
+                    var j = i + 1
+                    while (j < lines.size && isTableLine(lines[j])) j++
+                    val tableLineCount = j - i
+
+                    if (tableLineCount >= 2) {
+                        // 유효한 테이블 → flushText 후 Table 블록 생성
+                        flushText()
+                        val tableLines = (i until j).map { lines[it] }
                         blocks += parseTable(tableLines)
+                        i = j
                     } else {
-                        // 1줄만 있으면 텍스트로 취급
-                        if (textAccum.isNotEmpty()) textAccum.append('\n')
-                        textAccum.append(tableLines.first())
+                        // 1줄만 → TextBlock에 유지 (flushText 하지 않음)
+                        if (pendingNewlines > 0) {
+                            if (textAccum.isNotEmpty()) textAccum.append('\n')
+                            repeat(pendingNewlines) { textAccum.append('\n') }
+                            pendingNewlines = 0
+                        } else if (textAccum.isNotEmpty()) {
+                            textAccum.append('\n')
+                        }
+                        textAccum.append(line)
+                        i++
                     }
                 }
 

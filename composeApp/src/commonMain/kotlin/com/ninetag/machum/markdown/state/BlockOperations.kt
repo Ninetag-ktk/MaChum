@@ -97,15 +97,21 @@ object BlockOperations {
 
         if (!text.endsWith("\n\n")) return null
 
-        val beforeText = text.removeSuffix("\n\n").trimEnd()
+        // trimEnd 제거 — 내부 빈 줄(\n) 보존
+        val beforeText = text.removeSuffix("\n\n")
         val newBlocks = blocks.toMutableList()
 
-        newBlocks[blockIndex] = EditorBlock.Text(
-            id = block.id,
-            textFieldState = TextFieldState(beforeText),
-        )
-        newBlocks.add(blockIndex + 1, EditorBlock.Text(textFieldState = TextFieldState("")))
-        return SplitResult(newBlocks, focusBlockIndex = blockIndex + 1)
+        if (beforeText.isNotEmpty()) {
+            newBlocks[blockIndex] = EditorBlock.Text(
+                id = block.id,
+                textFieldState = TextFieldState(beforeText),
+            )
+            newBlocks.add(blockIndex + 1, EditorBlock.Text(textFieldState = TextFieldState("")))
+            return SplitResult(newBlocks, focusBlockIndex = blockIndex + 1)
+        } else {
+            // 빈 줄만 있었던 경우 (예: ZWSP 블록에서 Enter) → 분리하지 않음
+            return null
+        }
     }
 
     /**

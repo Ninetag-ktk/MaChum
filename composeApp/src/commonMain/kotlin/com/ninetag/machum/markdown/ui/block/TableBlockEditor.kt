@@ -23,12 +23,12 @@ import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -67,11 +67,13 @@ internal fun TableBlockEditor(
 ) {
     val shape = RoundedCornerShape(4.dp)
     val borderColor = styleConfig.blockquoteAccent
-    val colCount = block.headerStates.size
-    val totalRows = 1 + block.rowStates.size  // header + data rows
 
-    // 2D FocusRequester grid: [row][col]
-    // 첫 셀(header[0])은 block-level focusRequester를 사용 → 블록 진입 시 첫 셀에 포커스
+    // rememberUpdatedState로 최신 block 참조 보장 (LazyColumn stale 방지)
+    val currentBlock by rememberUpdatedState(block)
+    val colCount = currentBlock.headerStates.size
+    val totalRows = 1 + currentBlock.rowStates.size
+
+    // 2D FocusRequester grid
     val focusGrid = remember(totalRows, colCount) {
         Array(totalRows) { row ->
             Array(colCount) { col ->
@@ -80,9 +82,8 @@ internal fun TableBlockEditor(
         }
     }
 
-    // 테이블 내 셀 중 하나라도 포커스 → 활성 (+ 버튼 표시)
+    // 테이블 포커스 추적: 외부 Column의 hasFocus 사용 (자식 셀 중 하나라도 포커스면 true)
     var tableFocused by remember { mutableStateOf(false) }
-    var focusedCellCount by remember { mutableStateOf(0) }
 
     // 행 추가 후 지연 포커스
     var pendingFocusRow by remember { mutableStateOf(-1) }
@@ -91,13 +92,10 @@ internal fun TableBlockEditor(
 
     LaunchedEffect(focusCellCounter) {
         if (pendingFocusRow >= 0) {
-            // recomposition 완료 대기 (focusGrid 재생성 후)
             kotlinx.coroutines.delay(100)
             try {
-                val currentTotalRows = 1 + block.rowStates.size
-                val currentColCount = block.headerStates.size
-                val r = pendingFocusRow.coerceIn(0, currentTotalRows - 1)
-                val c = pendingFocusCol.coerceIn(0, currentColCount - 1)
+                val r = pendingFocusRow.coerceIn(0, focusGrid.lastIndex)
+                val c = pendingFocusCol.coerceIn(0, focusGrid[0].lastIndex)
                 focusGrid[r][c].requestFocus()
             } catch (_: Exception) {}
             pendingFocusRow = -1
@@ -111,24 +109,27 @@ internal fun TableBlockEditor(
     }
 
     fun addRow() {
-        val newRow = List(colCount) { TextFieldState("") }
-        onBlockChanged(block.copy(rowStates = block.rowStates + listOf(newRow)))
+        val b = currentBlock
+        val newRow = List(b.headerStates.size) { TextFieldState("") }
+        onBlockChanged(b.copy(rowStates = b.rowStates + listOf(newRow)))
     }
 
     fun insertRowBelow(dataRowIndex: Int) {
-        val newRow = List(colCount) { TextFieldState("") }
-        val newRows = block.rowStates.toMutableList()
+        val b = currentBlock
+        val newRow = List(b.headerStates.size) { TextFieldState("") }
+        val newRows = b.rowStates.toMutableList()
         newRows.add(dataRowIndex + 1, newRow)
-        onBlockChanged(block.copy(rowStates = newRows))
+        onBlockChanged(b.copy(rowStates = newRows))
     }
 
     fun addColumn() {
-        val newHeaders = block.headerStates + TextFieldState("")
-        val newRows = block.rowStates.map { row -> row + TextFieldState("") }
-        onBlockChanged(block.copy(headerStates = newHeaders, rowStates = newRows))
+        val b = currentBlock
+        val newHeaders = b.headerStates + TextFieldState("")
+        val newRows = b.rowStates.map { row -> row + TextFieldState("") }
+        onBlockChanged(b.copy(headerStates = newHeaders, rowStates = newRows))
     }
 
-    // 셀 키 핸들러 생성
+    // 셀 키 핸들러
     fun cellKeyHandler(row: Int, col: Int, cellState: TextFieldState): Modifier =
         Modifier.onPreviewKeyEvent { event ->
             if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
@@ -164,17 +165,14 @@ internal fun TableBlockEditor(
                     } else if (row < totalRows - 1) {
                         requestCellFocus(row + 1, 0)
                     } else {
-                        // 마지막 셀 Tab → 새 행 추가
                         addRow()
-                        pendingFocusRow = totalRows  // will be valid after recomposition
+                        pendingFocusRow = totalRows
                         pendingFocusCol = 0
                         focusCellCounter++
                     }
                     true
                 }
                 Key.Enter -> {
-                    // header(row=0) → dataRowIndex=-1 → insert at 0
-                    // data row(row=N) → dataRowIndex=N-1 → insert at N
                     val dataRowIndex = row - 1
                     insertRowBelow(dataRowIndex)
                     pendingFocusRow = row + 1
@@ -186,105 +184,96 @@ internal fun TableBlockEditor(
             }
         }
 
-    Column(modifier = modifier) {
-    Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
-        // 메인 테이블
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .border(1.dp, borderColor, shape)
-        ) {
-            // Header row (row = 0)
-            Row(
+    // 외부 Column: hasFocus로 테이블 포커스 추적
+    Column(
+        modifier = modifier.onFocusChanged { tableFocused = it.hasFocus }
+    ) {
+        Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+            // 메인 테이블
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(IntrinsicSize.Min)
+                    .weight(1f)
+                    .border(1.dp, borderColor, shape)
             ) {
-                for ((col, cellState) in block.headerStates.withIndex()) {
-                    BasicTextField(
-                        state = cellState,
-                        modifier = Modifier
-                            .weight(1f)
-                            .focusRequester(focusGrid[0][col])
-                            .onFocusChanged { state ->
-                                focusedCellCount += if (state.isFocused) 1 else -1
-                                tableFocused = focusedCellCount > 0
-                            }
-                            .border(width = 0.5.dp, color = borderColor)
-                            .padding(horizontal = 6.dp, vertical = 4.dp)
-                            .then(cellKeyHandler(0, col, cellState)),
-                        textStyle = textStyle.merge(TextStyle(fontWeight = FontWeight.Bold)),
-                        cursorBrush = cursorBrush,
-                        lineLimits = TextFieldLineLimits.SingleLine,
-                    )
-                }
-            }
-
-            // Data rows (row = 1..totalRows-1)
-            for ((rowIdx, row) in block.rowStates.withIndex()) {
-                val gridRow = rowIdx + 1  // header가 0이므로
+                // Header row
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(IntrinsicSize.Min)
+                    modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min)
                 ) {
-                    for ((col, cellState) in row.withIndex()) {
+                    for ((col, cellState) in currentBlock.headerStates.withIndex()) {
                         BasicTextField(
                             state = cellState,
                             modifier = Modifier
                                 .weight(1f)
-                                .focusRequester(focusGrid[gridRow][col])
-                                .onFocusChanged { state ->
-                                    focusedCellCount += if (state.isFocused) 1 else -1
-                                    tableFocused = focusedCellCount > 0
-                                }
+                                .focusRequester(focusGrid[0][col])
                                 .border(width = 0.5.dp, color = borderColor)
                                 .padding(horizontal = 6.dp, vertical = 4.dp)
-                                .then(cellKeyHandler(gridRow, col, cellState)),
-                            textStyle = textStyle,
+                                .then(cellKeyHandler(0, col, cellState)),
+                            textStyle = textStyle.merge(TextStyle(fontWeight = FontWeight.Bold)),
                             cursorBrush = cursorBrush,
                             lineLimits = TextFieldLineLimits.SingleLine,
                         )
                     }
                 }
-            }
-        }
 
-        // + 열 추가 버튼 (오른쪽, 포커스 시에만)
-        if (tableFocused) {
+                // Data rows
+                for ((rowIdx, row) in currentBlock.rowStates.withIndex()) {
+                    val gridRow = rowIdx + 1
+                    Row(
+                        modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min)
+                    ) {
+                        for ((col, cellState) in row.withIndex()) {
+                            BasicTextField(
+                                state = cellState,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .focusRequester(focusGrid[gridRow][col])
+                                    .border(width = 0.5.dp, color = borderColor)
+                                    .padding(horizontal = 6.dp, vertical = 4.dp)
+                                    .then(cellKeyHandler(gridRow, col, cellState)),
+                                textStyle = textStyle,
+                                cursorBrush = cursorBrush,
+                                lineLimits = TextFieldLineLimits.SingleLine,
+                            )
+                        }
+                    }
+                }
+            }
+
+            // + 열 추가 버튼 (오른쪽, 영역 항상 유지 / 포커스 시에만 아이콘 표시)
             Box(
                 modifier = Modifier
                     .width(24.dp)
                     .fillMaxHeight()
-                    .clickable { addColumn() },
+                    .then(if (tableFocused) Modifier.clickable { addColumn() } else Modifier),
                 contentAlignment = Alignment.Center,
             ) {
+                if (tableFocused) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "열 추가",
+                        modifier = Modifier.size(16.dp),
+                        tint = borderColor,
+                    )
+                }
+            }
+        }
+
+        // + 행 추가 버튼 (아래쪽, 영역 항상 유지 / 포커스 시에만 아이콘 표시)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(24.dp)
+                .then(if (tableFocused) Modifier.clickable { addRow() } else Modifier),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (tableFocused) {
                 Icon(
                     imageVector = Icons.Default.Add,
-                    contentDescription = "열 추가",
+                    contentDescription = "행 추가",
                     modifier = Modifier.size(16.dp),
                     tint = borderColor,
                 )
             }
         }
     }
-
-    // + 행 추가 버튼 (아래쪽, 포커스 시에만)
-    if (tableFocused) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(24.dp)
-                .clickable { addRow() },
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = Icons.Default.Add,
-                contentDescription = "행 추가",
-                modifier = Modifier.size(16.dp),
-                tint = borderColor,
-            )
-        }
-    }
-    } // Column
 }
