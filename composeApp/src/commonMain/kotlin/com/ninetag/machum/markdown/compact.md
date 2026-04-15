@@ -37,7 +37,9 @@
 - [x] **#18-3 Callout body 유실 버그** — LazyColumn stale 클로저 캡처. `BlockWithNav`/`BlockItem`에 `rememberUpdatedState(blocks)`/`rememberUpdatedState(index)` 적용 (`MarkdownBlockEditor.kt`)
 - [x] **#18-4 CodeBlock: 닫는 ``` 전까지 블록 변환하지 않기** — 닫는 펜스 lookahead 후 없으면 TextBlock 유지
 - [x] **#18-5 Table: 1줄 `|col|` 입력 시 커서 이탈** — 2줄+ lookahead 후에만 flushText + Table 생성
-- [x] **#19 블록 간 이동 시 커서 위치 보정** — Text→Text x유지, Block진입↓처음/↑마지막, isFirstLine 버그 수정, Callout ↑→body 마지막, 스크롤 보정
+- [ ] **#19 블록 간 이동 시 커서 위치 보정** — 부분 완료. 미해결:
+  - [x] Callout ↑ 진입 → body 마지막: `bottomEntryFRMap` + `onLastBlockBottomEntryRegistered` 체인
+  - [ ] soft wrap 줄 이동: `\n` 기준 → `textLayoutResult.getLineForOffset()` 기준으로 변경 필요
 - [ ] **#20 Smart Enter 블록 단위 확장** — 빈 CodeBlock Enter→탈출, Callout Enter 2회→탈출
 
 ### Phase 3: 고급 기능

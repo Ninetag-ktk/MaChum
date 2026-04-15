@@ -79,46 +79,52 @@ internal fun MarkdownBlockEditor(
     onEscapeLeft: () -> Unit = {},
     firstBlockFocusRequester: FocusRequester? = null,
     lastBlockFocusRequester: FocusRequester? = null,
+    /** 마지막 블록이 bottomEntryFR을 등록했을 때 부모에게 전파하는 콜백 (중첩 Callout 체인) */
+    onLastBlockBottomEntryRegistered: (FocusRequester?) -> Unit = {},
+    /** tryReparse 시 생성을 금지할 Callout 타입 (DL 중첩 방지 등) */
+    excludeCalloutTypes: Set<String> = emptySet(),
 ) {
     // LazyColumn 스크롤 상태 (화면 밖 블록에 포커스 시 스크롤 필요)
     val lazyListState = rememberLazyListState()
 
-    // 블록 id → FocusRequester 맵 (블록이 추가/삭제되어도 기존 블록의 requester 유지)
+    // 블록 id → FocusRequester 맵 (↓ 진입 / 기본)
     val focusRequesterMap = remember { mutableMapOf<String, FocusRequester>() }
+    // 블록 id → FocusRequester 맵 (↑ 진입용, Callout만 등록. 미등록 시 focusRequesterMap fallback)
+    val bottomEntryFRMap = remember { mutableMapOf<String, FocusRequester>() }
+
     // 블록 리스트 변경 시 불필요한 requester 정리
     val currentIds = blocks.map { it.id }.toSet()
     focusRequesterMap.keys.retainAll(currentIds)
+    bottomEntryFRMap.keys.retainAll(currentIds)
     for (block in blocks) {
         focusRequesterMap.getOrPut(block.id) { FocusRequester() }
     }
     // 외부에서 첫/마지막 블록의 FocusRequester를 지정한 경우 (Callout body 등)
-    if (firstBlockFocusRequester != null && blocks.isNotEmpty()) {
-        focusRequesterMap[blocks.first().id] = firstBlockFocusRequester
-    }
+    // last를 먼저 등록하고 first를 나중에 등록: first == last (1블록)일 때 first가 우선
     if (lastBlockFocusRequester != null && blocks.isNotEmpty()) {
         focusRequesterMap[blocks.last().id] = lastBlockFocusRequester
     }
+    if (firstBlockFocusRequester != null && blocks.isNotEmpty()) {
+        focusRequesterMap[blocks.first().id] = firstBlockFocusRequester
+    }
 
     // 포커스 지연 요청: 블록 분할/병합/이동 후 대상 블록에 포커스
-    // pendingFocusBlockId를 LaunchedEffect key로 사용하면 null 설정 시 effect가 취소되므로,
-    // 별도 카운터를 key로 사용한다.
     var pendingFocusBlockId by remember { mutableStateOf<String?>(null) }
     var pendingCursorHint by remember { mutableStateOf<CursorHint?>(null) }
+    var pendingUseBottomEntry by remember { mutableStateOf(false) }
     var focusRequestCounter by remember { mutableStateOf(0) }
     LaunchedEffect(focusRequestCounter) {
         val id = pendingFocusBlockId ?: return@LaunchedEffect
-        // 대상 블록이 화면 밖이면 한 줄 정도만 부드럽게 스크롤
+        // 대상 블록이 화면 밖이면 스크롤
         if (!isNested) {
             val targetIndex = blocks.indexOfFirst { it.id == id }
             if (targetIndex >= 0) {
                 val visibleItems = lazyListState.layoutInfo.visibleItemsInfo
                 val visibleIndices = visibleItems.map { it.index }.toSet()
                 if (targetIndex !in visibleIndices) {
-                    // 대상이 위쪽이면 위로, 아래쪽이면 아래로 한 줄 분량 스크롤
                     val firstVisible = visibleItems.firstOrNull()?.index ?: 0
                     val scrollAmount = if (targetIndex < firstVisible) -80f else 80f
                     lazyListState.animateScrollBy(scrollAmount)
-                    // 스크롤 후에도 안 보이면 직접 이동
                     kotlinx.coroutines.delay(50.milliseconds)
                     val stillVisible = lazyListState.layoutInfo.visibleItemsInfo.map { it.index }.toSet()
                     if (targetIndex !in stillVisible) {
@@ -127,12 +133,18 @@ internal fun MarkdownBlockEditor(
                 }
             }
         }
+        // ↑ 진입 시 bottomEntryFRMap 우선, 없으면 focusRequesterMap fallback
+        val targetFR = if (pendingUseBottomEntry) {
+            bottomEntryFRMap[id] ?: focusRequesterMap[id]
+        } else {
+            focusRequesterMap[id]
+        }
         kotlinx.coroutines.delay(50.milliseconds)
         try {
-            focusRequesterMap[id]?.requestFocus()
+            targetFR?.requestFocus()
         } catch (_: IllegalStateException) {
             kotlinx.coroutines.delay(100.milliseconds)
-            try { focusRequesterMap[id]?.requestFocus() } catch (_: Exception) {}
+            try { targetFR?.requestFocus() } catch (_: Exception) {}
         }
         // 포커스 후 커서 위치 설정
         val hint = pendingCursorHint
@@ -145,25 +157,30 @@ internal fun MarkdownBlockEditor(
             } else hint
 
             if (effectiveHint is CursorHint.Start || effectiveHint is CursorHint.End) {
-                val state = when (targetBlock) {
-                    is EditorBlock.Text -> targetBlock.textFieldState
-                    is EditorBlock.Code -> targetBlock.codeState
-                    else -> null
-                }
-                if (state != null) {
-                    val offset = when (effectiveHint) {
-                        is CursorHint.Start -> 0
-                        is CursorHint.End -> state.text.length
-                        else -> state.text.length
+                // bottomEntry로 포커스한 경우 → Callout body의 TextBlock에 도달했으므로 커서 설정 불필요
+                // (focusRequesterMap의 Text/Code에만 적용)
+                if (!pendingUseBottomEntry) {
+                    val state = when (targetBlock) {
+                        is EditorBlock.Text -> targetBlock.textFieldState
+                        is EditorBlock.Code -> targetBlock.codeState
+                        else -> null
                     }
-                    state.edit {
-                        selection = androidx.compose.ui.text.TextRange(offset)
+                    if (state != null) {
+                        val offset = when (effectiveHint) {
+                            is CursorHint.Start -> 0
+                            is CursorHint.End -> state.text.length
+                            else -> state.text.length
+                        }
+                        state.edit {
+                            selection = androidx.compose.ui.text.TextRange(offset)
+                        }
                     }
                 }
             }
             // AtX + Text 대상은 TextBlockEditor 내부에서 정밀 처리
         }
         pendingCursorHint = null
+        pendingUseBottomEntry = false
     }
 
     fun applyResult(result: SplitResult?) {
@@ -190,8 +207,8 @@ internal fun MarkdownBlockEditor(
             onMoveToPrevious = {
                 if (currentIndex > 0) {
                     pendingFocusBlockId = currentBlocks[currentIndex - 1].id
-                    // Block→Text ↑: 맨 마지막으로
                     pendingCursorHint = CursorHint.End
+                    pendingUseBottomEntry = true  // ↑ 진입: bottomEntryFRMap 우선
                     focusRequestCounter++
                 } else {
                     onEscapeToPrevious()
@@ -200,8 +217,8 @@ internal fun MarkdownBlockEditor(
             onMoveToNext = {
                 if (currentIndex < currentBlocks.lastIndex) {
                     pendingFocusBlockId = currentBlocks[currentIndex + 1].id
-                    // Block→Text ↓: 맨 처음으로
                     pendingCursorHint = CursorHint.Start
+                    pendingUseBottomEntry = false  // ↓ 진입: focusRequesterMap
                     focusRequestCounter++
                 } else {
                     onEscapeToNext()
@@ -210,8 +227,8 @@ internal fun MarkdownBlockEditor(
             onMoveToPreviousWithX = { cursorX ->
                 if (currentIndex > 0) {
                     pendingFocusBlockId = currentBlocks[currentIndex - 1].id
-                    // Text→Text ↑: 이전 블록 마지막 줄의 같은 x 위치
                     pendingCursorHint = CursorHint.AtX(cursorX, lastLine = true)
+                    pendingUseBottomEntry = true
                     focusRequestCounter++
                 } else {
                     onEscapeToPrevious()
@@ -220,8 +237,8 @@ internal fun MarkdownBlockEditor(
             onMoveToNextWithX = { cursorX ->
                 if (currentIndex < currentBlocks.lastIndex) {
                     pendingFocusBlockId = currentBlocks[currentIndex + 1].id
-                    // Text→Text ↓: 다음 블록 첫 줄의 같은 x 위치
                     pendingCursorHint = CursorHint.AtX(cursorX, lastLine = false)
+                    pendingUseBottomEntry = false
                     focusRequestCounter++
                 } else {
                     onEscapeToNext()
@@ -245,7 +262,7 @@ internal fun MarkdownBlockEditor(
                 applyResult(BlockOperations.trySplitByEmptyLine(currentBlocks, currentIndex))
             },
             onReparse = {
-                applyResult(BlockOperations.tryReparse(currentBlocks, currentIndex))
+                applyResult(BlockOperations.tryReparse(currentBlocks, currentIndex, excludeCalloutTypes))
             },
         )
 
@@ -260,6 +277,18 @@ internal fun MarkdownBlockEditor(
             onBlocksChanged = onBlocksChanged,
             allBlocks = blocks,
             blockIndex = index,
+            excludeCalloutTypes = excludeCalloutTypes,
+            onRegisterBottomEntryFR = { frOrNull ->
+                if (frOrNull != null) {
+                    bottomEntryFRMap[block.id] = frOrNull
+                } else {
+                    bottomEntryFRMap.remove(block.id)
+                }
+                // 마지막 블록의 bottomFR이 변경되면 부모로 전파 (중첩 Callout 체인)
+                if (currentIndex == currentBlocks.lastIndex) {
+                    onLastBlockBottomEntryRegistered(frOrNull)
+                }
+            },
         )
     }
 
@@ -294,6 +323,8 @@ private fun BlockItem(
     onBlocksChanged: (List<EditorBlock>) -> Unit,
     allBlocks: List<EditorBlock>,
     blockIndex: Int,
+    onRegisterBottomEntryFR: (FocusRequester?) -> Unit = {},
+    excludeCalloutTypes: Set<String> = emptySet(),
 ) {
     // LazyColumn이 아이템 recomposition을 skip해도 클로저가 최신 값을 참조하도록 보장
     val latestAllBlocks by rememberUpdatedState(allBlocks)
@@ -308,6 +339,7 @@ private fun BlockItem(
             focusRequester = focusRequester,
             navigation = navigation,
             cursorHint = cursorHint,
+            excludeCalloutTypes = excludeCalloutTypes,
         )
         is EditorBlock.Callout -> CalloutBlockEditor(
             block = block,
@@ -316,6 +348,7 @@ private fun BlockItem(
             cursorBrush = cursorBrush,
             focusRequester = focusRequester,
             navigation = navigation,
+            onRegisterBottomEntryFR = onRegisterBottomEntryFR,
             onBlocksChanged = { newBodyBlocks ->
                 val currentBlocks = latestAllBlocks
                 val idx = latestBlockIndex

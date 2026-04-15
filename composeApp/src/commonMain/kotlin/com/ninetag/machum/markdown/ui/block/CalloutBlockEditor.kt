@@ -57,9 +57,14 @@ import kotlin.time.Duration.Companion.milliseconds
  * Callout 블록 에디터.
  *
  * - 일반: Column(배경+테두리) + Icon + Title + 재귀 body
- * - DIALOGUE: Row(Title + Body 가로 배치)
+ * - DL: Row(Title + Body 가로 배치)
  *
  * body는 [MarkdownBlockEditor]를 재귀 호출하여 중첩 블록을 지원한다.
+ *
+ * 포커스 진입:
+ * - ↓ 진입 → block-level [focusRequester] = title
+ * - ↑ 진입 → [onRegisterBottomEntryFR]로 등록한 FR = body 마지막 (또는 body 없으면 title)
+ *   MarkdownBlockEditor가 bottomEntryFRMap에서 직접 포커스하므로 내부 redirect 불필요.
  */
 @Composable
 internal fun CalloutBlockEditor(
@@ -70,16 +75,16 @@ internal fun CalloutBlockEditor(
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester = remember { FocusRequester() },
     navigation: BlockNavigation = BlockNavigation(),
+    onRegisterBottomEntryFR: (FocusRequester?) -> Unit = {},
     onBlocksChanged: (List<EditorBlock>) -> Unit = {},
 ) {
     val decoStyle = styleConfig.calloutDecorationStyle(block.calloutType)
     val shape = RoundedCornerShape(8.dp)
 
     if (block.calloutType.equals("DL", ignoreCase = true)) {
-        // Dialogue: ↑ 진입 시 body 마지막으로. block-level focusRequester를 body 마지막에 연결.
-        DialogueCallout(block, decoStyle, styleConfig, textStyle, cursorBrush, shape, modifier, navigation, focusRequester, onBlocksChanged)
+        DialogueCallout(block, decoStyle, styleConfig, textStyle, cursorBrush, shape, modifier, navigation, focusRequester, onRegisterBottomEntryFR, onBlocksChanged)
     } else {
-        StandardCallout(block, decoStyle, styleConfig, textStyle, cursorBrush, shape, modifier, navigation, focusRequester, onBlocksChanged)
+        StandardCallout(block, decoStyle, styleConfig, textStyle, cursorBrush, shape, modifier, navigation, focusRequester, onRegisterBottomEntryFR, onBlocksChanged)
     }
 }
 
@@ -94,13 +99,25 @@ private fun StandardCallout(
     modifier: Modifier,
     navigation: BlockNavigation,
     titleFocusRequester: FocusRequester,
+    onRegisterBottomEntryFR: (FocusRequester?) -> Unit,
     onBlocksChanged: (List<EditorBlock>) -> Unit,
 ) {
+    // body 첫 블록 포커스용
     val bodyFocusRequester = remember { FocusRequester() }
-    // ↑ 진입 시 body 마지막 블록에 포커스하기 위한 별도 FocusRequester
+    // body 마지막 블록 포커스용 (body 2+블록, 마지막이 Text일 때)
     val bodyLastFocusRequester = remember { FocusRequester() }
-    // title용 별도 FocusRequester (block-level은 body 마지막에 사용)
-    val localTitleFocusRequester = remember { FocusRequester() }
+    // 중첩 Callout이 body 마지막 블록일 때 전파된 bottomFR
+    var nestedLastFR by remember { mutableStateOf<FocusRequester?>(null) }
+
+    // ↑ 진입용 FR을 부모의 bottomEntryFRMap에 등록
+    // 우선순위: nestedLastFR (중첩 Callout) > bodyFocusRequester/bodyLastFocusRequester > titleFR
+    val bottomFR = when {
+        block.bodyBlocks.isEmpty() -> titleFocusRequester
+        nestedLastFR != null -> nestedLastFR!!
+        block.bodyBlocks.size == 1 -> bodyFocusRequester
+        else -> bodyLastFocusRequester
+    }
+    LaunchedEffect(bottomFR) { onRegisterBottomEntryFR(bottomFR) }
 
     // body 생성 후 지연 포커스
     var pendingBodyFocus by remember { mutableStateOf(0) }
@@ -111,11 +128,15 @@ private fun StandardCallout(
         }
     }
 
-    // ↑ 진입(block-level focusRequester) 시 body 마지막으로 redirect
-    // titleFocusRequester = block-level. body가 있으면 body 마지막에 redirect.
-    LaunchedEffect(Unit) {} // placeholder — bodyLastFocusRequester는 MarkdownBlockEditor에서 관리
+    // body 첫 블록으로 포커스 + 커서를 맨 앞으로
+    fun focusBodyStart() {
+        try { bodyFocusRequester.requestFocus() } catch (_: Exception) {}
+        (block.bodyBlocks.firstOrNull() as? EditorBlock.Text)?.textFieldState?.edit {
+            selection = androidx.compose.ui.text.TextRange(0)
+        }
+    }
 
-    // Title 키 핸들러: Enter/↓→body, ↑→이전 블록
+    // Title 키 핸들러
     val titleKeyHandler = Modifier.onPreviewKeyEvent { event ->
         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
         when (event.key) {
@@ -124,20 +145,13 @@ private fun StandardCallout(
                     onBlocksChanged(listOf(EditorBlock.Text(textFieldState = TextFieldState(""))))
                     pendingBodyFocus++
                 } else {
-                    try { bodyFocusRequester.requestFocus() } catch (_: Exception) {}
-                    // title→body: 커서를 body 첫 블록 맨 처음으로
-                    (block.bodyBlocks.firstOrNull() as? EditorBlock.Text)?.textFieldState?.edit {
-                        selection = androidx.compose.ui.text.TextRange(0)
-                    }
+                    focusBodyStart()
                 }
                 true
             }
             Key.DirectionDown -> {
                 if (block.bodyBlocks.isNotEmpty()) {
-                    try { bodyFocusRequester.requestFocus() } catch (_: Exception) {}
-                    (block.bodyBlocks.firstOrNull() as? EditorBlock.Text)?.textFieldState?.edit {
-                        selection = androidx.compose.ui.text.TextRange(0)
-                    }
+                    focusBodyStart()
                 } else {
                     navigation.onMoveToNext()
                 }
@@ -158,7 +172,6 @@ private fun StandardCallout(
             .border(1.dp, decoStyle.accentColor, shape)
             .padding(horizontal = 8.dp, vertical = 4.dp)
     ) {
-        // Title Row: Icon + Title
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth(),
@@ -170,21 +183,17 @@ private fun StandardCallout(
                 modifier = Modifier.size(18.dp),
             )
             Spacer(Modifier.width(4.dp))
-            // body가 있으면: title은 localFR, block-level은 body 마지막에 연결
-            // body가 없으면: title에 block-level 직접 연결
-            val titleFR = if (block.bodyBlocks.isNotEmpty()) localTitleFocusRequester else titleFocusRequester
             BasicTextField(
                 state = block.titleState,
                 textStyle = textStyle.merge(TextStyle(fontWeight = FontWeight.Bold)),
                 modifier = Modifier.weight(1f)
-                    .focusRequester(titleFR)
+                    .focusRequester(titleFocusRequester)
                     .then(titleKeyHandler),
                 lineLimits = TextFieldLineLimits.SingleLine,
                 cursorBrush = cursorBrush,
             )
         }
 
-        // Body: 재귀적 블록 에디터
         if (block.bodyBlocks.isNotEmpty()) {
             MarkdownBlockEditor(
                 blocks = block.bodyBlocks,
@@ -194,9 +203,11 @@ private fun StandardCallout(
                 cursorBrush = cursorBrush,
                 isNested = true,
                 firstBlockFocusRequester = bodyFocusRequester,
-                lastBlockFocusRequester = titleFocusRequester,  // ↑ 진입 → body 마지막 블록
+                lastBlockFocusRequester = if (block.bodyBlocks.size > 1) bodyLastFocusRequester else null,
+                onLastBlockBottomEntryRegistered = { fr -> nestedLastFR = fr },
+                excludeCalloutTypes = if (block.calloutType.equals("DL", ignoreCase = true)) setOf("DL") else emptySet(),
                 onEscapeToPrevious = {
-                    localTitleFocusRequester.requestFocus()
+                    titleFocusRequester.requestFocus()
                     block.titleState.edit {
                         selection = androidx.compose.ui.text.TextRange(block.titleState.text.length)
                     }
@@ -218,10 +229,21 @@ private fun DialogueCallout(
     modifier: Modifier,
     navigation: BlockNavigation,
     titleFocusRequester: FocusRequester,
+    onRegisterBottomEntryFR: (FocusRequester?) -> Unit,
     onBlocksChanged: (List<EditorBlock>) -> Unit,
 ) {
     val bodyFocusRequester = remember { FocusRequester() }
-    val localTitleFocusRequester = remember { FocusRequester() }
+    val bodyLastFocusRequester = remember { FocusRequester() }
+    var nestedLastFR by remember { mutableStateOf<FocusRequester?>(null) }
+
+    // ↑ 진입용 FR 등록 (중첩 Callout 체인)
+    val bottomFR = when {
+        block.bodyBlocks.isEmpty() -> titleFocusRequester
+        nestedLastFR != null -> nestedLastFR!!
+        block.bodyBlocks.size == 1 -> bodyFocusRequester
+        else -> bodyLastFocusRequester
+    }
+    LaunchedEffect(bottomFR) { onRegisterBottomEntryFR(bottomFR) }
 
     // body 생성 후 지연 포커스
     var pendingBodyFocus by remember { mutableStateOf(0) }
@@ -232,7 +254,13 @@ private fun DialogueCallout(
         }
     }
 
-    // Dialogue: ←→로 title↔body, ↑↓는 Callout 탈출, Enter→body 생성/이동
+    fun focusBodyStart() {
+        try { bodyFocusRequester.requestFocus() } catch (_: Exception) {}
+        (block.bodyBlocks.firstOrNull() as? EditorBlock.Text)?.textFieldState?.edit {
+            selection = androidx.compose.ui.text.TextRange(0)
+        }
+    }
+
     val titleKeyHandler = Modifier.onPreviewKeyEvent { event ->
         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
         val sel = block.titleState.selection
@@ -242,13 +270,13 @@ private fun DialogueCallout(
                     onBlocksChanged(listOf(EditorBlock.Text(textFieldState = TextFieldState(""))))
                     pendingBodyFocus++
                 } else {
-                    try { bodyFocusRequester.requestFocus() } catch (_: Exception) {}
+                    focusBodyStart()
                 }
                 true
             }
             Key.DirectionRight -> {
                 if (sel.collapsed && sel.start >= block.titleState.text.length && block.bodyBlocks.isNotEmpty()) {
-                    try { bodyFocusRequester.requestFocus() } catch (_: Exception) {}
+                    focusBodyStart()
                     true
                 } else false
             }
@@ -266,7 +294,6 @@ private fun DialogueCallout(
             .background(decoStyle.containerColor, shape)
             .padding(horizontal = 8.dp, vertical = 4.dp)
     ) {
-        val titleFR = if (block.bodyBlocks.isNotEmpty()) localTitleFocusRequester else titleFocusRequester
         BasicTextField(
             state = block.titleState,
             textStyle = textStyle.merge(TextStyle(fontWeight = FontWeight.Bold)),
@@ -274,7 +301,7 @@ private fun DialogueCallout(
                 .wrapContentWidth()
                 .widthIn(max = textStyle.fontSize.value.dp * 5)
                 .padding(end = 4.dp)
-                .focusRequester(titleFR)
+                .focusRequester(titleFocusRequester)
                 .then(titleKeyHandler),
             lineLimits = TextFieldLineLimits.MultiLine(maxHeightInLines = 2),
             cursorBrush = cursorBrush,
@@ -291,9 +318,11 @@ private fun DialogueCallout(
                 onEscapeToPrevious = navigation.onMoveToPrevious,
                 onEscapeToNext = navigation.onMoveToNext,
                 firstBlockFocusRequester = bodyFocusRequester,
-                lastBlockFocusRequester = titleFocusRequester,  // ↑ 진입 → body 마지막
+                lastBlockFocusRequester = if (block.bodyBlocks.size > 1) bodyLastFocusRequester else null,
+                onLastBlockBottomEntryRegistered = { fr -> nestedLastFR = fr },
+                excludeCalloutTypes = setOf("DL"),  // DL 내부에서 DL 중첩 금지
                 onEscapeLeft = {
-                    localTitleFocusRequester.requestFocus()
+                    titleFocusRequester.requestFocus()
                     block.titleState.edit {
                         selection = androidx.compose.ui.text.TextRange(block.titleState.text.length)
                     }

@@ -33,6 +33,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.isUnspecified
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -44,6 +45,7 @@ import kotlin.time.Duration.Companion.milliseconds
  * 인라인 서식(OutputTransformation, BlockDecorationDrawer)을 적용.
  * 블록 분할 패턴(```, > [!TYPE], ---)을 감지하여 [navigation]을 통해 분리 요청.
  */
+@OptIn(FlowPreview::class)
 @Composable
 internal fun TextBlockEditor(
     block: EditorBlock.Text,
@@ -54,6 +56,7 @@ internal fun TextBlockEditor(
     focusRequester: FocusRequester = remember { FocusRequester() },
     navigation: BlockNavigation = BlockNavigation(),
     cursorHint: CursorHint? = null,
+    excludeCalloutTypes: Set<String> = emptySet(),
 ) {
     val normalizedTextStyle = remember(textStyle) {
         val effectiveLineHeight = if (textStyle.lineHeight.isUnspecified) 1.5.em else textStyle.lineHeight
@@ -70,10 +73,11 @@ internal fun TextBlockEditor(
 
     // isFocused를 key로 사용하여 포커스 변경 시 새 인스턴스 생성 → transformOutput() 재실행
     var isFocused by remember { mutableStateOf(false) }
-    val outputTransformation = remember(styleConfig, isFocused) {
+    val outputTransformation = remember(styleConfig, isFocused, excludeCalloutTypes) {
         RawMarkdownOutputTransformation(styleConfig).apply {
             this.isFocused = isFocused
             applyBlockTransparent = false
+            this.excludeCalloutTypes = excludeCalloutTypes
         }
     }
 
@@ -84,7 +88,7 @@ internal fun TextBlockEditor(
         if (!isFocused || cursorHint == null) return@LaunchedEffect
         if (cursorHint is CursorHint.AtX) {
             // TextLayoutResult가 준비될 때까지 잠시 대기
-            kotlinx.coroutines.delay(20)
+            kotlinx.coroutines.delay(20.milliseconds)
             val layout = textLayoutResult ?: return@LaunchedEffect
             val targetLine = if (cursorHint.lastLine) layout.lineCount - 1 else 0
             val lineTop = layout.getLineTop(targetLine)

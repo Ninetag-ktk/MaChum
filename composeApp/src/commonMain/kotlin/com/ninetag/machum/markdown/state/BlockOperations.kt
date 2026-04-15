@@ -168,12 +168,13 @@ object BlockOperations {
     fun tryReparse(
         blocks: List<EditorBlock>,
         blockIndex: Int,
+        excludeCalloutTypes: Set<String> = emptySet(),
     ): SplitResult? {
         val block = blocks.getOrNull(blockIndex) as? EditorBlock.Text ?: return null
         val text = block.textFieldState.text.toString()
         if (text.isEmpty()) return null
 
-        val parsed = MarkdownBlockParser.parse(text)
+        val parsed = MarkdownBlockParser.parse(text, excludeCalloutTypes)
         // 단일 TextBlock이면 변경 없음
         if (parsed.size <= 1 && parsed.firstOrNull() is EditorBlock.Text) return null
 

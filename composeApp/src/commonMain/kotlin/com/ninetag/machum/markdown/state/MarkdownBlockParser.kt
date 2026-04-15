@@ -1,7 +1,6 @@
 package com.ninetag.machum.markdown.state
 
 import androidx.compose.foundation.text.input.TextFieldState
-import com.ninetag.machum.markdown.state.EditorBlock
 
 /**
  * Raw markdown 문자열을 [EditorBlock] 리스트로 파싱한다.
@@ -13,13 +12,13 @@ object MarkdownBlockParser {
 
     private val calloutHeaderRegex = Regex("^(>+) ?\\[!(\\w+)]\\s*(.*)")
 
-    fun parse(markdown: String): List<EditorBlock> {
+    fun parse(markdown: String, excludeCalloutTypes: Set<String> = emptySet()): List<EditorBlock> {
         if (markdown.isEmpty()) return emptyList()
         val lines = markdown.split('\n')
-        return parseLines(lines)
+        return parseLines(lines, excludeCalloutTypes)
     }
 
-    private fun parseLines(lines: List<String>): List<EditorBlock> {
+    private fun parseLines(lines: List<String>, excludeCalloutTypes: Set<String> = emptySet()): List<EditorBlock> {
         val blocks = mutableListOf<EditorBlock>()
         var i = 0
         val textAccum = StringBuilder()
@@ -89,46 +88,67 @@ object MarkdownBlockParser {
 
                 // ── Callout: > [!TYPE] ──
                 calloutHeaderRegex.containsMatchIn(line) -> {
-                    flushText()
                     val match = calloutHeaderRegex.find(line)!!
-                    val calloutDepth = match.groupValues[1].length
                     val calloutType = match.groupValues[2]
-                    val title = match.groupValues[3]
 
-                    // 후속 ">" 줄 수집 (같은/상위 depth Callout 헤더에서 중단)
-                    val calloutBodyLines = mutableListOf<String>()
-                    i++
-                    while (i < lines.size) {
-                        val nextLine = lines[i]
-                        if (!nextLine.startsWith(">")) break
-                        val nextMatch = calloutHeaderRegex.find(nextLine)
-                        if (nextMatch != null) {
-                            val nextDepth = nextMatch.groupValues[1].length
-                            if (nextDepth <= calloutDepth) break
+                    // excludeCalloutTypes に該当するタイプはテキストとして処理
+                    if (excludeCalloutTypes.any { it.equals(calloutType, ignoreCase = true) }) {
+                        // 제외 대상 → 일반 텍스트 줄로 처리
+                        if (pendingNewlines > 0) {
+                            if (textAccum.isNotEmpty()) textAccum.append('\n')
+                            repeat(pendingNewlines) { textAccum.append('\n') }
+                            pendingNewlines = 0
+                        } else if (textAccum.isNotEmpty()) {
+                            textAccum.append('\n')
                         }
-                        calloutBodyLines.add(nextLine)
+                        textAccum.append(line)
                         i++
-                    }
-
-                    // body 줄에서 ">" prefix 제거 후 재귀 파싱
-                    val strippedBody = calloutBodyLines.map { bodyLine ->
-                        when {
-                            bodyLine.startsWith("> ") -> bodyLine.removePrefix("> ")
-                            bodyLine.startsWith(">") -> bodyLine.removePrefix(">")
-                            else -> bodyLine
-                        }
-                    }
-                    val bodyBlocks = if (strippedBody.isNotEmpty()) {
-                        parseLines(strippedBody)
                     } else {
-                        emptyList()
-                    }
+                        flushText()
+                        val calloutDepth = match.groupValues[1].length
+                        val title = match.groupValues[3]
 
-                    blocks += EditorBlock.Callout(
-                        calloutType = calloutType,
-                        titleState = TextFieldState(title),
-                        bodyBlocks = bodyBlocks,
-                    )
+                        // 후속 ">" 줄 수집 (같은/상위 depth Callout 헤더에서 중단)
+                        val calloutBodyLines = mutableListOf<String>()
+                        i++
+                        while (i < lines.size) {
+                            val nextLine = lines[i]
+                            if (!nextLine.startsWith(">")) break
+                            val nextMatch = calloutHeaderRegex.find(nextLine)
+                            if (nextMatch != null) {
+                                val nextDepth = nextMatch.groupValues[1].length
+                                if (nextDepth <= calloutDepth) break
+                            }
+                            calloutBodyLines.add(nextLine)
+                            i++
+                        }
+
+                        // body 줄에서 ">" prefix 제거 후 재귀 파싱
+                        val strippedBody = calloutBodyLines.map { bodyLine ->
+                            when {
+                                bodyLine.startsWith("> ") -> bodyLine.removePrefix("> ")
+                                bodyLine.startsWith(">") -> bodyLine.removePrefix(">")
+                                else -> bodyLine
+                            }
+                        }
+                        // DL body 내부에서는 DL 중첩 금지
+                        val bodyExcludes = if (calloutType.equals("DL", ignoreCase = true)) {
+                            excludeCalloutTypes + "DL"
+                        } else {
+                            excludeCalloutTypes
+                        }
+                        val bodyBlocks = if (strippedBody.isNotEmpty()) {
+                            parseLines(strippedBody, bodyExcludes)
+                        } else {
+                            emptyList()
+                        }
+
+                        blocks += EditorBlock.Callout(
+                            calloutType = calloutType,
+                            titleState = TextFieldState(title),
+                            bodyBlocks = bodyBlocks,
+                        )
+                    }
                 }
 
                 // ── Table: | 시작 (2줄 이상일 때만 변환) ──

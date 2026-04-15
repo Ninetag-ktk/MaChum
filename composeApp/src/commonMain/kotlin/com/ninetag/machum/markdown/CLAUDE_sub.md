@@ -123,13 +123,16 @@ InlineOnlyOutputTransformation.kt
 
 줄 단위 블록 감지 (lookahead로 유효성 확인 후 변환):
 - ` ``` ` → 닫는 ``` 존재 시에만 Code 블록 (없으면 TextBlock 유지)
-- `> [!TYPE]` → Callout
+- `> [!TYPE]` → Callout (`excludeCalloutTypes`에 포함된 타입은 텍스트로 유지)
 - `|` → 2줄 이상일 때만 Table 블록 (1줄이면 TextBlock 유지, flushText 안 함)
 - `![[]]` → Embed
 
+**`excludeCalloutTypes` 파라미터:** `parse(markdown, excludeCalloutTypes)` / `parseLines(lines, excludeCalloutTypes)`.
+DL Callout body 파싱 시 `excludeCalloutTypes = setOf("DL") + 부모에서 전달받은 excludes`로 DL 중첩을 방지한다. Standard Callout body에서는 `> [!NOTE]` 등 모든 타입이 허용되지만 DL body 안에서 `> [!DL]`은 텍스트로 유지된다.
+
 ### 3.3 BlockOperations (`state/BlockOperations.kt`)
 
-- `tryReparse()`: 특수 블록(Callout/Code/Table) 우선 포커스 (`indexOfFirst { !is Text }`)
+- `tryReparse(blocks, blockIndex, excludeCalloutTypes)`: 특수 블록(Callout/Code/Table) 우선 포커스 (`indexOfFirst { !is Text }`). `excludeCalloutTypes`를 `MarkdownBlockParser.parse()`에 전달하여 편집 중에도 Callout 중첩 제한 적용.
 - `trySplitByEmptyLine()`: `\n\n`으로 TextBlock 분리 (사용자 Enter 2번)
 - `mergeWithPrevious()`: TextBlock 병합, 빈 CodeBlock 삭제
 
@@ -141,6 +144,20 @@ InlineOnlyOutputTransformation.kt
 - `onEscapeToPrevious/Next`: 첫/마지막 블록 경계 탈출 콜백
 - `onEscapeLeft`: ← 경계 탈출 (Dialogue body → title)
 - `firstBlockFocusRequester`: 외부에서 첫 블록 FocusRequester 지정 (Callout body)
+
+**포커스 맵 구조 (`bottomEntryFRMap` 도입 예정, #19-callout 리팩토링):**
+
+블록당 진입 방향별 FocusRequester 2개를 지원한다:
+- `focusRequesterMap[id]` — 기본 진입점 (↓ 진입). 모든 블록이 등록.
+- `bottomEntryFRMap[id]` — ↑ 진입점. Callout만 등록 (body가 있을 때). 미등록 블록은 `focusRequesterMap`으로 fallback.
+
+```
+onMoveToNext (↓)    → focusRequesterMap[targetId]
+onMoveToPrevious (↑) → bottomEntryFRMap[targetId] ?: focusRequesterMap[targetId]
+```
+
+이 구조로 Callout 내부의 `cursorHint` 기반 redirect와 `lastBlockFocusRequester`를 완전히 제거한다.
+CalloutBlockEditor는 `onRegisterBottomEntryFR: (FocusRequester?) -> Unit` 콜백으로 body 상태에 따라 FR을 등록/해제한다.
 
 **stale 클로저 방지 (`rememberUpdatedState`):**
 `BlockWithNav`와 `BlockItem` 내부에서 콜백 클로저가 `blocks`/`index`/`allBlocks`/`blockIndex`를 캡처할 때 `rememberUpdatedState`를 사용한다. LazyColumn이 아이템의 직접 파라미터가 동일하면 recomposition을 skip하므로, 외부 스코프에서 캡처한 변수가 stale 상태로 남을 수 있다. `rememberUpdatedState`는 값이 변경될 때 내부 `State`만 갱신하여, 클로저를 재생성하지 않아도 최신 값을 참조하게 한다. (#18-3 해결)
@@ -154,17 +171,67 @@ InlineOnlyOutputTransformation.kt
 
 ### 3.6 CalloutBlockEditor (`ui/block/CalloutBlockEditor.kt`)
 
-**StandardCallout** (세로 레이아웃):
-- Title: `titleFocusRequester` 연결, Enter→body 생성/이동, ↓→body, ↑→이전 블록
-- Body: `MarkdownBlockEditor(isNested=true)`, `firstBlockFocusRequester`로 title에서 진입
-- `onEscapeToPrevious` → title 포커스, `onEscapeToNext` → 다음 블록
+#### Callout 내비게이션 정책
 
-**DialogueCallout** (`> [!DL]`, 대소문자 무관, 가로 레이아웃):
-- Title: →(끝)→body, Enter→body 생성/이동, ↑↓→Callout 탈출
-- Body: `onEscapeLeft` → title 포커스(맨 끝), `onEscapeToPrevious` → 이전 블록 (title 아님)
-- ↑ 진입: title에 포커스 (Standard Callout과 동일). →로 body 이동 가능
+**블록 진입:**
+- ↓(위 블록에서 진입) → **title 맨 앞**에 커서. `focusRequester`는 title에 연결
+- ↑(아래 블록에서 진입) → **body 맨 끝**에 커서. `lastBlockFocusRequester`로 body 마지막 블록에 연결. body 없으면 title 맨 끝
 
-공통: `pendingBodyFocus` + `LaunchedEffect(delay 50ms)` — body 생성 직후 지연 포커스
+**Enter (title에서):**
+- body 없음 → body 생성 (빈 TextBlock) + body로 커서 이동
+- body 있음 → body 맨 앞으로 커서 이동
+
+**StandardCallout** (세로 레이아웃, `Column`):
+| 위치 | 키 | 동작 |
+|---|---|---|
+| title | ↑ | 이전 블록으로 탈출 |
+| title | ↓ | body 있으면 body 맨 앞, 없으면 다음 블록 |
+| title | Enter | body 생성/이동 (위 참고) |
+| body | ↑(첫 줄, 위치 0) | title로 이동 |
+| body | ↓(마지막) | 다음 블록으로 탈출 |
+
+**DialogueCallout** (`> [!DL]`, 대소문자 무관, 가로 레이아웃, `Row`):
+| 위치 | 키 | 동작 |
+|---|---|---|
+| title | ↑ | 이전 블록으로 탈출 |
+| title | ↓ | 다음 블록으로 탈출 |
+| title | →(맨 끝) | body 있으면 body 맨 앞으로 이동 |
+| title | Enter | body 생성/이동 (위 참고) |
+| body | ←(위치 0) | title 맨 끝으로 이동 |
+| body | ↑ | 이전 줄 있으면 줄 이동, 첫 줄이면 이전 블록으로 탈출 |
+| body | ↓ | 다음 줄 있으면 줄 이동, 마지막 줄이면 다음 블록으로 탈출 |
+
+**DL 중첩 정책:**
+- DL body 내부에서 Standard Callout (`> [!NOTE]` 등) → **중첩 가능**
+- DL body 내부에서 DL (`> [!DL]`) → **중첩 불가** (텍스트로 유지)
+- 파서 로딩과 편집 중(tryReparse) 모두 적용
+- 구현: `MarkdownBlockParser.parse(text, excludeCalloutTypes=setOf("DL"))`, `BlockOperations.tryReparse(blocks, index, excludeCalloutTypes)`, `MarkdownBlockEditor(excludeCalloutTypes=...)`를 DL body의 MarkdownBlockEditor에 전달
+
+**구현 — `bottomEntryFRMap` 방식:**
+
+Callout 내부 FR 구성:
+- `titleFocusRequester` = block-level FR (`focusRequesterMap`에 등록). ↓ 진입 시 항상 title.
+- `bodyFocusRequester` = body 첫 블록 FR (`firstBlockFocusRequester`로 전달). title→body 이동용.
+- body가 있을 때 `bottomEntryFRMap`에 등록:
+  - body 1블록 → `bodyFocusRequester` 등록 (first이자 last)
+  - body 2+블록 → 별도 `bodyLastFocusRequester` 등록
+- body가 없을 때 `bottomEntryFRMap`에 `titleFocusRequester` 등록 (↑ 진입 시 title 맨 끝)
+
+MarkdownBlockEditor가 ↑ 이동 시 `bottomEntryFRMap`에서 FR을 가져와 직접 포커스.
+CalloutBlockEditor 내부의 `LaunchedEffect(cursorHint)` redirect 불필요 → **제거**.
+`lastBlockFocusRequester` 파라미터 불필요 → **제거**.
+
+title→body 내부 이동:
+- `focusBodyStart()`: `bodyFocusRequester.requestFocus()` + 첫 블록 커서 위치 0 설정
+- `pendingBodyFocus` + `LaunchedEffect(delay 50ms)`: body 생성 직후 지연 포커스
+
+**해결된 문제점 (bottomEntryFRMap 도입으로 해결):**
+1. ~~`cursorHint` 타이밍 레이스~~ → `bottomEntryFRMap`으로 직접 포커스. cursorHint redirect 제거.
+2. ~~`firstBlockFocusRequester`/`lastBlockFocusRequester` FR 충돌~~ → body 1블록일 때 `lastBlockFocusRequester = null`. `bottomEntryFR`으로 `bodyFocusRequester` 직접 등록.
+3. ~~FR 과다~~ → titleFR(block-level) + bodyFR(first) + bodyLastFR(2+블록) + bottomEntryFR(부모 등록). cursorHint redirect LaunchedEffect 제거.
+
+**중첩 Callout ↑ 진입 체인:**
+`onLastBlockBottomEntryRegistered` 콜백으로 마지막 body 블록이 bottomFR을 등록하면 부모 Callout이 `nestedLastFR`로 캡처하여 자신의 bottomFR로 재등록. depth0~N까지 재귀적으로 전파되어 가장 깊은 body의 TextBlock FR이 최상위까지 도달.
 
 ### 3.7 CodeBlockEditor (`ui/block/CodeBlockEditor.kt`)
 
@@ -280,10 +347,11 @@ EditorBlock, Parser, toMarkdown, BlockEditor, TextBlock, Callout, Code, Table, H
 - **#19 블록 간 이동 시 커서 위치 보정** — 부분 완료. 미해결 아래:
   - ✅ Text→Text x좌표 유지 (`CursorHint.AtX` + `getOffsetForPosition`)
   - ✅ Block→Text: ↓ 맨 처음, ↑ 맨 마지막
-  - ✅ Callout title→body: body 맨 처음, body→title: title 맨 마지막
+  - ✅ Callout title→body: body 맨 처음 (`focusBodyStart()`), body→title: title 맨 마지막
   - ✅ **↑로 Code/Callout 진입**: `isFirstLine` 버그 수정 — `sel.start == 0 || lastIndexOf(...) == -1`
-  - ✅ **Callout ↑ 진입 시 body 마지막**: `lastBlockFocusRequester`로 block-level FR을 body 마지막에 연결. body 없으면 title에 연결. Standard/Dialogue 공통
   - ✅ **스크롤 보정**: `animateScrollBy(±80f)` → 안 보이면 `animateScrollToItem` fallback
+  - ✅ **Callout ↑ 진입 시 body 마지막**: `bottomEntryFRMap` + `onLastBlockBottomEntryRegistered` 체인으로 해결. 중첩 Callout(depth0~N)에서도 가장 깊은 body로 진입
+  - ⬜ **soft wrap 줄 이동**: `isFirstLine`/`isLastLine`이 `\n` 기준이라 soft wrap 줄에서 ↑↓ 시 즉시 블록 탈출. `textLayoutResult.getLineForOffset()` 사용 필요
 - **#20 Smart Enter 블록 단위 확장** — 빈 CodeBlock Enter→탈출, Callout Enter 2회→탈출
 
 ### Phase 3: 고급 기능

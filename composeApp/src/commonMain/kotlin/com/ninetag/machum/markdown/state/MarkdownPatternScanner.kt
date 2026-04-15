@@ -55,7 +55,7 @@ internal object MarkdownPatternScanner {
      * @param config 서식 스타일 설정
      * @return [ScanResult] — 서식 범위 + 블록 범위
      */
-    fun scan(text: String, config: MarkdownStyleConfig): ScanResult {
+    fun scan(text: String, config: MarkdownStyleConfig, excludeCalloutTypes: Set<String> = emptySet()): ScanResult {
         if (text.isEmpty()) return ScanResult(emptyList(), emptyList())
 
         val spans = mutableListOf<Pair<IntRange, SpanStyle>>()
@@ -63,6 +63,14 @@ internal object MarkdownPatternScanner {
         val lines = text.split('\n')
         var i = 0
         var offset = 0
+
+        // excludeCalloutTypes를 고려한 blockquote 판별
+        fun isEffectiveBlockquote(line: String): Boolean {
+            if (!line.startsWith(">")) return false
+            val match = calloutHeaderRegex.find(line) ?: return true // callout 패턴 아님 → blockquote
+            val type = match.groupValues[2]
+            return excludeCalloutTypes.any { it.equals(type, ignoreCase = true) } // exclude 대상이면 blockquote
+        }
         var inCodeBlock = false
         var codeBlockStart = 0
         val codeBlockLines = mutableListOf<String>()
@@ -114,8 +122,11 @@ internal object MarkdownPatternScanner {
                 continue
             }
 
-            // ── Callout 감지: "> [!TYPE]" 패턴 ──
-            if (calloutHeaderRegex.containsMatchIn(line)) {
+            // ── Callout 감지: "> [!TYPE]" 패턴 (excludeCalloutTypes에 포함된 타입은 blockquote로 처리) ──
+            val calloutPreMatch = calloutHeaderRegex.find(line)
+            val calloutPreType = calloutPreMatch?.groupValues?.get(2)
+            val isExcludedCallout = calloutPreType != null && excludeCalloutTypes.any { it.equals(calloutPreType, ignoreCase = true) }
+            if (calloutPreMatch != null && !isExcludedCallout) {
                 flushGroup(groupText, groupStart, spans, config)
                 groupStart = -1
 
@@ -185,7 +196,7 @@ internal object MarkdownPatternScanner {
                             textRange = offset until (offset + line.length),
                         )
                     }
-                    isBlockquoteLine(line) -> {
+                    isEffectiveBlockquote(line) -> {
                         flushGroup(groupText, groupStart, spans, config)
                         groupStart = -1
                         // 연속 > 줄 그룹화
@@ -196,7 +207,7 @@ internal object MarkdownPatternScanner {
                         var bqEnd = offset + line.length
                         var j = i + 1
                         var bqOffset = offset + line.length + 1
-                        while (j < lines.size && isBlockquoteLine(lines[j])) {
+                        while (j < lines.size && isEffectiveBlockquote(lines[j])) {
                             spans += InlineStyleScanner.computeSpans(
                                 MarkdownBlock.TextBlock, lines[j], bqOffset, config,
                             )

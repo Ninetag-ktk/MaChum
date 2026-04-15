@@ -58,6 +58,9 @@ internal class RawMarkdownOutputTransformation(
      */
     var applyBlockTransparent: Boolean = true
 
+    /** Callout으로 변환하지 않을 타입 (DL 중첩 방지 등). blockquote로 렌더링. */
+    var excludeCalloutTypes: Set<String> = emptySet()
+
     override fun TextFieldBuffer.transformOutput() {
         val text = toString()
         if (text.isEmpty()) return
@@ -65,7 +68,7 @@ internal class RawMarkdownOutputTransformation(
         // 텍스트가 변경된 경우에만 재스캔
         if (text != cachedText) {
             cachedText = text
-            val result = MarkdownPatternScanner.scan(text, config)
+            val result = MarkdownPatternScanner.scan(text, config, excludeCalloutTypes)
             cachedSpans = result.spans
             cachedBlocks = result.blocks
         }
