@@ -169,7 +169,6 @@ internal fun MarkdownBlockEditor(
                         val offset = when (effectiveHint) {
                             is CursorHint.Start -> 0
                             is CursorHint.End -> state.text.length
-                            else -> state.text.length
                         }
                         state.edit {
                             selection = androidx.compose.ui.text.TextRange(offset)
@@ -380,6 +379,7 @@ private fun BlockItem(
                 newBlocks[idx] = newTable
                 onBlocksChanged(newBlocks)
             },
+            onRegisterBottomEntryFR = onRegisterBottomEntryFR,
         )
         is EditorBlock.HorizontalRule -> {
             // HR은 TextBlock 인라인 렌더링으로 전환됨 — 이 분기는 도달하지 않음

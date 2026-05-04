@@ -237,10 +237,15 @@ title→body 내부 이동:
 
 - 2D `focusGrid[row][col]` — 첫 셀은 block-level `focusRequester` 사용
 - ←→↑↓ 셀 이동, 경계에서 블록 이동
-- Tab → 다음 셀 / 마지막 셀이면 행 추가, Enter → 행 삽입
-- `pendingFocusRow/Col` + `LaunchedEffect` — 행 추가 후 지연 포커스
-- 포커스 시 오른쪽 `+`(열 추가), 아래 `+`(행 추가) 버튼
+- Tab → 같은 행 다음 열 이동 / 마지막 열이면 열 추가(`addColumn()`)
+- Enter → 같은 열 다음 행 이동 / 마지막 행이면 행 추가(`addRow()`)
+- `cellKeyHandler`(`onPreviewKeyEvent`)는 `focusRequester`보다 outer에 배치 — Desktop Compose Tab 가로채기 필요
+- `pendingFocusRow/Col` + `LaunchedEffect` — 행/열 추가 후 지연 포커스
+- 포커스 시 오른쪽 `+`(열 추가), 아래 `+`(행 추가) 버튼. 비포커스 시 hover/click 비활성화
+- 셀 간 구분: 셀별 border 대신 Row/Column 사이 `Box(0.5.dp)` divider, 외부 테두리만 `border(0.5.dp)`
+- ↑ 진입(아래 블록에서): `bottomEntryFRMap`에 `focusGrid[lastRow][0]` 등록 → 마지막 행 첫 열로 포커스. `LaunchedEffect(totalRows, colCount)`로 행/열 변경 시 재등록
 - `onBlockChanged: (EditorBlock.Table) -> Unit` — 행/열 변경 전파
+- `onRegisterBottomEntryFR: (FocusRequester?) -> Unit` — `bottomEntryFRMap` 등록 콜백 (Callout과 동일 메커니즘)
 
 ### 3.9 HorizontalRule 인라인 렌더링
 
@@ -266,6 +271,12 @@ title→body 내부 이동:
 | Table +버튼 안 보임 | `focusedCellCount` 카운터 방식 → 외부 Column `onFocusChanged { hasFocus }` 방식 |
 | Table Tab/행 추가 stale block | `rememberUpdatedState(block)` 적용 (`TableBlockEditor.kt`) |
 | Table 상단 빈 줄 Enter 롤백 | `trySplitByEmptyLine`의 `trimEnd()` 제거 + 빈 텍스트면 분리 안 함 (`BlockOperations.kt`) |
+| **#18-2 Table 열 추가(+버튼) 동작 안 함** | 아이콘만 조건부 표시. 비포커스 시 비활성화는 사용자 직접 처리 (`TableBlockEditor.kt`) |
+| **#18-2 Table 열 추가 시 셀 간격 벌어짐** | 셀 border 제거, Box divider 교체 (`TableBlockEditor.kt`) |
+| **#18-2 Table Tab 마지막 열→열 추가** | Tab 분��: `addRow()` → `addColumn()`, 불필요 분기 제거, `cellKeyHandler` outer 배치 (`TableBlockEditor.kt`) |
+| **#18-2 Table Enter 마지막 행→행 추가** | Enter 분기: 아래 행 있으면 이동, 없으면 `addRow()`. `insertRowBelow()` 제거 (`TableBlockEditor.kt`) |
+| **#19 Table ↑ 진입 시 첫 셀로 이동** | `bottomEntryFRMap`에 `focusGrid[lastRow][0]` 등록. `LaunchedEffect(totalRows, colCount)`로 재등록 (`TableBlockEditor.kt`, `MarkdownBlockEditor.kt`) |
+| **#20 Smart Enter 블록 탈출** | 마지막 줄이 비어있을 때 Enter → trailing `\n` 제거 + `onMoveToNext`. CodeBlock(`CodeBlockEditor.kt`), TextBlock(`TextBlockEditor.kt`) 공통 적용. Callout body는 TextBlock 탈출 → `onEscapeToNext` 체인으로 Callout 외부로 이동 |
 
 ### #18-3 Callout body 유실 버그 — 해결 기록
 
@@ -333,9 +344,11 @@ EditorBlock, Parser, toMarkdown, BlockEditor, TextBlock, Callout, Code, Table, H
 - #18-1 특수 블록 생성 시 자동 포커스
 
 **남은 작업:**
-- **#18-2 Table 수정사항 재점검** — +버튼 공간/높이 ✅. 미해결:
-  - Tab 마지막 셀 행 추가 안 됨: `onPreviewKeyEvent`에서 Tab이 정상 소비되지 않는 것으로 추정. Desktop Compose의 Tab 포커스 이동과 충돌 가능. 대안: Tab 대신 다른 키(예: Ctrl+Enter) 또는 `focusProperties { canFocus = false }` 등으로 Tab 포커스 이동 차단 검토
-  - 열 추가 시 기존 셀 간격 벌어짐: 모든 셀에 `border(0.5.dp)` 적용 중 → 열 추가 시 인접 셀 border가 중복(0.5+0.5=1dp). 해결 방향: 셀별 border 대신 Row/Column divider 사용, 또는 start/top border만 적용
+- ~~#18-2 Table 수정사항 재점검~~ ✅ 4건 해결:
+  - ✅ 열 추가(+ 버튼) 클릭 시 동작 안 함: `clickable`을 항상 적용, 아이콘만 조건부 표시. 비포커스 시 hover/click 비활성화는 사용자가 직접 처리 (`TableBlockEditor.kt`)
+  - ✅ 열 추가 시 셀 간격 벌어짐: 셀 border 제거 → Box divider 교체 (`TableBlockEditor.kt`)
+  - ✅ Tab 마지막 열에서 열 추가: Tab 분기를 `addRow()` → `addColumn()`으로 수정, 불필요한 다음 행 이동 분기 제거, `cellKeyHandler`를 `focusRequester`보다 outer로 이동 (`TableBlockEditor.kt:156-165`)
+  - ✅ Enter 마지막 행에서 행 추가: Tab과 동일한 패턴(아래 행 있으면 이동, 없으면 `addRow()`). `insertRowBelow()` 제거 (`TableBlockEditor.kt:167-176`)
 - ~~#18-6 빈 줄 Enter 롤백~~ ✅ `endsWith("\n\n")` 자동 분리 비활성화. #16(빈 줄 TextBlock 포함)과 충돌하므로 #20 Smart Enter에서 재설계
 - ~~#18-3 Callout body 유실 버그~~ ✅ — LazyColumn stale 클로저 → `rememberUpdatedState` 적용 (섹션 4 참고)
 - ~~#18-4 CodeBlock: 닫는 ``` 전까지 블록 변환하지 않기~~ ✅ 닫는 펜스 lookahead, 없으면 TextBlock 유지
@@ -347,8 +360,15 @@ EditorBlock, Parser, toMarkdown, BlockEditor, TextBlock, Callout, Code, Table, H
   - ✅ **↑로 Code/Callout 진입**: `isFirstLine` 버그 수정 — `sel.start == 0 || lastIndexOf(...) == -1`
   - ✅ **스크롤 보정**: `animateScrollBy(±80f)` → 안 보이면 `animateScrollToItem` fallback
   - ✅ **Callout ↑ 진입 시 body 마지막**: `bottomEntryFRMap` + `onLastBlockBottomEntryRegistered` 체인으로 해결. 중첩 Callout(depth0~N)에서도 가장 깊은 body로 진입
-  - ⬜ **soft wrap 줄 이동**: `isFirstLine`/`isLastLine`이 `\n` 기준이라 soft wrap 줄에서 ↑↓ 시 즉시 블록 탈출. `textLayoutResult.getLineForOffset()` 사용 필요
-- **#20 Smart Enter 블록 단위 확장** — 빈 CodeBlock Enter→탈출, Callout Enter 2회→탈출
+  - ✅ **Table ↑ 진입 시 마지막 행 첫 열**: `bottomEntryFRMap`에 `focusGrid[lastRow][0]` 등록. `onRegisterBottomEntryFR` 콜백으로 `BlockItem`에서 전달 (`TableBlockEditor.kt`, `MarkdownBlockEditor.kt`)
+  - ⬜ **soft wrap 줄 이동**: `isFirstLine`/`isLastLine`이 `\n` 기준이라 soft wrap 줄에서 ↑↓ 시 즉시 블록 탈출. 단순히 `textLayoutResult.getLineForOffset()` 조건 교체만으로는 해결 안 됨 — `onPreviewKeyEvent`에서 이벤트를 소비하면 BasicTextField 내부의 커서 이동이 차단되어 심각한 사이드이펙트 발생. BasicTextField의 내부 ↑↓ 처리와 블록 탈출 판단을 분리하는 별도 설계 필요
+- ~~#20 Smart Enter 블록 탈출~~ ✅ — 커서가 마지막 줄에 있고 해당 줄이 비어있을 때 Enter → trailing `\n` 제거 + 블록 탈출 (`onMoveToNext`).
+  - CodeBlock: 코드 입력 후 Enter(빈 줄 생성) → 빈 마지막 줄에서 Enter → trailing `\n` 제거 + 탈출 (`CodeBlockEditor.kt:57-73`)
+  - Callout body: title에서 Enter(body 생성, 1번째) → 빈 body에서 Enter(2번째) → Callout 탈출. body의 TextBlockEditor `onMoveToNext` → MarkdownBlockEditor `onEscapeToNext` → Callout 외부로 이동
+  - TextBlock에도 동일 적용: 마지막 줄이 빈 상태로 Enter → trailing `\n` 제거 + `onMoveToNext` (`TextBlockEditor.kt:132-148`)
+  - ZWSP 빈 줄 블록(`\u200B`)은 `isEmpty`가 아니므로 영향 없음
+  - 중간 빈 줄에서는 정상 줄바꿈 유지 (마지막 줄 조건: `text.indexOf('\n', sel.start) == -1`)
+  - 조건: `sel.collapsed && isLastLine && isCurrentLineEmpty`. trailing `\n` 제거: `lineStart > 0`이면 `edit { replace(lineStart-1, lineStart, "") }`
 
 ### Phase 3: 고급 기능
 

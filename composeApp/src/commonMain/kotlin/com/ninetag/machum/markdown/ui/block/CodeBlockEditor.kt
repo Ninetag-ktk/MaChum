@@ -54,6 +54,24 @@ internal fun CodeBlockEditor(
                     true
                 } else false
             }
+            Key.Enter -> {
+                if (sel.collapsed) {
+                    val text = block.codeState.text.toString()
+                    val isLastLine = text.indexOf('\n', sel.start) == -1
+                    val lineStart = if (sel.start == 0) 0 else text.lastIndexOf('\n', sel.start - 1) + 1
+                    val isCurrentLineEmpty = sel.start == lineStart
+                    if (isLastLine && isCurrentLineEmpty) {
+                        // 빈 마지막 줄을 생성한 trailing \n 제거
+                        if (lineStart > 0) {
+                            block.codeState.edit {
+                                replace(lineStart - 1, lineStart, "")
+                            }
+                        }
+                        navigation.onMoveToNext()
+                        true
+                    } else false
+                } else false
+            }
             Key.DirectionUp -> {
                 if (sel.collapsed) {
                     val text = block.codeState.text.toString()

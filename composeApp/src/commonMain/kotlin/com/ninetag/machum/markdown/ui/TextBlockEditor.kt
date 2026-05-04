@@ -129,15 +129,31 @@ internal fun TextBlockEditor(
                     true
                 } else false
             }
+            Key.Enter -> {
+                if (sel.collapsed) {
+                    val text = block.textFieldState.text.toString()
+                    val isLastLine = text.indexOf('\n', sel.start) == -1
+                    val lineStart = if (sel.start == 0) 0 else text.lastIndexOf('\n', sel.start - 1) + 1
+                    val isCurrentLineEmpty = sel.start == lineStart
+                    if (isLastLine && isCurrentLineEmpty) {
+                        // 빈 마지막 줄을 생성한 trailing \n 제거
+                        if (lineStart > 0) {
+                            block.textFieldState.edit {
+                                replace(lineStart - 1, lineStart, "")
+                            }
+                        }
+                        navigation.onMoveToNext()
+                        true
+                    } else false
+                } else false
+            }
             Key.DirectionUp -> {
                 if (sel.collapsed) {
                     val text = block.textFieldState.text.toString()
                     // sel.start == 0이면 무조건 첫 줄 (leading \n이 있어도)
                     val isFirstLine = sel.start == 0 || text.lastIndexOf('\n', sel.start - 1) == -1
                     if (isFirstLine) {
-                        val cursorX = textLayoutResult?.let { layout ->
-                            layout.getHorizontalPosition(sel.start, usePrimaryDirection = true)
-                        } ?: 0f
+                        val cursorX = textLayoutResult?.getHorizontalPosition(sel.start, usePrimaryDirection = true) ?: 0f
                         navigation.onMoveToPreviousWithX(cursorX)
                         true
                     } else false
@@ -148,9 +164,7 @@ internal fun TextBlockEditor(
                     val text = block.textFieldState.text.toString()
                     val isLastLine = text.indexOf('\n', sel.start) == -1
                     if (isLastLine) {
-                        val cursorX = textLayoutResult?.let { layout ->
-                            layout.getHorizontalPosition(sel.start, usePrimaryDirection = true)
-                        } ?: 0f
+                        val cursorX = textLayoutResult?.getHorizontalPosition(sel.start, usePrimaryDirection = true) ?: 0f
                         navigation.onMoveToNextWithX(cursorX)
                         true
                     } else false

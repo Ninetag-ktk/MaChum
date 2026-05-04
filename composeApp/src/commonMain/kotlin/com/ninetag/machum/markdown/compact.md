@@ -30,17 +30,20 @@
 - [x] #18-1 특수 블록 생성 시 자동 포커스 (tryReparse에서 Callout/Code/Table 우선)
 
 **남은 작업:**
-- [ ] **#18-2 Table 수정사항 재점검** — +버튼 공간/높이 ✅. 아래 미해결:
-  - [ ] Tab 마지막 셀에서 행 추가 안 됨 (onPreviewKeyEvent에서 Tab이 소비되지 않는 것으로 추정)
-  - [ ] 열 추가 시 기존 셀 간격이 벌어짐 (border 중복 또는 weight 재계산 문제)
+- [x] **#18-2 Table 수정사항 재점검** — 아래 4건 해결:
+  - [x] 열 추가(+ 버튼) 클릭 시 동작 안 함: `clickable`이 `tableFocused` 조건부 적용 → 클릭 시 셀 포커스 아웃으로 제거됨. 수정: `clickable` 항상 적용, 아이콘만 조건부 표시. 비포커스 시 hover/click 비활성화는 사용자가 직접 처리 완료
+  - [x] 열 추가 시 기존 셀 간격 벌어짐: 셀별 `border(0.5.dp)` → Box divider 방식 교체
+  - [x] Tab 마지막 열에서 열 추가: `cellKeyHandler`의 Tab 분기를 `addRow()` → `addColumn()`으로 수정. 불필요한 2번 분기(다음 행 이동) 제거. `cellKeyHandler`를 `focusRequester`보다 outer로 이동하여 Tab 가로채기 해결
+  - [x] Enter 마지막 행에서 행 추가: Tab과 동일한 패턴 적용 (아래 행 있으면 이동, 없으면 `addRow()`). `insertRowBelow()` 제거
 - [x] **#18-6 빈 줄 Enter 롤백** — `endsWith("\n\n")` 자동 분리 비활성화. #16과 충돌하므로 #20 Smart Enter에서 재설계
 - [x] **#18-3 Callout body 유실 버그** — LazyColumn stale 클로저 캡처. `BlockWithNav`/`BlockItem`에 `rememberUpdatedState(blocks)`/`rememberUpdatedState(index)` 적용 (`MarkdownBlockEditor.kt`)
 - [x] **#18-4 CodeBlock: 닫는 ``` 전까지 블록 변환하지 않기** — 닫는 펜스 lookahead 후 없으면 TextBlock 유지
 - [x] **#18-5 Table: 1줄 `|col|` 입력 시 커서 이탈** — 2줄+ lookahead 후에만 flushText + Table 생성
 - [ ] **#19 블록 간 이동 시 커서 위치 보정** — 부분 완료. 미해결:
   - [x] Callout ↑ 진입 → body 마지막: `bottomEntryFRMap` + `onLastBlockBottomEntryRegistered` 체인
+  - [x] Table ↑ 진입 → 마지막 행 첫 열: `bottomEntryFRMap`에 `focusGrid[lastRow][0]` 등록 (`TableBlockEditor.kt`, `MarkdownBlockEditor.kt`)
   - [ ] soft wrap 줄 이동: `\n` 기준 → `textLayoutResult.getLineForOffset()` 기준으로 변경 필요
-- [ ] **#20 Smart Enter 블록 단위 확장** — 빈 CodeBlock Enter→탈출, Callout Enter 2회→탈출
+- [x] **#20 Smart Enter 블록 탈출** — 커서가 마지막 줄 + 해당 줄이 비어있을 때 Enter → trailing `\n` 제거 + 블록 탈출(`onMoveToNext`). CodeBlock/Callout body/TextBlock 공통 적용. 중간 빈 줄은 정상 줄바꿈 유지
 
 ### Phase 3: 고급 기능
 - [ ] #21 Cross-block selection + 복사/잘라내기

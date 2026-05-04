@@ -4,6 +4,7 @@ import com.ninetag.machum.markdown.service.MarkdownStyleConfig
 import com.ninetag.machum.markdown.state.EditorBlock
 import com.ninetag.machum.markdown.ui.BlockNavigation
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -46,6 +47,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * 테이블 블록 에디터.
@@ -64,6 +66,7 @@ internal fun TableBlockEditor(
     focusRequester: FocusRequester = remember { FocusRequester() },
     navigation: BlockNavigation = BlockNavigation(),
     onBlockChanged: (EditorBlock.Table) -> Unit = {},
+    onRegisterBottomEntryFR: (FocusRequester?) -> Unit = {},
 ) {
     val shape = RoundedCornerShape(4.dp)
     val borderColor = styleConfig.blockquoteAccent
@@ -82,6 +85,11 @@ internal fun TableBlockEditor(
         }
     }
 
+    // ↑ 진입 시 마지막 행 첫 열로 포커스되도록 bottomEntryFR 등록
+    LaunchedEffect(totalRows, colCount) {
+        onRegisterBottomEntryFR(focusGrid[totalRows - 1][0])
+    }
+
     // 테이블 포커스 추적: 외부 Column의 hasFocus 사용 (자식 셀 중 하나라도 포커스면 true)
     var tableFocused by remember { mutableStateOf(false) }
 
@@ -92,7 +100,7 @@ internal fun TableBlockEditor(
 
     LaunchedEffect(focusCellCounter) {
         if (pendingFocusRow >= 0) {
-            kotlinx.coroutines.delay(100)
+            kotlinx.coroutines.delay(100.milliseconds)
             try {
                 val r = pendingFocusRow.coerceIn(0, focusGrid.lastIndex)
                 val c = pendingFocusCol.coerceIn(0, focusGrid[0].lastIndex)
@@ -112,14 +120,6 @@ internal fun TableBlockEditor(
         val b = currentBlock
         val newRow = List(b.headerStates.size) { TextFieldState("") }
         onBlockChanged(b.copy(rowStates = b.rowStates + listOf(newRow)))
-    }
-
-    fun insertRowBelow(dataRowIndex: Int) {
-        val b = currentBlock
-        val newRow = List(b.headerStates.size) { TextFieldState("") }
-        val newRows = b.rowStates.toMutableList()
-        newRows.add(dataRowIndex + 1, newRow)
-        onBlockChanged(b.copy(rowStates = newRows))
     }
 
     fun addColumn() {
@@ -162,22 +162,23 @@ internal fun TableBlockEditor(
                 Key.Tab -> {
                     if (col < colCount - 1) {
                         requestCellFocus(row, col + 1)
-                    } else if (row < totalRows - 1) {
-                        requestCellFocus(row + 1, 0)
                     } else {
-                        addRow()
-                        pendingFocusRow = totalRows
-                        pendingFocusCol = 0
+                        addColumn()
+                        pendingFocusRow = row
+                        pendingFocusCol = colCount
                         focusCellCounter++
                     }
                     true
                 }
                 Key.Enter -> {
-                    val dataRowIndex = row - 1
-                    insertRowBelow(dataRowIndex)
-                    pendingFocusRow = row + 1
-                    pendingFocusCol = col
-                    focusCellCounter++
+                    if (row < totalRows - 1) {
+                        requestCellFocus(row + 1, col)
+                    } else {
+                        addRow()
+                        pendingFocusRow = totalRows
+                        pendingFocusCol = col
+                        focusCellCounter++
+                    }
                     true
                 }
                 else -> false
@@ -193,21 +194,23 @@ internal fun TableBlockEditor(
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .border(1.dp, borderColor, shape)
+                    .border(0.5.dp, borderColor, shape)
             ) {
                 // Header row
                 Row(
                     modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min)
                 ) {
                     for ((col, cellState) in currentBlock.headerStates.withIndex()) {
+                        if (col > 0) {
+                            Box(Modifier.width(0.5.dp).fillMaxHeight().background(borderColor))
+                        }
                         BasicTextField(
                             state = cellState,
                             modifier = Modifier
                                 .weight(1f)
+                                .then(cellKeyHandler(0, col, cellState))
                                 .focusRequester(focusGrid[0][col])
-                                .border(width = 0.5.dp, color = borderColor)
-                                .padding(horizontal = 6.dp, vertical = 4.dp)
-                                .then(cellKeyHandler(0, col, cellState)),
+                                .padding(horizontal = 6.dp, vertical = 4.dp),
                             textStyle = textStyle.merge(TextStyle(fontWeight = FontWeight.Bold)),
                             cursorBrush = cursorBrush,
                             lineLimits = TextFieldLineLimits.SingleLine,
@@ -215,21 +218,29 @@ internal fun TableBlockEditor(
                     }
                 }
 
+                // Header-body separator
+                Box(Modifier.height(0.5.dp).fillMaxWidth().background(borderColor))
+
                 // Data rows
                 for ((rowIdx, row) in currentBlock.rowStates.withIndex()) {
+                    if (rowIdx > 0) {
+                        Box(Modifier.height(0.5.dp).fillMaxWidth().background(borderColor))
+                    }
                     val gridRow = rowIdx + 1
                     Row(
                         modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min)
                     ) {
                         for ((col, cellState) in row.withIndex()) {
+                            if (col > 0) {
+                                Box(Modifier.width(0.5.dp).fillMaxHeight().background(borderColor))
+                            }
                             BasicTextField(
                                 state = cellState,
                                 modifier = Modifier
                                     .weight(1f)
+                                    .then(cellKeyHandler(gridRow, col, cellState))
                                     .focusRequester(focusGrid[gridRow][col])
-                                    .border(width = 0.5.dp, color = borderColor)
-                                    .padding(horizontal = 6.dp, vertical = 4.dp)
-                                    .then(cellKeyHandler(gridRow, col, cellState)),
+                                    .padding(horizontal = 6.dp, vertical = 4.dp),
                                 textStyle = textStyle,
                                 cursorBrush = cursorBrush,
                                 lineLimits = TextFieldLineLimits.SingleLine,
