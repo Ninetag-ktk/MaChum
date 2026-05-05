@@ -73,7 +73,7 @@ markdown/
     └── HorizontalRuleDivider.kt    ← HR (미사용 — TextBlock 인라인 렌더링으로 전환)
 ```
 
-### v1에서 재활용하는 파일 (블록 에디터 내부에서 사용)
+### TextBlock 전용 보조 파일 (v1에서 재활용 → v2 전용으로 정리 완료)
 
 ```
 markdown/
@@ -82,20 +82,21 @@ markdown/
 │   └── util/
 │       └── EditorKeyboardShortcuts.kt ← Ctrl+B/I/E 등
 ├── state/
-│   ├── InlineStyleScanner.kt       ← SpanStyle 계산 (HR → blockTransparent)
-│   ├── MarkdownPatternScanner.kt   ← 문서 스캔
+│   ├── MarkdownBlock.kt            ← 블록 타입 (Heading/TextBlock/HorizontalRule 3종)
+│   ├── InlineStyleScanner.kt       ← TextBlock 인라인 서식 SpanStyle 계산
+│   ├── MarkdownPatternScanner.kt   ← TextBlock 콘텐츠 스캔 (BLOCKQUOTE/HORIZONTAL_RULE)
 │   ├── RawMarkdownOutputTransformation.kt ← TextBlockEditor의 OutputTransformation
 │   ├── EditorInputTransformation.kt ← Smart Enter, auto-close
-│   ├── RawStyleToggle.kt           ← 서식 토글 유틸리티
-│   └── MarkdownBlock.kt            ← 블록 타입 정의 (Scanner 내부용)
+│   └── RawStyleToggle.kt           ← 서식 토글 유틸리티
 └── ui/
-    └── BlockDecorationDrawer.kt     ← DrawBehind (blockquote 테두리, HR Divider, inline code 배경)
+    └── BlockDecorationDrawer.kt    ← DrawBehind (blockquote 좌측 바, HR 구분선, inline code 배경)
 ```
 
-### v1 전용 — 삭제 완료
+### v1 정리 — 완료
 
-v1 미사용 파일 12개 삭제 완료. 상세: `REFACTOR.md` 참고.
-리팩토링 대상 (v1 로직이 남아있는 재활용 파일 6개)도 `REFACTOR.md`에 정리.
+- v1 미사용 파일 12개 삭제 완료
+- 재활용 파일 5개의 v1 로직 정리 완료 (총 ~580줄 삭감). 상세는 git log 참조
+- TextBlockEditor 의 OT 는 `applyBlockTransparent`/`excludeCalloutTypes`/`activeBlockRanges` 같은 overlay 시절 필드를 모두 제거하고 인라인 서식 + inline code 범위만 다룬다
 
 ---
 
@@ -148,9 +149,25 @@ DL Callout body 파싱 시 `excludeCalloutTypes = setOf("DL") + 부모에서 전
 - `bottomEntryFRMap[id]` — ↑ 진입점. Callout만 등록 (body가 있을 때). 미등록 블록은 `focusRequesterMap`으로 fallback.
 
 ```
-onMoveToNext (↓)    → focusRequesterMap[targetId]
-onMoveToPrevious (↑) → bottomEntryFRMap[targetId] ?: focusRequesterMap[targetId]
+onMoveToNext (↓)    → focusRequesterMap[targetId]                          + cursorHint=Start
+onMoveToPrevious (↑) → bottomEntryFRMap[targetId] ?: focusRequesterMap[...]  + cursorHint=End
+onMoveLeft (←)       → bottomEntryFRMap[targetId] ?: focusRequesterMap[...]  + cursorHint=End
 ```
+
+`onMoveLeft (←)` 는 ↑ 와 동일한 진입 의미: 이전 블록의 "마지막 위치" 로 이동. Callout 의 경우 body 끝, body 가 없으면 title 끝. 단순 focus + cursor hint 미설정으로 두면 Callout 의 title 로 가는 버그가 있었음 (이전 잔재 default).
+
+**Callout body 마지막 cursor 강제 (bottomEntry + End):**
+
+`bottomEntryFRMap` 으로 Callout 의 body 마지막 블록 FocusRequester 에 focus 만 요청하면 — 그 블록의 textFieldState 는 **이전 selection 위치 그대로 복원** 된다 (사용자가 이전에 body 첫 줄에 있었으면 거기로). 사용자 의도는 "이전 cursor 위치 무시하고 body 맨 끝으로" 이므로, LaunchedEffect 가 다음 추가 처리:
+
+```kotlin
+if (effectiveHint is CursorHint.End && pendingUseBottomEntry && targetBlock is EditorBlock.Callout) {
+    val lastText = findDeepestLastText(targetBlock.bodyBlocks)
+    lastText?.textFieldState?.edit { selection = TextRange(text.length) }
+}
+```
+
+`findDeepestLastText` 는 재귀적으로 중첩 Callout 의 body 까지 들어가 가장 깊은 마지막 `EditorBlock.Text` 를 찾는다. body 가 빈 Callout 은 null 반환 (이 경우 title 로 fallback).
 
 이 구조로 Callout 내부의 `cursorHint` 기반 redirect와 `lastBlockFocusRequester`를 완전히 제거한다.
 CalloutBlockEditor는 `onRegisterBottomEntryFR: (FocusRequester?) -> Unit` 콜백으로 body 상태에 따라 FR을 등록/해제한다.
@@ -160,18 +177,62 @@ CalloutBlockEditor는 `onRegisterBottomEntryFR: (FocusRequester?) -> Unit` 콜�
 
 ### 3.5 TextBlockEditor (`ui/TextBlockEditor.kt`)
 
-- 인라인 서식: `RawMarkdownOutputTransformation(applyBlockTransparent=false)`
+- 인라인 서식: `RawMarkdownOutputTransformation(styleConfig)` — `isFocused` 만 설정 (overlay 관련 필드 모두 제거됨)
 - 포커스 기반 서식 전환: `remember(styleConfig, isFocused)`로 OT 재생성
-- 패턴 감지: `snapshotFlow` + `debounce(150ms)` → `onReparse()`
+- 패턴 감지: `snapshotFlow` + `debounce(150ms)` → `onReparse()`. **단 `block.rawMode=true` 일 때는 skip** (dissolve 정책 v3)
+- focus-out reparse: `LaunchedEffect(isFocused, block.rawMode)` 에서 `block.rawMode && !isFocused` 일 때 200ms delay 후 `onReparseSilent()` 1회 (dissolve 정책 v3, 섹션 10)
+- 빈 raw 자동 해제: `LaunchedEffect(block.rawMode)` 에서 rawMode 인 블록의 텍스트가 빈 순간 `onClearRawMode()` 호출 (rawMode=false 로 플래그만 해제)
+- ZWSP 자동 제거: `LaunchedEffect(block.textFieldState)` 에서 text 가 `BLANK_LINE_MARKER` 포함 + length>1 이면 ZWSP 제거 (placeholder → 일반 TextBlock 격하)
 - 블록 이동: ↑(첫 줄)→prev, ↓(마지막 줄)→next, ←(위치 0)→moveLeft, Backspace(위치 0)→merge
+- **Enter 핸들러 없음**: TextBlock 은 박스 UI 가 없어 Smart Enter 탈출이 불필요. BasicTextField 기본 동작(`\n` 추가) 사용. CodeBlock/Callout 의 Smart Enter 와는 분리
+- DrawBehind: `drawBlockDecorations(blocks, config, scrollOffset, inlineCodeRanges, rawZones)` — BLOCKQUOTE 좌측 바 + HR 구분선 + inline code RoundRect 배경. **raw zone 안의 줄은 BLOCKQUOTE 좌측 바를 그리지 않음** (raw 마커가 보이는 상태에서는 좌측 바도 숨김)
+- raw zone 결정: `RawMarkdownOutputTransformation.currentRawZones` — `isRawMode=true` (block.rawMode) 면 전체 텍스트, `isFocused=true` 면 커서 줄, 그 외 빈 리스트. dissolve 된 raw TextBlock 의 경우 (Callout/Code dissolve 결과의 `> body` / ` ``` ` 텍스트) 좌측 바가 자연스럽게 숨겨짐
 
 ### 3.6 CalloutBlockEditor (`ui/block/CalloutBlockEditor.kt`)
+
+#### 마크다운 문법
+
+```markdown
+> [!NOTE] 제목
+> 본문
+
+>> [!TIP] 중첩 Callout
+>> 본문
+
+> [!DL] 화자명
+> 대사 내용
+```
+
+- 헤더 형식: `> [!TYPE]` (선택적 공백) + `제목` (선택)
+- 본문 줄: `> 내용` (각 줄에 `>` prefix)
+- 중첩: `>>` (depth 2), `>>>` (depth 3) 등으로 표시
+- Dialogue 타입은 `DL` 로 직렬화 (`> [!DL] 화자명`)
+- 대소문자 무관 (`dl`, `DL`, `Dl` 모두 인식). 판별: `equals("DL", ignoreCase = true)`
+
+#### 지원 타입
+
+| 타입 | 배경/테두리 색상 계열 | 비고 |
+|---|---|---|
+| NOTE | 파랑 | 기본 |
+| TIP | 청록 | |
+| IMPORTANT | 보라 | |
+| WARNING | 주황 | |
+| DANGER | 빨강 | |
+| CAUTION | 빨강 | DANGER 와 동일 |
+| QUESTION | 남색 | |
+| SUCCESS | 초록 | |
+| DL (Dialogue) | 타입별 | Row 레이아웃 (title + body 가로 배치) |
+
+스타일 매핑: `service/MarkdownStyleConfig.kt` → `calloutDecorationStyle(type)` + `defaultCalloutStyles()`. M3 테마 컬러는 `MarkdownBlockTextField.kt` 의 `defaultMaterialBlockStyleConfig()` 에서 덮어씀.
 
 #### Callout 내비게이션 정책
 
 **블록 진입:**
 - ↓(위 블록에서 진입) → **title 맨 앞**에 커서. `focusRequester`는 title에 연결
-- ↑(아래 블록에서 진입) → **body 맨 끝**에 커서. `lastBlockFocusRequester`로 body 마지막 블록에 연결. body 없으면 title 맨 끝
+- ↑(아래 블록에서 진입) → **body 가장 깊은 마지막 Text 의 맨 끝**에 커서. `bottomEntryFRMap` 으로 body 마지막 블록 focus + LaunchedEffect 가 `findDeepestLastText().textFieldState.selection = End` 강제. body 없으면 title 맨 끝
+- ←(다음 블록에서 ← 로 진입) → **↑ 와 동일** (body 맨 끝, body 없으면 title 맨 끝). `MarkdownBlockEditor.onMoveLeft` 가 `bottomEntryFRMap` + `cursorHint=End` 사용
+
+**중요 — cursor 위치 강제**: bottomEntry FocusRequester 만 호출하면 이전 selection 그대로 복원되어 사용자 의도와 어긋남(예: 이전에 body 첫 줄에 있었으면 거기로). 따라서 `MarkdownBlockEditor` 의 LaunchedEffect 가 Callout + bottomEntry + End 케이스에 한해 body 의 가장 깊은 마지막 Text 의 selection 을 명시적으로 `text.length` 로 설정한다.
 
 **Enter (title에서):**
 - body 없음 → body 생성 (빈 TextBlock) + body로 커서 이동
@@ -183,6 +244,7 @@ CalloutBlockEditor는 `onRegisterBottomEntryFR: (FocusRequester?) -> Unit` 콜�
 | title | ↑ | 이전 블록으로 탈출 |
 | title | ↓ | body 있으면 body 맨 앞, 없으면 다음 블록 |
 | title | Enter | body 생성/이동 (위 참고) |
+| title | **Backspace at offset 0** | **`onDissolveSelf` → Callout 자리에 raw TextBlock(rawOrigin=CALLOUT) 으로 풀림 (dissolve 정책 v3, 섹션 10)** |
 | body | ↑(첫 줄, 위치 0) | title로 이동 |
 | body | ↓(마지막) | 다음 블록으로 탈출 |
 
@@ -193,6 +255,7 @@ CalloutBlockEditor는 `onRegisterBottomEntryFR: (FocusRequester?) -> Unit` 콜�
 | title | ↓ | 다음 블록으로 탈출 |
 | title | →(맨 끝) | body 있으면 body 맨 앞으로 이동 |
 | title | Enter | body 생성/이동 (위 참고) |
+| title | **Backspace at offset 0** | **`onDissolveSelf` → Callout 자리에 raw TextBlock(rawOrigin=CALLOUT) 으로 풀림 (dissolve 정책 v3, 섹션 10)** |
 | body | ←(위치 0) | title 맨 끝으로 이동 |
 | body | ↑ | 이전 줄 있으면 줄 이동, 첫 줄이면 이전 블록으로 탈출 |
 | body | ↓ | 다음 줄 있으면 줄 이동, 마지막 줄이면 다음 블록으로 탈출 |
@@ -231,7 +294,9 @@ title→body 내부 이동:
 
 ### 3.7 CodeBlockEditor (`ui/block/CodeBlockEditor.kt`)
 
-- Backspace(빈 상태) → merge, ↑(첫 줄) → prev, ↓(마지막 줄) → next
+- Backspace(빈 상태, sel.start=0) → `onMergeWithPrevious` (위 블록과 병합 또는 빈 CodeBlock 단축 삭제)
+- ↑(첫 줄) → prev, ↓(마지막 줄) → next
+- **Smart Enter 블록 탈출 (#20)**: 빈 마지막 줄에서 Enter → trailing `\n` 제거 + `onMoveToNext` (`isLastLine && lineStart == lineEnd` 조건). 박스 UI 안에 갇혀있으므로 탈출 통로 필요
 
 ### 3.8 TableBlockEditor (`ui/block/TableBlockEditor.kt`)
 
@@ -276,7 +341,23 @@ title→body 내부 이동:
 | **#18-2 Table Tab 마지막 열→열 추가** | Tab 분��: `addRow()` → `addColumn()`, 불필요 분기 제거, `cellKeyHandler` outer 배치 (`TableBlockEditor.kt`) |
 | **#18-2 Table Enter 마지막 행→행 추가** | Enter 분기: 아래 행 있으면 이동, 없으면 `addRow()`. `insertRowBelow()` 제거 (`TableBlockEditor.kt`) |
 | **#19 Table ↑ 진입 시 첫 셀로 이동** | `bottomEntryFRMap`에 `focusGrid[lastRow][0]` 등록. `LaunchedEffect(totalRows, colCount)`로 재등록 (`TableBlockEditor.kt`, `MarkdownBlockEditor.kt`) |
-| **#20 Smart Enter 블록 탈출** | 마지막 줄이 비어있을 때 Enter → trailing `\n` 제거 + `onMoveToNext`. CodeBlock(`CodeBlockEditor.kt`), TextBlock(`TextBlockEditor.kt`) 공통 적용. Callout body는 TextBlock 탈출 → `onEscapeToNext` 체인으로 Callout 외부로 이동 |
+| **#20 Smart Enter 블록 탈출 (정책 정정)** | 박스 UI 가 있는 블록에만 적용. CodeBlock 은 빈 마지막 줄 + Enter → trailing `\n` 제거 + `onMoveToNext`. **TextBlock 은 미적용** — 박스 없으므로 탈출 통로 불필요, ↓ 방향키로 충분. 이전엔 TextBlock 도 적용했으나 ZWSP placeholder / 자동 격하 결과물에서 의도치 않은 탈출이 발생해 핸들러 제거 (`TextBlockEditor.kt`). Callout body 는 마지막 TextBlock 의 ↓ 방향키가 `onEscapeToNext` 체인을 발동시켜 Callout 외부로 이동 |
+| **ZWSP placeholder 자동 제거** | Block→Block 빈 줄 마커가 텍스트 시작에 박혀 있으면 `InlineStyleScanner` 의 line prefix 매칭(`# ` heading, `> ` blockquote 등)이 깨짐 (첫 char 가 일반 문자가 아님). `TextBlockEditor` 에 LaunchedEffect 추가 — text 가 `BLANK_LINE_MARKER` 를 포함하고 길이가 1 보다 크면(=사용자가 입력함) 즉시 ZWSP 제거. 빈 줄 placeholder 는 사용자가 내용 추가하는 순간 일반 TextBlock 으로 격하 |
+| **Callout ← 진입 시 title 로 가는 버그** | `MarkdownBlockEditor.onMoveLeft` 가 `pendingCursorHint`/`pendingUseBottomEntry` 를 설정하지 않아 default `focusRequesterMap[id] = titleFocusRequester` 로 포커스. ↑ 진입과 동일하게 `pendingCursorHint=End` + `pendingUseBottomEntry=true` 추가 → body 마지막(없으면 title 끝) 으로 포커스 |
+| **Embed 텍스트 삭제 후 복원되는 버그** | `BlockItem` 의 Embed 분기가 매 recomposition 마다 `TextFieldState(block.toMarkdown())` 를 새로 생성 → 사용자 입력이 부모로 전파 안 됨. `tempState` 를 `remember(block.id)` 로 보존 + LaunchedEffect 로 사용자 입력 감지 시 같은 id+state 로 `Text(rawMode=true, rawOrigin=EMBED)` promotion. 이후엔 raw Text 의 textFieldState 그대로 사용되어 cursor/focus/입력 모두 보존 |
+| **Callout body 진입 시 이전 cursor 위치로 복원** | `bottomEntryFRMap` 으로 body 마지막 블록 FocusRequester 만 호출 → textFieldState 의 이전 selection 그대로 복원 (사용자가 이전에 body 첫 줄에 있었으면 거기로 이동). `MarkdownBlockEditor` LaunchedEffect 에 Callout + bottomEntry + End 케이스 추가 — `findDeepestLastText().textFieldState.selection = TextRange(text.length)` 강제 설정. 중첩 Callout body 까지 재귀 추적 (`MarkdownBlockEditor.kt`) |
+| **Embed 삭제 시 cursor 사라짐** | (1) 매 입력마다 promotion 발동 (collectLatest) → onBlocksChanged 반복으로 컴포지션 불안정. (2) promotion 후 BlockItem 의 when 분기 Embed → Text 전환하며 BasicTextField 재생성, 같은 외부 focusRequester 라도 시스템 focus 가 끊김. 해결: `snapshotFlow.filter.first()` 로 단발 처리 + promotion 직후 `delay(50ms) + focusRequester.requestFocus()` 로 focus 명시 재요청 (`MarkdownBlockEditor.kt:BlockItem` Embed 분기) |
+| **Embed 변환 비활성화 (현재)** | 박스 UI 미구현(#23) 상태에서는 Embed 변환이 시각적 의미가 없고 focus 끊김(생성 직후) / 빈 잔류(삭제 후) 등 부작용만 발생. `MarkdownBlockParser` 의 `isEmbedLine` 분기 제거 → `![[xxx]]` 는 일반 TextBlock 텍스트로 남음. **EditorBlock.Embed / RawOrigin.EMBED / dissolveSpecial Embed 케이스 / BlockItem Embed 분기 + promotion 로직 모두 보존** — #23 진입 시 parser 한 줄(`isEmbedLine` 분기) 활성화로 복귀 |
+| **raw 상태에서 BLOCKQUOTE 좌측 바 표시 (Callout dissolve 시 어색)** | dissolve 된 raw TextBlock(rawOrigin=CALLOUT) 은 텍스트가 `> [!NOTE] 제목\n> 본문` 형태라 `MarkdownPatternScanner` 가 BLOCKQUOTE 로 인식 → 좌측 회색 바 그려짐. raw 마커(`>`) 와 좌측 바가 동시에 보여 시각적 충돌. `RawMarkdownOutputTransformation` 에 `currentRawZones` + `isRawMode` 노출, `drawBlockDecorations` 가 raw zone 안의 줄에서 좌측 바를 skip (`BlockDecorationDrawer.kt`, `RawMarkdownOutputTransformation.kt`, `TextBlockEditor.kt`). raw zone 정의: rawMode=true 면 전체 / focus 받은 줄 / 그 외 비어있음 |
+| **#24 v1 레거시 정리** | overlay 시절 코드 ~580줄 삭감. `MarkdownBlock` 6→3 타입, `InlineStyleScanner` callout/code/embed span 제거, `MarkdownPatternScanner` 의 CALLOUT/CODE_BLOCK/TABLE/EMBED 감지 제거, `BlockDecorationDrawer` 의 callout/embed drawer 제거, `RawMarkdownOutputTransformation` 의 overlay/blockTransparent/heightCollapse 로직 제거, `excludeCalloutTypes` 가 OT 까지 흐르던 경로 단절 |
+| **#26 dissolve(서식 해제)** v3 구현 | `EditorBlock.Text` 에 `rawMode/rawOrigin` 추가(transient). `BlockOperations.dissolveSpecial/dissolveCallout/DissolveResult` 추가, `tryReparse` 에 rawMode + origin 비교 분기(마커 그대로면 skip). `MarkdownBlockEditor` 에 `CursorHint.AtOffset`, `BlockNavigation.onDissolveSelf`, `applyDissolveResult`. `onMergeWithPrevious` 가 직전이 특수블록일 때 dissolveSpecial 라우팅. `CalloutBlockEditor` Standard/Dialogue title 핸들러에 Backspace at offset 0 분기. **TextBlockEditor 에 rawMode 가드된 트리거 적용**: snapshotFlow 는 rawMode=true 시 skip, focus-out 시 200ms delay 후 reparse 1회. v1 회귀 원인은 focus-out reparse 자체가 아니라 rawMode 가드 누락이었음. 상세는 섹션 10 |
+| **Smart Enter `isCurrentLineEmpty` 오판** (TextBlock/Code/Embed) | 기존 `sel.start == lineStart` 만으로는 "내용 있는 줄의 맨 앞"도 빈 줄로 오판되어, 블록 맨 앞 또는 다음 블록 첫 줄 맨 앞에서 Enter 시 빈 줄 추가 대신 블록 탈출이 일어났음. `lineEnd` 를 계산해서 `lineStart == lineEnd` 로 판정 변경. (`TextBlockEditor.kt:129~`, `CodeBlockEditor.kt:57~`. Embed 분기는 `MarkdownBlockEditor.kt:386` 에서 `TextBlockEditor` 재사용 → 자동 적용) |
+| **dissolve v3 — focus-out 후 rendering 복귀 안 됨** | `tryReparse` 의 rawMode 분기가 v2 잔재(`if (sameOrigin) return null`) 그대로 남아 focus-out 시 적용을 막았음. v3 트리거 정책에 맞춰 분기를 self-contained 처리로 정정 (마커 살아있음 → 특수 블록 변환 / 마커 깨짐 + 단일 Text → rawMode=false 교체 / 여러 블록 → 분리). (`BlockOperations.kt:172~`) |
+| **dissolve v3 — raw 블록의 ``` 가 투명/배경 처리** | `InlineStyleScanner` 의 InlineCode 매칭이 backtick 개수 검사 없이 인접 backtick 두 개를 길이 0 inline code 로 매칭 → marker(투명) 적용 + 길이 0 range 가 `inlineCodeRanges` 에 수집되어 RoundRect 배경 그려짐. fence 가드(연속 3+ backtick 시 skip) + 길이 0 가드(`close > i + 1`) 추가. (`InlineStyleScanner.kt:208~`) |
+| **dissolve v3 — focus-out reparse 시 focus 가 새 rendering 블록으로 끌려감** | `applyResult` 가 항상 `pendingFocusBlockId` 설정 → 사용자가 이미 다른 블록으로 옮긴 포커스가 새 Code/Callout/Table 블록으로 강제 이동. `BlockNavigation.onReparseSilent` 콜백 + `applyResult(requestFocus = false)` 옵션 추가. focus-out LaunchedEffect 가 silent 버전을 호출하여 사용자 포커스 위치 보존. (`MarkdownBlockEditor.kt`, `TextBlockEditor.kt`) |
+| **Block 유형 자동 격하 (Code/Callout/Table)** | Block 유형은 마커가 state 에 없고 `toMarkdown()` 시 자동 생성되므로, state 를 다 비워도 박스가 사라지지 않음 (MarkdownTextField 유형의 마커 삭제와 비대칭). `BlockNavigation.onDegradeToText` 콜백 + `BlockItem` 의 LaunchedEffect 가 모든 state 빈 상태를 감지하면 빈 일반 TextBlock 으로 교체. `hasHadContent` 가드로 새로 만들어진 빈 Block 은 격하 X. (`MarkdownBlockEditor.kt:BlockItem`) |
+| **dissolve v3 — 빈 raw 블록의 transient 상태** | rawMode=true 인 블록의 텍스트를 다 지우면 시각적으로 일반 TextField 인데 내부 플래그가 살아있어 snapshotFlow 가드가 작동 중인 어색한 상태. `BlockNavigation.onClearRawMode` 콜백 + `TextBlockEditor` 의 LaunchedEffect 가 빈 상태 감지 시 즉시 `block.copy(rawMode=false, rawOrigin=null)` 로 플래그만 해제 (id/textFieldState 유지). (`MarkdownBlockEditor.kt`, `TextBlockEditor.kt`) |
+| **Embed dissolve 통합** | `RawOrigin.EMBED` 추가 + `dissolveSpecial` when 에 `is EditorBlock.Embed -> RawOrigin.EMBED`. 이전엔 `else -> return null` 로 빠져 Embed 삭제 경로가 막혀 있었음. 다음 TextBlock 위치 0 Backspace → dissolve → raw `![[xxx]]` → 다 지우면 onClearRawMode → 빈 일반 TextBlock → Backspace 로 위 블록과 병합 (다른 Block 과 동일 패턴). (`EditorBlock.kt`, `BlockOperations.kt`) |
 
 ### #18-3 Callout body 유실 버그 — 해결 기록
 
@@ -362,21 +443,22 @@ EditorBlock, Parser, toMarkdown, BlockEditor, TextBlock, Callout, Code, Table, H
   - ✅ **Callout ↑ 진입 시 body 마지막**: `bottomEntryFRMap` + `onLastBlockBottomEntryRegistered` 체인으로 해결. 중첩 Callout(depth0~N)에서도 가장 깊은 body로 진입
   - ✅ **Table ↑ 진입 시 마지막 행 첫 열**: `bottomEntryFRMap`에 `focusGrid[lastRow][0]` 등록. `onRegisterBottomEntryFR` 콜백으로 `BlockItem`에서 전달 (`TableBlockEditor.kt`, `MarkdownBlockEditor.kt`)
   - ⬜ **soft wrap 줄 이동**: `isFirstLine`/`isLastLine`이 `\n` 기준이라 soft wrap 줄에서 ↑↓ 시 즉시 블록 탈출. 단순히 `textLayoutResult.getLineForOffset()` 조건 교체만으로는 해결 안 됨 — `onPreviewKeyEvent`에서 이벤트를 소비하면 BasicTextField 내부의 커서 이동이 차단되어 심각한 사이드이펙트 발생. BasicTextField의 내부 ↑↓ 처리와 블록 탈출 판단을 분리하는 별도 설계 필요
-- ~~#20 Smart Enter 블록 탈출~~ ✅ — 커서가 마지막 줄에 있고 해당 줄이 비어있을 때 Enter → trailing `\n` 제거 + 블록 탈출 (`onMoveToNext`).
-  - CodeBlock: 코드 입력 후 Enter(빈 줄 생성) → 빈 마지막 줄에서 Enter → trailing `\n` 제거 + 탈출 (`CodeBlockEditor.kt:57-73`)
-  - Callout body: title에서 Enter(body 생성, 1번째) → 빈 body에서 Enter(2번째) → Callout 탈출. body의 TextBlockEditor `onMoveToNext` → MarkdownBlockEditor `onEscapeToNext` → Callout 외부로 이동
-  - TextBlock에도 동일 적용: 마지막 줄이 빈 상태로 Enter → trailing `\n` 제거 + `onMoveToNext` (`TextBlockEditor.kt:132-148`)
-  - ZWSP 빈 줄 블록(`\u200B`)은 `isEmpty`가 아니므로 영향 없음
-  - 중간 빈 줄에서는 정상 줄바꿈 유지 (마지막 줄 조건: `text.indexOf('\n', sel.start) == -1`)
-  - 조건: `sel.collapsed && isLastLine && isCurrentLineEmpty`. trailing `\n` 제거: `lineStart > 0`이면 `edit { replace(lineStart-1, lineStart, "") }`
+- ~~#20 Smart Enter 블록 탈출~~ ✅ — 박스 UI 가 있는 블록(CodeBlock/Callout body)에 한해 적용. **TextBlock 에서는 미적용**.
+  - CodeBlock: 코드 입력 후 Enter(빈 줄 생성) → 빈 마지막 줄에서 Enter → trailing `\n` 제거 + 탈출 (`CodeBlockEditor.kt:57~`)
+  - Callout body: title 에서 Enter → body 생성, 빈 body 마지막 줄에서 ↓ 방향키 → `onEscapeToNext` 체인으로 Callout 외부로 이동 (방향키 경로)
+  - **TextBlock 미적용 (정정)**: TextBlock 은 박스 UI 가 없어 탈출 통로가 필요 없고, 다음 블록 이동은 ↓ 방향키로 충분. 이전엔 적용했으나 ZWSP placeholder 또는 자동 격하 결과물에서 의도치 않은 탈출 발생 → 핸들러 자체 제거 (`TextBlockEditor.kt` 의 `Key.Enter` 분기 삭제, BasicTextField 기본 동작 `\n` 추가만 남음)
+  - ZWSP 빈 줄 블록은 사용자 입력(텍스트 또는 Enter) 시 자동 제거됨 (섹션 10 ZWSP 자동 제거 정책 참고)
+  - 조건 (CodeBlock 잔존): `sel.collapsed && isLastLine && isCurrentLineEmpty`. trailing `\n` 제거: `lineStart > 0` 이면 `edit { replace(lineStart-1, lineStart, "") }` + `onMoveToNext`
+  - **`isCurrentLineEmpty` 판정**: `lineStart == lineEnd` (줄의 시작 == 줄의 끝). 이전엔 `sel.start == lineStart` 만 봐서 "내용 있는 줄의 맨 앞"도 빈 줄로 오판하는 버그가 있었음. 수정 후 정상
 
 ### Phase 3: 고급 기능
 
 - #21 Cross-block selection (아래 섹션 6 참고)
 - #22 Undo/Redo (아래 섹션 7 참고)
 - #23 Embed 블록 렌더링
-- #24 v1 코드 제거
+- ~~#24 v1 코드 제거~~ ✅ — overlay 시절 죽은 코드 ~580줄 삭감, 6개 파일 정리. 섹션 4 해결된 이슈 테이블 참고
 - #25 하드코딩 컬러 M3 테마 적용 (아래 섹션 9 참고)
+- #26 dissolve(서식 해제) 동작 — 정책 v3 코드 구현 완료. 수동 검증 대기. 아래 섹션 10 참고
 
 ---
 
@@ -430,3 +512,402 @@ MarkdownBlockTextFieldM3(
 
 **적용 제외:**
 - `calloutIndicator` (`Color(0x33000000)`) — 하드코딩 유지
+
+**v1 정리 시 보존된 필드 (참고):**
+- `MarkdownStyleConfig.blockTransparent` — `InlineStyleScanner.hideLinePrefix()` 의 blockquote `>` 숨김 + HR span 에 사용 중. v1 잔재로 보였으나 v2 에서도 활용
+- `MarkdownStyleConfig.codeBlockBackground` — `CodeBlockEditor.kt` 의 v2 코드블록 배경에 사용 중. v1 잔재로 보였으나 v2 에서도 활용
+
+---
+
+## 10. dissolve(서식 해제) 동작 (Phase 3, #26)
+
+> **상태**: 정책 v3 코드 구현 완료. 사용자 수동 검증(10.9 시나리오) 대기.
+> 이 섹션이 단일 source of truth — 다른 PC/세션에서 이 섹션만 보고 작업을 이어갈 수 있어야 함.
+>
+> **정책 변천 요약**: v1(focus-out 무가드, auto-merge) → 회귀 → v2(focus-out 제거, snapshotFlow 단일 트리거 + origin 비교) → 사용자 의도 재확인 → **v3(rawMode 가드된 focus-out 트리거, snapshotFlow 는 rawMode=true 시 skip)**.
+> v3 의 핵심: dissolve 된 블록은 **편집 중에는 절대 rendering 으로 돌아가지 않음**, focus-out 후 200ms delay 가 지나야 마커 검사 → 마커 살아있으면 다시 rendering, 깨졌으면 일반 텍스트.
+>
+> 진행 체크 (10.7 의 단계 번호와 동일):
+> - [x] Step 1: `state/EditorBlock.kt` — `RawOrigin` enum (`CODE/CALLOUT/TABLE/EMBED`) + `Text.rawMode/rawOrigin` 필드 추가
+> - [x] Step 2: `state/BlockOperations.kt` — `dissolveSpecial()` (Code/Callout/Table/Embed 모두), `dissolveCallout()`, `DissolveResult` + `tryReparse` rawMode 분기 (focus-out 시점이라 무조건 적용)
+> - [x] Step 3: `ui/MarkdownBlockEditor.kt` — `CursorHint.AtOffset`, `BlockNavigation.onDissolveSelf` (dissolveSpecial 통합 라우팅), `onClearRawMode`, `onDegradeToText`, `applyDissolveResult` 헬퍼, `onMergeWithPrevious` dissolve 라우팅. `BlockItem` 자동 격하 LaunchedEffect (Code/Callout/Table)
+> - [x] Step 4: `ui/block/CalloutBlockEditor.kt` — Standard/Dialogue title `Backspace at start` → `onDissolveSelf`
+> - [x] Step 5: `ui/TextBlockEditor.kt` — rawMode=true 시 snapshotFlow skip + focus-out 200ms delay 후 silent reparse + 빈 raw 즉시 onClearRawMode
+> - [x] Step 6: Embed dissolve 통합 (`RawOrigin.EMBED` + `dissolveSpecial` 의 Embed 케이스)
+> - [ ] Step 7: 10.9 의 검증 시나리오 수동 테스트
+>
+> **향후 개선사항 (당장 구현 안 함):**
+> - Table 자체에서 dissolve 시작 트리거 (예: 첫 셀 빈 + Backspace at 0 → onDissolveSelf). 자동 격하로 모든 셀이 비면 빈 일반 TextBlock 으로 전환되므로 우선순위 낮음. Callout title 패턴과 일관성 위해 향후 추가 가능
+> - soft wrap 줄 이동 (Phase 2 #19) — `textLayoutResult.getLineForOffset()` 기반
+
+### 10.1 배경 및 목표
+
+특수 블록(Code/Callout/Table)을 raw markdown 텍스트로 풀어 다시 일반 텍스트처럼 편집할 수 있는 통로가 필요하다. 현재 Backspace 는 특수 블록 경계에서 작동하지 않거나(Table/Callout title), 빈 블록만 삭제(Code) 한다.
+
+또한 dissolve 결과 TextBlock 을 만들어도 `tryReparse(150ms debounce)` 가 즉시 재변환하므로 무효화된다. dissolve 가 의미 있게 동작하려면 **선택적 재변환 보류**가 필요.
+
+목표:
+- 사용자가 명확한 입력(Backspace) 만으로 특수 블록을 raw markdown TextBlock 으로 풀 수 있다
+- 풀린 블록의 마커가 살아있는 동안에는 다시 블록으로 합쳐지지 않는다
+- 마커가 깨지는 순간 즉시 일반 rendering 으로 돌아간다 (focus-out 기다리지 않음)
+- 일반 타이핑 시의 라이브 변환 UX (`> [!NOTE]` 즉시 Callout 변환 등) 는 그대로 유지
+
+### 10.2 결정된 정책 v2 (현행)
+
+#### 정책 트리거 (Backspace)
+
+| 트리거 | 처리 |
+|---|---|
+| **Code/Callout/Table 다음 TextBlock 의 위치 0 에서 Backspace** | 직전 특수 블록을 dissolve → 1개 TextBlock(`rawMode=true`) (Callout/Table/Code 자리에). **인접 TextBlock 과 merge 하지 않음** |
+| **Callout title 위치 0 에서 Backspace** | Callout 만 dissolve → 1개 TextBlock(`rawMode=true`) (Callout 자리에) |
+| ~~Callout body 첫 블록 위치 0 Backspace~~ | **dissolve 가 아님.** 기존 `onEscapeToPrevious` (title 로 커서 이동) 유지 |
+| ~~빈 특수 블록~~ | **dissolve 가 아님.** 현재 `BlockOperations.mergeWithPrevious()` 의 빈 CodeBlock 삭제 동작 유지 |
+
+> v1(롤백됨) 은 첫 번째 트리거에서 인접 TextBlock 과 auto-merge 했다. v2에서는 **모든 트리거에서 merge 안 함**. 이유는 10.4 참조.
+
+#### dissolve 결과 — `rawMode` + `rawOrigin` 두 필드
+
+- `EditorBlock.Text` 에 두 필드 추가 (둘 다 transient — 직렬화/로드 시 무시):
+  ```kotlin
+  data class Text(
+      override val id: String = generateId(),
+      val textFieldState: TextFieldState,
+      val rawMode: Boolean = false,
+      val rawOrigin: RawOrigin? = null,
+  ) : EditorBlock()
+
+  enum class RawOrigin { CODE, CALLOUT, TABLE }
+  ```
+- dissolve 시 `Text(textFieldState = TextFieldState(specialBlock.toMarkdown()), rawMode = true, rawOrigin = ...)`
+- `rawOrigin` 은 reparse 결과가 "원래 dissolve 한 형태와 같은지" 판정하는 데 사용
+
+#### reparse 정책 v3 — 트리거와 마커 검사
+
+**트리거 매트릭스:**
+
+| 블록 상태 | snapshotFlow + 150ms debounce | focus-out + 200ms delay |
+|---|---|---|
+| `rawMode=false` (일반 TextBlock) | ✅ reparse 발동 (기존 동작) | ❌ 무시 |
+| `rawMode=true` (dissolve 결과 raw 블록) | ❌ skip (편집 중 reparse 보류) | ✅ reparse 1회 |
+
+**핵심:** rawMode 가드가 양쪽 트리거 모두에 걸려 있어, 일반 TextBlock 의 Smart Enter / 방향키 이동 시 발생하는 transient focus-out 은 reparse 를 발동시키지 않음. rawMode=true 인 dissolve 블록만 focus-out 시 마커 검사를 받음. transient focus-out (블록간 이동 중 잠깐 잃었다 다시 받는 케이스) 은 200ms delay 안에 isFocused 가 true 로 돌아오면 LaunchedEffect 가 cancel 되어 reparse 발동 안 함.
+
+**Silent 변형 (focus 보존):** focus-out 트리거 reparse 는 `BlockNavigation.onReparseSilent()` 를 호출 (snapshotFlow 트리거는 `onReparse()`). silent 는 `applyResult(result, requestFocus=false)` 로 라우팅되어 새 rendering 블록으로 focus 를 끌어가지 않는다. 사용자는 이미 다른 블록으로 focus 를 옮긴 상태이므로 그 위치를 보존.
+
+#### 두 유형의 정의 (정책 이해의 기반)
+
+| 유형 | 시각 | state 안의 마커 | 자동 변환 |
+|---|---|---|---|
+| **Block 유형** (Code/Callout/Table/Embed) | 박스 UI (배경/테두리/셀/아이콘) | 마커가 state 에 **없음** — `toMarkdown()` 시 자동 생성 | Block 자체에서는 사용자 입력으로 박스가 사라지지 않음 (마커는 state 가 아니므로) |
+| **MarkdownTextField 유형** (TextBlock — rawMode=false 일반 / rawMode=true raw) | 평범한 BasicTextField (박스 없음) | 마커가 textFieldState 의 **텍스트로** 들어가 있음 | 마커 입력/삭제 시 OutputTransformation 이 그 자리에 SpanStyle 자동 적용/해제 |
+
+raw 블록은 시각적으로 MarkdownTextField 유형이지만 내부 플래그 `rawMode=true` 로 편집 중 reparse 차단된 transient 상태.
+
+#### 자동 격하 / 자동 해제 정책
+
+두 유형 사이의 비대칭(Block 유형이 빈 상태로 잔류) 을 메우기 위해 다음 자동 변환이 적용됨:
+
+**1. Block 유형 자동 격하 (`onDegradeToText`)**
+
+| Block | 트리거 조건 (모두 빈 상태) | 결과 |
+|---|---|---|
+| Code | `codeState.text.isEmpty()` | 같은 자리에 빈 일반 TextBlock 생성 + 새 TextBlock 으로 focus 이동 |
+| Callout | `titleState.text.isEmpty()` && `bodyBlocks` 모두 빈 Text | 동일 |
+| Table | `headerStates` + `rowStates` 모든 셀의 text 가 빈 상태 | 동일 |
+
+가드: `hasHadContent` 플래그 — 한 번이라도 내용이 있었던 적이 있을 때만 트리거. 새로 생성된 빈 Block (사용자가 ` ``` ` / `> [!NOTE]` / `|...|` 입력으로 막 변환된 직후 빈 상태) 은 격하되지 않음. 구현: `MarkdownBlockEditor.kt` 의 `BlockItem` 안 LaunchedEffect.
+
+**2. raw 블록 자동 해제 (`onClearRawMode`)**
+
+| 조건 | 결과 |
+|---|---|
+| `rawMode=true` 인 TextBlock 의 `textFieldState.text.isEmpty()` | 같은 블록의 `rawMode=false, rawOrigin=null` 로 플래그만 해제. id/textFieldState 그대로 → cursor/focus 보존 |
+
+raw 블록은 시각적으로 일반 TextField 인데 텍스트까지 비면 transient 상태가 사용자에게 어색함. 즉시 정리. 구현: `TextBlockEditor.kt` 의 LaunchedEffect (`block.rawMode` key + isEmpty 감지).
+
+**3. ZWSP placeholder 자동 제거**
+
+| 조건 | 결과 |
+|---|---|
+| TextBlock 의 text 가 `BLANK_LINE_MARKER` 를 포함 + length > 1 (사용자가 입력 시작) | text 의 모든 ZWSP 를 제거. textFieldState 는 그대로 (id 보존), 사용자 입력만 남음 |
+
+ZWSP 는 Block→Block 빈 줄을 1줄 높이로 표현하기 위한 마커 (`MarkdownBlockParser.flushText()` 가 자동 생성). 사용자가 ZWSP 블록에 입력을 추가하면 그 자리는 더 이상 "빈 줄 placeholder" 가 아닌 일반 TextBlock 이므로 ZWSP 를 제거한다. 제거하지 않으면 줄 시작에 ZWSP 가 박혀 있어 `InlineStyleScanner` 의 line prefix 매칭(`# `, `> `, `- ` 등)이 깨진다. 구현: `TextBlockEditor.kt` 의 LaunchedEffect (snapshotFlow + filter).
+
+**4. Embed 사용자 편집 시 자동 promotion (`BlockItem` 의 Embed 분기) — 현재 도달 안 됨**
+
+> **상태**: 코드는 보존되어 있으나 현재 Embed 변환이 비활성화되어 있어 도달하지 않음. 향후 Phase 3 #23 (Embed 박스 UI 렌더링) 구현 시 parser 의 `isEmbedLine` 분기를 활성화하면 이 promotion 로직이 다시 사용됨.
+
+Embed 는 `target: String` 만 가진 readonly 토큰이지만 자체 박스 UI 가 없어 (현재) `BasicTextField` 로 raw markdown(`![[target]]`) 을 표시한다. 사용자가 그 텍스트를 편집하려고 하면 — 매번 새 `TextFieldState` 가 생성되어 입력이 부모로 전파되지 않고 **다음 recomposition 때 원래 raw 로 복원**되는 버그가 있었다.
+
+해결: `BlockItem` 의 Embed 분기에서 `tempState` 를 `remember(block.id)` 로 보존 + `LaunchedEffect` 로 사용자 입력 감지 시 즉시 raw TextBlock 으로 promotion. **단발 처리 + focus 보존** 필수:
+
+- **단발 처리**: `snapshotFlow { ... }.filter { it != original }.first()` 로 첫 변경만 받고 LaunchedEffect 종료. `collectLatest` 로 매 입력마다 promotion 호출하면 onBlocksChanged 가 반복 발동되어 cursor 가 깨짐
+- **focus 보존**: promotion 직후 `focusRequester.requestFocus()` 명시 호출 (`delay(50.ms)` 후). promotion 으로 BlockItem 의 when 분기가 Embed → Text 로 전환되며 BasicTextField 가 재생성되는데, 같은 외부 `focusRequester` 를 재요청해야 cursor 가 화면에 유지됨
+
+| 조건 | 결과 |
+|---|---|
+| `Embed` 블록의 `tempState.text` 가 원본(`block.toMarkdown()`)과 달라진 순간 | 같은 블록 자리에 `EditorBlock.Text(id=block.id, textFieldState=tempState, rawMode=true, rawOrigin=EMBED)` 로 교체. cursor/focus 그대로 보존 |
+
+이후 사용자는 raw TextBlock 으로 자유롭게 편집. focus-out 시 마커 살아있으면 다시 Embed 로 복귀, 깨지면 일반 텍스트, 빈 상태면 `onClearRawMode` 로 자동 해제.
+
+**삭제 흐름**:
+1. 사용자가 Embed 안에서 raw 마커(`![[`, `]]`) 또는 target 의 일부를 지움 → `tempState.text` 변경 감지 → 자동 promotion (raw Text)
+2. raw 텍스트를 모두 지움 → `onClearRawMode` → 빈 일반 TextBlock
+3. Backspace at 0 → `mergeWithPrevious` 로 위 블록과 병합 → 사라짐
+
+**마커 검사 (focus-out 후 발동된 `tryReparse` 가 rawMode=true 블록에 대해 수행):**
+
+reparse 호출 시점이 focus-out 뿐이므로 (snapshotFlow 는 rawMode 가드로 차단) **무조건 적용**한다. 결과 종류에 따라 처리만 다름:
+- **마커 살아있음** (parsed = 단일 특수 블록, origin 무관) → 특수 블록으로 변환 (rendering 복귀). raw TextBlock 자리에 Code/Callout/Table 1 개로 교체
+- **마커 깨짐 + 단일 일반 텍스트** → rawMode=false 인 새 Text 로 교체 (자동 해제). 시각상 동일하지만 플래그가 false 가 되어 이후 snapshotFlow 가 다시 작동
+- **마커 깨짐 + 여러 블록** → 일반 분리 흐름 (Code + Text 등으로 splat)
+
+⚠️ origin 비교는 하지 않는다. v2 의 sameOrigin skip 은 snapshotFlow 트리거 시 raw 유지 목적이었으나, v3 에서는 트리거 자체가 focus-out 이라 `return null` 하면 영원히 raw 로 남는다.
+
+#### 커서 위치
+
+dissolve 후 새 TextBlock 의 커서는 **raw markdown 의 끝** (Backspace 위치 근사). auto-merge 가 없으므로 단순.
+
+### 10.3 트리거별 입출력 매핑 (도식)
+
+#### 트리거 1 — Code 다음 TextBlock 위치 0 Backspace (auto-merge 없음)
+
+**Before**
+```
+[Text]  "윗 텍스트"
+[Code]  lang=kotlin, body=foo\nbar
+[Text]  "다음 텍스트"     ← 위치 0 Backspace
+```
+
+**After**
+```
+[Text]                                "윗 텍스트"
+[Text rawMode=true rawOrigin=CODE]    "```kotlin\nfoo\nbar\n```"
+                                                              ↑ 커서 (raw 끝)
+[Text]                                "다음 텍스트"
+```
+
+Callout/Table 도 동일 패턴. 다음 TextBlock 은 그대로 보존.
+
+#### 트리거 2 — Callout title 위치 0 Backspace
+
+**Before**
+```
+[Text]    "윗 텍스트"
+[Callout] type=NOTE, title="제목"     ← title 위치 0 Backspace
+          body=[Text "본문"]
+[Text]    "아래 텍스트"
+```
+
+**After**
+```
+[Text]                                  "윗 텍스트"
+[Text rawMode=true rawOrigin=CALLOUT]   "> [!NOTE] 제목\n> 본문"
+                                                          ↑ 커서
+[Text]                                  "아래 텍스트"
+```
+
+중첩 Callout 의 부모 dissolve 시 자식도 raw markdown 의 일부로 풀려 나옴 (`Callout.toMarkdown()` 이 재귀). 위/아래 블록은 그대로.
+
+### 10.4 정책 v1 → v2 → v3 변경 이유
+
+#### 변경 1. auto-merge 제거 (v1 → v2)
+
+v1 동작:
+```
+[Text rawMode=true] "```kotlin\nfoo\n```\n다음 텍스트"     ← raw 와 다음 텍스트가 한 블록
+```
+
+문제: 사용자가 raw 를 편집하다가 fence 만 지우고 일반 텍스트로 돌리고 싶을 때, "다음 텍스트" 와의 경계가 모호. 빈 줄 처리가 예측 불가능.
+
+v2/v3 동작:
+```
+[Text rawMode=true] "```kotlin\nfoo\n```"
+[Text]              "다음 텍스트"
+```
+
+장점: raw 블록과 다음 텍스트가 명확히 분리됨. fence 깨지는 영향이 raw 블록 안으로 한정.
+
+#### 변경 2. v1 의 무가드 focus-out reparse → v2 (focus-out 제거) → v3 (rawMode 가드된 focus-out)
+
+**v1 의 잘못된 동작**: `onFocusChanged` 에서 rawMode 와 무관하게 모든 TextBlock 에서 focus-out 시 `navigation.onReparse()` 발동. Smart Enter / 방향키로 다음 블록 생성·이동하면 직전 블록이 transient focus-out → reparse 발동 → stale 텍스트 기반 분리 → `pendingFocusBlockId` 충돌. 회귀 증상: "블록 사이 Enter 입력이 제대로 작동하지 않음."
+
+**v2 의 과교정**: focus-out 트리거 자체를 제거하고 snapshotFlow + `tryReparse` 의 origin 비교로 일원화. 사용자 의도를 잘못 옮긴 부분: "마커 깨자마자 즉시 rendering 을 원함." 실제 사용자 의도는 **"편집 중에는 절대 rendering 안 됨, focus-out 후에야 rendering"**.
+
+**v3 의 정정**: focus-out 트리거를 다시 도입하되 다음 두 가지 가드를 추가하여 v1 회귀를 차단.
+1. **rawMode 가드**: `if (block.rawMode && !isFocused)` — rawMode=false 인 일반 TextBlock 에는 focus-out reparse 가 발동하지 않음. Smart Enter / 방향키 이동 시 발생하는 transient focus-out 영향 없음.
+2. **delay 가드**: focus-out 후 즉시가 아니라 200ms delay 후 reparse. `LaunchedEffect(isFocused, block.rawMode)` 의 key 변경이 코루틴을 cancel 하므로, delay 안에 다시 focus 받으면 reparse 발동 안 함. 짧은 transient focus-out 자동 무시.
+
+추가로 snapshotFlow 트리거도 v3 에서는 `if (block.rawMode) return@LaunchedEffect` 가드를 둬 편집 중 reparse 를 완전 차단.
+
+### 10.5 v1 시도 기록 (롤백됨, 참고용)
+
+다음 변경을 가했으나 회귀 발생 → `git checkout HEAD --` 와 수동 Edit 으로 모두 되돌림. v3 에서 회귀 재발 방지를 위해 기록 보존:
+
+| 파일 | v1 변경 내용 |
+|---|---|
+| `state/EditorBlock.kt` | `Text` 에 `rawMode: Boolean = false` 추가 (rawOrigin 없음) |
+| `state/BlockOperations.kt` | `dissolveAndMergeWithNext()` (auto-merge 포함), `dissolveCallout()`, `DissolveResult` 추가 |
+| `ui/MarkdownBlockEditor.kt` | `CursorHint.AtOffset`, `BlockNavigation.onDissolveSelf`, `applyDissolveResult`, `onMergeWithPrevious` 라우팅 |
+| `ui/TextBlockEditor.kt` | `block.rawMode` 시 snapshotFlow skip + **`onFocusChanged` 에서 rawMode 가드 없이 포커스 아웃 시 `navigation.onReparse()` 1회** ← 회귀 원인 |
+| `ui/block/CalloutBlockEditor.kt` | Standard/Dialogue 양쪽 title `onPreviewKeyEvent` 에 Backspace at start → `onDissolveSelf` |
+
+회귀 증상: "블록 사이 엔터 입력이 제대로 작동하지 않음."
+
+**회귀 원인 재해석 (v3 진단):** v1 의 focus-out reparse 가 `rawMode` 가드 없이 모든 TextBlock 에 적용된 것이 진짜 원인. Smart Enter / 방향키 이동 시 직전 TextBlock 이 잠깐 focus-out 되며 reparse 가 발동, stale 한 텍스트로 분리되며 `pendingFocusBlockId` 충돌. **focus-out 트리거 자체가 문제는 아니다 — 가드 누락이 문제였다.** v3 는 `if (block.rawMode && !isFocused)` 가드 + 200ms delay 로 transient focus-out 을 자연스럽게 거른다.
+
+### 10.6 영향도 (v3)
+
+| 영역 | 영향 |
+|---|---|
+| 일반 TextBlock 입력 흐름 | 영향 없음 (rawMode=false 면 기존 흐름 그대로). focus-out reparse 는 rawMode 가드로 차단됨 |
+| 블록 사이 Enter 이동 / 방향키 이동 | 영향 없음 (rawMode=false 라 transient focus-out 이 reparse 발동 안 함) |
+| `BlockOperations.tryReparse` | rawMode 분기 ~10줄 추가. rawMode=false 경로 변경 없음 |
+| `EditorBlock.Text` 모델 | `rawMode`, `rawOrigin` 두 필드 추가 (default null/false → 기존 호출처 호환) |
+| `BlockOperations` 새 함수 | `dissolveSpecial()`, `dissolveCallout()`, `DissolveResult` |
+| `MarkdownBlockEditor` | `BlockNavigation.onDissolveSelf`, `applyDissolveResult`, `CursorHint.AtOffset`, `onMergeWithPrevious` 라우팅 |
+| `TextBlockEditor` | **변경 있음** — snapshotFlow `if (block.rawMode) return` 가드 + `LaunchedEffect(isFocused, block.rawMode)` 에서 200ms delay 후 reparse |
+| `CalloutBlockEditor` | Standard/Dialogue title 핸들러에 Backspace 분기 1개씩 |
+| 회귀 표면적 | v1 대비 매우 작음 — focus-out reparse 가 rawMode 가드 + delay 가드로 이중 차단 |
+
+#### Cross-block selection (#21) 와의 호환
+
+rawMode 와 cross-select 는 **직교 관계**. 영향 없음:
+- `TextFieldState`, `TextLayoutResult`, `toMarkdown()` 모두 rawMode 무관 동작
+- 시각 selection: 줄 높이/너비는 LayoutResult 가 정확히 계산
+- 복사: `Text.toMarkdown()` = textFieldState.text → raw markdown 그대로 (사용자가 보고 있던 raw 가 그대로 클립보드)
+- selection 도중 reparse 발동 시 깨질 위험은 rawMode 만의 문제가 아니라 cross-select 자체에서 다뤄야 할 일반 이슈
+
+#### Undo/Redo (#22) 와의 호환
+
+- `blocks.toMarkdown()` 스냅샷 사용 → rawMode/rawOrigin 보존 안 됨 (transient)
+- Undo 결과는 일반 블록. 마커가 그대로면 reparse 가 다시 Code/Callout/Table 로 변환
+- "dissolve 한 transient 상태 자체" 는 undo 대상 아님 — 받아들일 만한 동작
+
+#### Embed (#23) / M3 컬러 (#25) 와의 호환
+
+- Embed 도 동일 패턴 적용 가능 (`RawOrigin.EMBED` 추가)
+- M3 컬러 무관
+
+### 10.7 구현 단계 (v2 — 재시도 시 그대로 따를 것)
+
+1. **`state/EditorBlock.kt`**:
+   - `RawOrigin` enum 정의 (`CODE`, `CALLOUT`, `TABLE`)
+   - `Text` 에 `rawMode: Boolean = false`, `rawOrigin: RawOrigin? = null` 필드 추가
+   - `toMarkdown()` 은 변경 없음 (둘 다 transient)
+
+2. **`state/BlockOperations.kt`**:
+   - `data class DissolveResult(newBlocks: List<EditorBlock>, targetBlockId: String, cursorOffset: Int)` 추가
+   - `fun dissolveSpecial(blocks, specialIndex): DissolveResult?` — Code/Callout/Table 자리에 `Text(rawMode=true, rawOrigin=...)` 1개로 교체. 인접 블록은 보존
+   - `fun dissolveCallout(blocks, calloutIndex): DissolveResult?` — Callout 만 같은 패턴
+   - `tryReparse` 에 rawMode 분기 추가 (v3 — 무조건 적용):
+     ```kotlin
+     if (block.rawMode) {
+         val newBlocks = blocks.toMutableList()
+         // 마커 살아있음 → 특수 블록으로 변환 (rendering 복귀)
+         if (parsed.size == 1 && parsed[0] !is EditorBlock.Text) {
+             newBlocks[blockIndex] = parsed[0]
+             return SplitResult(newBlocks, focusBlockIndex = blockIndex)
+         }
+         // 마커 깨짐 + 단일 Text → rawMode=false 인 새 Text 로 교체 (자동 해제)
+         if (parsed.size <= 1 && parsed.firstOrNull() is EditorBlock.Text) {
+             newBlocks[blockIndex] = parsed[0]
+             return SplitResult(newBlocks, focusBlockIndex = blockIndex)
+         }
+         // 마커 깨짐 + 여러 블록 → 일반 분리
+         newBlocks.removeAt(blockIndex)
+         newBlocks.addAll(blockIndex, parsed)
+         val specialIdx = parsed.indexOfFirst { it !is EditorBlock.Text }
+         val focusIdx = blockIndex + if (specialIdx >= 0) specialIdx else parsed.lastIndex
+         return SplitResult(newBlocks, focusBlockIndex = focusIdx)
+     }
+     // rawMode=false 일반 흐름 (단일 Text 면 변경 없음 가드 유지)
+     ```
+
+3. **`ui/MarkdownBlockEditor.kt`**:
+   - `CursorHint.AtOffset(offset: Int)` variant 추가
+   - `LaunchedEffect(focusRequestCounter)` 에 AtOffset 처리 분기 추가:
+     ```kotlin
+     is CursorHint.AtOffset -> {
+         if (targetBlock is EditorBlock.Text) {
+             val state = targetBlock.textFieldState
+             state.edit { selection = TextRange(effectiveHint.offset.coerceIn(0, state.text.length)) }
+         }
+     }
+     ```
+   - `BlockNavigation.onDissolveSelf: () -> Unit = {}` 추가
+   - `applyDissolveResult(result: DissolveResult?)` 헬퍼 추가:
+     - `onBlocksChanged(result.newBlocks)` + `pendingFocusBlockId = result.targetBlockId` + `pendingCursorHint = CursorHint.AtOffset(result.cursorOffset)` + `focusRequestCounter++`
+   - `onMergeWithPrevious` 라우팅:
+     ```kotlin
+     onMergeWithPrevious = {
+         val merged = BlockOperations.mergeWithPrevious(currentBlocks, currentIndex)
+         if (merged != null) {
+             applyResult(merged)
+         } else {
+             val prev = currentBlocks.getOrNull(currentIndex - 1)
+             if (prev != null && prev !is EditorBlock.Text && prev !is EditorBlock.HorizontalRule) {
+                 applyDissolveResult(BlockOperations.dissolveSpecial(currentBlocks, currentIndex - 1))
+             }
+         }
+     }
+     ```
+   - `onDissolveSelf` 결선:
+     ```kotlin
+     onDissolveSelf = {
+         applyDissolveResult(BlockOperations.dissolveCallout(currentBlocks, currentIndex))
+     }
+     ```
+
+4. **`ui/TextBlockEditor.kt`** (v3 의 핵심):
+   - snapshotFlow gating: `LaunchedEffect(block.textFieldState, block.rawMode) { if (block.rawMode) return@LaunchedEffect; ... }`
+   - focus-out reparse: 별도 `LaunchedEffect(isFocused, block.rawMode) { if (block.rawMode && !isFocused) { delay(200ms); navigation.onReparse() } }`
+   - **`if (block.rawMode)` 가드 필수** — 가드 없이 적용하면 v1 회귀 재발 (Smart Enter / 방향키 이동 중 transient focus-out 으로 일반 TextBlock 도 reparse 됨)
+
+5. **`ui/block/CalloutBlockEditor.kt`**: Standard/Dialogue 양쪽 `titleKeyHandler` 에 Backspace 분기 추가:
+   ```kotlin
+   Key.Backspace -> {
+       if (sel.collapsed && sel.start == 0) {
+           navigation.onDissolveSelf()
+           true
+       } else false
+   }
+   ```
+
+### 10.8 dissolve 가 **아닌** 케이스 (회귀 방지용 명시)
+
+| 케이스 | 동작 |
+|---|---|
+| Callout body 첫 블록 위치 0 Backspace | 기존 `onEscapeToPrevious` → title 로 커서 이동 |
+| 빈 CodeBlock + 위 TextBlock 위치 0 Backspace | 기존 `mergeWithPrevious()` → 빈 CodeBlock 삭제 |
+| Table 셀 내부 Backspace | 셀 내 텍스트 편집 (dissolve 아님) |
+| 일반 TextBlock 위치 0 Backspace | 기존 `mergeWithPrevious()` → 두 TextBlock merge |
+| Callout title 위치 0 Backspace 인데 Callout 위에 블록이 없는 경우 | 트리거 2 그대로 적용 — Callout 자리에 raw TextBlock |
+| rawMode 블록에서 Enter / 방향키 / 일반 입력 | snapshotFlow + debounce 흐름. tryReparse 가 origin 비교로 skip/적용 |
+
+### 10.9 검증 시나리오 (재시도 시 1순위 테스트, v3 트리거 기준)
+
+회귀 방지를 위해 dissolve 변경 직후 다음 시나리오를 우선 검증:
+
+1. **블록 사이 Enter 이동** (v1 회귀 항목 — rawMode 가드 검증)
+   - TextBlock A 에서 마지막 줄 빈 + Enter → Smart Enter 로 다음 블록 B 생성·이동 → B 에 입력
+   - 기대: B 에 입력한 내용이 정상 반영, A 는 trailing `\n` 제거된 상태로 stable. transient focus-out 이 발생하지만 rawMode=false 라 reparse 미발동
+2. **dissolve 직후 그 블록을 계속 편집**
+   - Code 다음 TextBlock 위치 0 Backspace → raw TextBlock(rawMode=true) 생성
+   - 포커스 유지하면서 본문(`foo` 부분) 을 자유롭게 수정 → snapshotFlow 가 rawMode 가드로 skip → **편집 중에는 절대 다시 Code 로 변환되지 않음**
+3. **dissolve 후 마커 그대로 두고 focus-out → 다시 rendering 복귀**
+   - 위 raw TextBlock 에서 fence 는 그대로 두고 본문만 수정 → 다른 블록 클릭 (focus-out)
+   - 200ms delay 후 reparse → parsed = [Code] → **다시 Code 블록으로 변환 (rendering 복귀)**, 수정한 본문 반영
+4. **dissolve 후 fence 깨고 focus-out → 일반 텍스트로 자동 해제**
+   - raw TextBlock 에서 closing ` ``` ` 삭제 → 다른 블록 클릭 (focus-out)
+   - 200ms delay 후 reparse → parsed = [Text] (단일) → **rawMode=false 인 새 Text 로 교체** (시각상 동일, 플래그만 해제)
+   - 그 후 같은 블록에서 패턴 입력 → snapshotFlow 정상 동작 (rawMode 가드 해제됨)
+5. **transient focus-out (블록 간 짧은 이동)**
+   - dissolve 된 raw 블록에 포커스 → 다른 블록을 잠깐 클릭 → 200ms 안에 다시 raw 블록으로 돌아옴
+   - 기대: `LaunchedEffect(isFocused, ...)` 가 cancel → reparse 미발동. raw 모드 그대로 유지
+6. **Callout title dissolve**
+   - Callout title 위치 0 Backspace → Callout 자리에 `> [!NOTE] 제목\n> 본문` raw TextBlock(rawOrigin=CALLOUT). 위/아래 블록 그대로. focus-out 시 마커 살아있으면 다시 Callout 으로 rendering
+7. **빈 CodeBlock 위 TextBlock 위치 0 Backspace**
+   - dissolve 아님. 빈 CodeBlock 삭제 + 위 TextBlock 으로 포커스 (기존 동작 유지)
+8. **Callout body 첫 블록 위치 0 Backspace**
+   - dissolve 아님. title 로 커서 이동 (기존 onEscapeToPrevious 유지)

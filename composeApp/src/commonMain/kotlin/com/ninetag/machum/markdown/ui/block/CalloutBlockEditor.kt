@@ -161,6 +161,14 @@ private fun StandardCallout(
                 navigation.onMoveToPrevious()
                 true
             }
+            Key.Backspace -> {
+                // dissolve 트리거 2: Callout 자리에 raw markdown TextBlock(rawMode=true)
+                val sel = block.titleState.selection
+                if (sel.collapsed && sel.start == 0) {
+                    navigation.onDissolveSelf()
+                    true
+                } else false
+            }
             else -> false
         }
     }
@@ -282,6 +290,13 @@ private fun DialogueCallout(
             }
             Key.DirectionDown -> { navigation.onMoveToNext(); true }
             Key.DirectionUp -> { navigation.onMoveToPrevious(); true }
+            Key.Backspace -> {
+                // dissolve 트리거 2: Callout 자리에 raw markdown TextBlock(rawMode=true)
+                if (sel.collapsed && sel.start == 0) {
+                    navigation.onDissolveSelf()
+                    true
+                } else false
+            }
             else -> false
         }
     }

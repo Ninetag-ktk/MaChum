@@ -29,10 +29,17 @@ sealed class EditorBlock {
      * 일반 텍스트 블록.
      * Heading, BulletList, OrderedList, Blockquote, 일반 텍스트를 포함한다.
      * 인라인 서식은 RawMarkdownOutputTransformation이 처리.
+     *
+     * [rawMode]/[rawOrigin] 은 dissolve(서식 해제) 동작용 transient 필드.
+     * - rawMode=true 면 tryReparse 가 origin 비교로 reparse 를 skip 하여 raw 유지
+     * - 직렬화 시점([toMarkdown])에는 둘 다 무시됨 (저장/로드는 항상 raw=false)
+     * 상세: CLAUDE_sub.md 섹션 10.
      */
     data class Text(
         override val id: String = generateId(),
         val textFieldState: TextFieldState,
+        val rawMode: Boolean = false,
+        val rawOrigin: RawOrigin? = null,
     ) : EditorBlock() {
         override fun toMarkdown(): String =
             textFieldState.text.toString().replace(BLANK_LINE_MARKER, "")
@@ -107,6 +114,13 @@ sealed class EditorBlock {
 
 @OptIn(kotlin.uuid.ExperimentalUuidApi::class)
 private fun generateId(): String = Uuid.random().toString()
+
+/**
+ * dissolve 된 [EditorBlock.Text] 의 원본 블록 종류.
+ * tryReparse 가 이 값과 reparse 결과 타입을 비교하여 마커가 살아있는지 판정한다.
+ * 같으면 reparse 를 skip 하여 raw 유지, 다르면 일반 reparse 진행.
+ */
+enum class RawOrigin { CODE, CALLOUT, TABLE, EMBED }
 
 /**
  * 블록 리스트를 raw markdown 문자열로 직렬화한다.

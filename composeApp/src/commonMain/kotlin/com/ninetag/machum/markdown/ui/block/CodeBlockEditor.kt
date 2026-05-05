@@ -57,9 +57,13 @@ internal fun CodeBlockEditor(
             Key.Enter -> {
                 if (sel.collapsed) {
                     val text = block.codeState.text.toString()
-                    val isLastLine = text.indexOf('\n', sel.start) == -1
+                    val nextNewline = text.indexOf('\n', sel.start)
+                    val isLastLine = nextNewline == -1
                     val lineStart = if (sel.start == 0) 0 else text.lastIndexOf('\n', sel.start - 1) + 1
-                    val isCurrentLineEmpty = sel.start == lineStart
+                    val lineEnd = if (isLastLine) text.length else nextNewline
+                    // "줄이 비어있다" = 줄의 시작과 끝이 같다.
+                    // (sel.start == lineStart 만 보면 "내용 있는 줄의 맨 앞"도 빈 줄로 오판되어 빈 줄 추가가 막힘)
+                    val isCurrentLineEmpty = lineStart == lineEnd
                     if (isLastLine && isCurrentLineEmpty) {
                         // 빈 마지막 줄을 생성한 trailing \n 제거
                         if (lineStart > 0) {

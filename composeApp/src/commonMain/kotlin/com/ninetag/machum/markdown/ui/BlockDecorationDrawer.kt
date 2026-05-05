@@ -9,46 +9,34 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.dp
 
 /**
  * BasicTextField의 drawBehind에서 호출하여 블록 데코레이션을 그린다.
  *
- * 활성 블록(커서가 내부에 있는 블록)은 장식을 적용하지 않는다.
+ * v2 블록 에디터에서 TextBlockEditor 가 호출. BLOCKQUOTE 좌측 바, HORIZONTAL_RULE 구분선,
+ * 인라인 코드 RoundRect 배경만 그린다.
  *
  * @param scrollOffset BasicTextField의 스크롤 오프셋 (px). 콘텐츠 좌표 → 뷰포트 좌표 변환에 사용.
  */
 internal fun DrawScope.drawBlockDecorations(
     layout: TextLayoutResult,
     blocks: List<BlockRange>,
-    activeBlockRanges: Set<IntRange>,
     config: MarkdownStyleConfig,
     scrollOffset: Float = 0f,
-    isNested: Boolean = false,
     inlineCodeRanges: List<IntRange> = emptyList(),
+    rawZones: List<IntRange> = emptyList(),
 ) {
     for (block in blocks) {
-        val isActive = block.textRange in activeBlockRanges
-        val hasOverlay = block.type == BlockType.CALLOUT || block.type == BlockType.TABLE
-        if (hasOverlay && !isActive) continue
-        if (isActive && (block.type == BlockType.CALLOUT || block.type == BlockType.EMBED)) continue
-
-        // 중첩 에디터에서는 Blockquote 테두리와 HorizontalRule만 그린다
-        if (isNested && block.type != BlockType.BLOCKQUOTE && block.type != BlockType.HORIZONTAL_RULE) continue
-
         val rect = getBoundingRect(layout, block.textRange, scrollOffset) ?: continue
 
         // 뷰포트 밖이면 스킵 (성능 최적화)
         if (rect.bottom < 0f || rect.top > size.height) continue
 
         when (block.type) {
-            BlockType.CALLOUT -> drawCalloutDecoration(rect, block.meta, config)
-            BlockType.EMBED -> drawEmbedDecoration(rect, config)
-            BlockType.HORIZONTAL_RULE -> if (!isActive) drawHorizontalRule(rect)
-            BlockType.BLOCKQUOTE -> if (!isActive) drawBlockquoteLines(layout, block.textRange, config, scrollOffset)
-            BlockType.CODE_BLOCK, BlockType.TABLE -> {}
+            BlockType.HORIZONTAL_RULE -> drawHorizontalRule(rect)
+            BlockType.BLOCKQUOTE -> drawBlockquoteLines(layout, block.textRange, config, scrollOffset, rawZones)
         }
     }
 
@@ -106,40 +94,6 @@ private fun DrawScope.drawInlineCodeBackgrounds(
     }
 }
 
-// ── Callout: 라운드 박스 (배경 + 테두리) ──
-
-private fun DrawScope.drawCalloutDecoration(
-    rect: Rect,
-    meta: Map<String, String>,
-    config: MarkdownStyleConfig,
-) {
-    val calloutType = meta["calloutType"] ?: "NOTE"
-    val style = config.calloutDecorationStyle(calloutType)
-
-    val cornerRadius = CornerRadius(8.dp.toPx())
-    val verticalPadding = 8.dp.toPx()
-    val borderWidth = 1.dp.toPx()
-    val boxTop = rect.top - verticalPadding
-    val boxSize = Size(size.width, rect.height + verticalPadding * 2)
-
-    // 배경
-    drawRoundRect(
-        color = style.containerColor,
-        topLeft = Offset(0f, boxTop),
-        size = boxSize,
-        cornerRadius = cornerRadius,
-    )
-
-    // 라운드 테두리
-    drawRoundRect(
-        color = style.accentColor,
-        topLeft = Offset(0f, boxTop),
-        size = boxSize,
-        cornerRadius = cornerRadius,
-        style = Stroke(width = borderWidth),
-    )
-}
-
 // ── Blockquote: depth별 다중 왼쪽 테두리 ──
 
 private fun DrawScope.drawBlockquoteLines(
@@ -147,6 +101,7 @@ private fun DrawScope.drawBlockquoteLines(
     range: IntRange,
     config: MarkdownStyleConfig,
     scrollOffset: Float,
+    rawZones: List<IntRange> = emptyList(),
 ) {
     val text = layout.layoutInput.text.toString()
     val textLen = text.length
@@ -159,6 +114,14 @@ private fun DrawScope.drawBlockquoteLines(
     while (lineStart <= rangeEnd) {
         val lineEnd = text.indexOf('\n', lineStart).let {
             if (it == -1 || it > rangeEnd) rangeEnd else it
+        }
+
+        // raw zone 안의 줄은 좌측 바 skip (raw 마커가 보이는 상태에서 시각 충돌 방지)
+        val isInRawZone = rawZones.any { it.first <= lineEnd && it.last >= lineStart }
+        if (isInRawZone) {
+            lineStart = lineEnd + 1
+            if (lineStart > rangeEnd) break
+            continue
         }
 
         // depth 계산: 연속 > 문자 수
@@ -202,19 +165,6 @@ private fun DrawScope.drawHorizontalRule(rect: Rect) {
         start = Offset(0f, y),
         end = Offset(size.width, y),
         strokeWidth = 1.dp.toPx(),
-    )
-}
-
-// ── Embed: 테두리 배경 ──
-
-private fun DrawScope.drawEmbedDecoration(rect: Rect, config: MarkdownStyleConfig) {
-    val cornerRadius = CornerRadius(6.dp.toPx())
-    val padding = 2.dp.toPx()
-    drawRoundRect(
-        color = config.codeBlockBackground.copy(alpha = 0.5f),
-        topLeft = Offset(0f, rect.top - padding),
-        size = Size(size.width, rect.height + padding * 2),
-        cornerRadius = cornerRadius,
     )
 }
 

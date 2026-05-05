@@ -183,13 +183,17 @@ object MarkdownBlockParser {
                 // → MarkdownPatternScanner가 감지, BlockDecorationDrawer가 Divider 그림
 
                 // ── Embed: ![[...]] ──
-                isEmbedLine(line) -> {
-                    flushText()
-                    val trimmed = line.trim()
-                    val target = trimmed.removePrefix("![[").removeSuffix("]]")
-                    blocks += EditorBlock.Embed(target = target)
-                    i++
-                }
+                // 현재 비활성화. 박스 UI 미구현(Phase 3 #23) 상태에서는 변환의 시각적 의미가 없고
+                // focus 끊김(생성 직후) / 빈 잔류(삭제 후) 부작용만 발생.
+                // ![[xxx]] 는 일반 TextBlock 텍스트로 남아 사용자가 자유롭게 편집/삭제 가능.
+                // #23 진입 시 아래 분기를 복원:
+                //   isEmbedLine(line) -> {
+                //       flushText()
+                //       val trimmed = line.trim()
+                //       val target = trimmed.removePrefix("![[").removeSuffix("]]")
+                //       blocks += EditorBlock.Embed(target = target)
+                //       i++
+                //   }
 
                 // ── 빈 줄: 카운터에 누적 ──
                 // 다음 텍스트가 올 때 정확한 \n 개수를 삽입

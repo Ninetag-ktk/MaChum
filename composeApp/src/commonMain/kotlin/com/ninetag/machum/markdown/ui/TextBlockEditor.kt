@@ -37,6 +37,7 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
@@ -56,7 +57,6 @@ internal fun TextBlockEditor(
     focusRequester: FocusRequester = remember { FocusRequester() },
     navigation: BlockNavigation = BlockNavigation(),
     cursorHint: CursorHint? = null,
-    excludeCalloutTypes: Set<String> = emptySet(),
 ) {
     val normalizedTextStyle = remember(textStyle) {
         val effectiveLineHeight = if (textStyle.lineHeight.isUnspecified) 1.5.em else textStyle.lineHeight
@@ -71,13 +71,12 @@ internal fun TextBlockEditor(
 
     val inputTransformation = remember { EditorInputTransformation() }
 
-    // isFocused를 key로 사용하여 포커스 변경 시 새 인스턴스 생성 → transformOutput() 재실행
+    // isFocused / block.rawMode 를 key 로 사용하여 변경 시 새 인스턴스 생성 → transformOutput() 재실행
     var isFocused by remember { mutableStateOf(false) }
-    val outputTransformation = remember(styleConfig, isFocused, excludeCalloutTypes) {
+    val outputTransformation = remember(styleConfig, isFocused, block.rawMode) {
         RawMarkdownOutputTransformation(styleConfig).apply {
             this.isFocused = isFocused
-            applyBlockTransparent = false
-            this.excludeCalloutTypes = excludeCalloutTypes
+            this.isRawMode = block.rawMode
         }
     }
 
@@ -107,14 +106,56 @@ internal fun TextBlockEditor(
     // 블록 분할 패턴 감지: 텍스트를 재파싱하여 블록 서식이 포함되면 분리
     // 주의: endsWith("\n\n") 자동 분리는 비활성화됨 (#16 빈 줄 TextBlock 포함과 충돌)
     // 블록 생성은 #20 Smart Enter에서 처리 예정
-    LaunchedEffect(block.textFieldState) {
+    //
+    // dissolve 정책 v3 (CLAUDE_sub.md 섹션 10):
+    // rawMode=true 블록은 편집 중 reparse 를 보류한다. focus-out 시점에 약간의 delay 후 reparse.
+    // (key 에 block.rawMode 포함 → dissolve/자동해제로 rawMode 가 변하면 LaunchedEffect 재시작)
+    LaunchedEffect(block.textFieldState, block.rawMode) {
+        if (block.rawMode) return@LaunchedEffect
         snapshotFlow { block.textFieldState.text.toString() }
             .distinctUntilChanged()
             .debounce(150.milliseconds)
-            .collectLatest { text ->
-                // 텍스트에 블록 패턴(callout, codeblock, table)이 포함되면 재파싱으로 분리
+            .collectLatest { _ ->
                 navigation.onReparse()
             }
+    }
+
+    // ZWSP 자동 제거 (Block→Block 빈 줄 placeholder 의 격하):
+    // ZWSP(BLANK_LINE_MARKER) 는 빈 줄 표현용 1글자 마커. 사용자가 ZWSP 블록에 입력(텍스트/Enter)하는 순간
+    // 그 블록은 더 이상 "빈 줄 placeholder" 가 아니라 일반 TextBlock 이므로 ZWSP 를 제거해야 한다.
+    // 제거하지 않으면 ZWSP 가 줄 시작에 박혀 있어 InlineStyleScanner 의 line prefix 매칭(`# `, `> ` 등)이 깨진다.
+    LaunchedEffect(block.textFieldState) {
+        snapshotFlow { block.textFieldState.text.toString() }
+            .filter { it.contains(EditorBlock.BLANK_LINE_MARKER) && it.length > 1 }
+            .collectLatest { text ->
+                val cleaned = text.replace(EditorBlock.BLANK_LINE_MARKER, "")
+                block.textFieldState.edit { replace(0, length, cleaned) }
+            }
+    }
+
+    // 빈 raw 블록 자동 정리 (Block 의 마커를 모두 지워서 일반 TextField 처럼 된 transient 상태):
+    // rawMode=true 인 블록의 텍스트가 빈 순간 즉시 rawMode 해제 → 그냥 일반 빈 TextBlock 으로 전환.
+    // (block.id/textFieldState 유지, 플래그만 false 로 변환)
+    LaunchedEffect(block.rawMode) {
+        if (!block.rawMode) return@LaunchedEffect
+        snapshotFlow { block.textFieldState.text.toString().isEmpty() }
+            .distinctUntilChanged()
+            .collectLatest { isEmpty ->
+                if (isEmpty) navigation.onClearRawMode()
+            }
+    }
+
+    // dissolve 정책 v3: rawMode=true 인 블록이 focus-out 되면 200ms delay 후 reparse 1회.
+    // - transient focus-out (블록간 이동 중 잠깐 잃었다 다시 받는 케이스) 은
+    //   key=isFocused 가 LaunchedEffect 를 cancel 시켜 reparse 발동 안 함.
+    // - rawMode 가드 덕분에 일반 TextBlock 의 Smart Enter / 방향키 이동에는 영향 없음.
+    // - silent 변형 호출: 사용자가 이미 다른 블록으로 포커스를 옮긴 상태이므로 새 rendering
+    //   블록으로 focus 를 끌어가지 않음 (사용자 포커스 위치 보존).
+    LaunchedEffect(isFocused, block.rawMode) {
+        if (block.rawMode && !isFocused) {
+            kotlinx.coroutines.delay(200.milliseconds)
+            navigation.onReparseSilent()
+        }
     }
 
     // 블록 간 커서 이동 + Backspace 병합
@@ -129,24 +170,10 @@ internal fun TextBlockEditor(
                     true
                 } else false
             }
-            Key.Enter -> {
-                if (sel.collapsed) {
-                    val text = block.textFieldState.text.toString()
-                    val isLastLine = text.indexOf('\n', sel.start) == -1
-                    val lineStart = if (sel.start == 0) 0 else text.lastIndexOf('\n', sel.start - 1) + 1
-                    val isCurrentLineEmpty = sel.start == lineStart
-                    if (isLastLine && isCurrentLineEmpty) {
-                        // 빈 마지막 줄을 생성한 trailing \n 제거
-                        if (lineStart > 0) {
-                            block.textFieldState.edit {
-                                replace(lineStart - 1, lineStart, "")
-                            }
-                        }
-                        navigation.onMoveToNext()
-                        true
-                    } else false
-                } else false
-            }
+            // Smart Enter 블록 탈출은 TextBlock 에서는 적용하지 않음 (CodeBlock/Callout body 에만 적용).
+            // TextBlock 은 박스 UI 가 없어 탈출 통로가 필요 없고, 다음 블록 이동은 ↓ 방향키로 충분.
+            // 빈 TextBlock 또는 ZWSP placeholder 에서 Enter 가 의도치 않은 탈출을 일으키던 부작용 해소.
+            // (BasicTextField 기본 동작: Enter = \n 추가)
             Key.DirectionUp -> {
                 if (sel.collapsed) {
                     val text = block.textFieldState.text.toString()
@@ -193,11 +220,10 @@ internal fun TextBlockEditor(
                 drawBlockDecorations(
                     layout = layout,
                     blocks = outputTransformation.blockRanges,
-                    activeBlockRanges = outputTransformation.activeBlockRanges,
                     config = styleConfig,
                     scrollOffset = 0f,
-                    isNested = false,
                     inlineCodeRanges = outputTransformation.inlineCodeRanges,
+                    rawZones = outputTransformation.currentRawZones,
                 )
             }
             .then(blockKeyHandler)

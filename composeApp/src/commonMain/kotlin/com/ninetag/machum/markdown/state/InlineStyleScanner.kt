@@ -3,7 +3,6 @@ package com.ninetag.machum.markdown.state
 import com.ninetag.machum.markdown.service.*
 
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.unit.em
 
 /**
  * 비활성 블록의 raw 텍스트에 적용할 SpanStyle 범위 리스트를 계산한다.
@@ -11,6 +10,9 @@ import androidx.compose.ui.unit.em
  * 전략: 서식 마커(**, ~~, # 등)를 fontSize=0.sp + Color.Transparent 로 설정해
  * 시각적으로 완전히 사라지게 하고, 컨텐츠에는 해당 스타일(bold, italic 등)을 적용한다.
  * 텍스트 길이는 변하지 않으므로 cursor 위치 매핑이 자연스럽게 유지된다.
+ *
+ * v2 블록 에디터에서는 TextBlock 콘텐츠에만 적용. Callout/Code/Table/Embed 는
+ * 각각 전용 Composable 이 처리하므로 본 스캐너는 다루지 않는다.
  */
 internal object InlineStyleScanner {
 
@@ -29,12 +31,9 @@ internal object InlineStyleScanner {
     ): List<Pair<IntRange, SpanStyle>> {
         if (blockText.isEmpty()) return emptyList()
         return when (block) {
-            is MarkdownBlock.CodeBlock    -> codeBlockSpans(blockText, docOffset, config)
-            is MarkdownBlock.Table        -> emptyList()     // 표는 raw 그대로
             is MarkdownBlock.HorizontalRule -> listOf((docOffset until docOffset + blockText.length) to config.blockTransparent)
-            is MarkdownBlock.Embed        -> embedSpans(blockText, docOffset, config)
-            is MarkdownBlock.Heading      -> headingSpans(block.level, blockText, docOffset, config)
-            else                          -> lineScannedSpans(blockText, docOffset, config)
+            is MarkdownBlock.Heading        -> headingSpans(block.level, blockText, docOffset, config)
+            MarkdownBlock.TextBlock         -> lineScannedSpans(blockText, docOffset, config)
         }
     }
 
@@ -74,151 +73,6 @@ internal object InlineStyleScanner {
             scanInline(blockText, markerLen, blockText.length, docOffset, spans, config)
         }
         return spans
-    }
-
-    private fun codeBlockSpans(
-        blockText: String,
-        docOffset: Int,
-        config: MarkdownStyleConfig,
-    ): List<Pair<IntRange, SpanStyle>> {
-        val spans = mutableListOf<Pair<IntRange, SpanStyle>>()
-        val lines = blockText.split('\n')
-        var lineStart = 0
-        for (line in lines) {
-            val lineDocStart = docOffset + lineStart
-            val isFence = line.trimStart().startsWith("```")
-            if (isFence) {
-                spans += (lineDocStart until lineDocStart + line.length) to config.marker
-            } else {
-                spans += (lineDocStart until lineDocStart + line.length) to config.codeBlock
-            }
-            lineStart += line.length + 1
-        }
-        return spans
-    }
-
-    private fun embedSpans(
-        blockText: String,
-        docOffset: Int,
-        config: MarkdownStyleConfig,
-    ): List<Pair<IntRange, SpanStyle>> {
-        val spans = mutableListOf<Pair<IntRange, SpanStyle>>()
-        // ![[파일명]] 혹은 ![[파일명#섹션]]
-        val start = blockText.indexOf("![[")
-        val end   = blockText.indexOf("]]")
-        if (start >= 0 && end > start) {
-            spans += (docOffset + start until docOffset + start + 3) to config.marker  // ![[
-            spans += (docOffset + start + 3 until docOffset + end) to config.link       // 파일명
-            spans += (docOffset + end until docOffset + end + 2) to config.marker       // ]]
-        }
-        return spans
-    }
-
-    /**
-     * Callout 블록 전용 스팬 계산.
-     *
-     * 첫 줄: `> [!TYPE] Title` → `> [!TYPE] ` 숨김, Title에 bold 적용
-     * 나머지: `> Content` → `>` 인디케이터 + Content에 fontSize 적용 + 인라인 스캔
-     *
-     * @param depth Callout의 중첩 깊이. body 줄에 `fontSize × 0.9^depth` 적용하여
-     *              투명 raw text의 줄 높이를 오버레이 body와 일치시킨다.
-     */
-    fun calloutSpans(
-        blockText: String,
-        docOffset: Int,
-        config: MarkdownStyleConfig,
-        depth: Int = 0,
-        calloutType: String = "NOTE",
-    ): List<Pair<IntRange, SpanStyle>> {
-        if (blockText.isEmpty()) return emptyList()
-        val spans = mutableListOf<Pair<IntRange, SpanStyle>>()
-        val lines = blockText.split('\n')
-        var lineStart = 0
-
-        // depth에 따른 body fontSize 계산 (0.9^depth)
-        val bodyFontScale = 0.9f.pow(depth.coerceAtLeast(0))
-        val bodyFontSizeStyle = if (depth > 0) {
-            SpanStyle(fontSize = bodyFontScale.em)
-        } else null
-
-        val isDialogue = calloutType.equals("DL", ignoreCase = true)
-
-        // header prefix 스타일: 투명 + chrome 높이 보상
-        // 모든 타입: prefix를 정상 크기로 유지 (0.01sp 축소 없음)
-        // depth>=2(중첩): fontSize 1.6em으로 overlay chrome(14dp) 보상
-        val headerPrefixStyle = when {
-            depth >= 2 -> SpanStyle(color = config.blockTransparent.color, fontSize = 1.6.em)
-            else -> config.blockTransparent
-        }
-
-        for ((idx, line) in lines.withIndex()) {
-            val lineDocStart = docOffset + lineStart
-            if (idx == 0) {
-                // 첫 줄: "> [!TYPE] Title" or ">[!TYPE]" or ">> [!TYPE]" (공백 선택적, 다중 depth)
-                val headerRegex = Regex("^>+ ?\\[!\\w+]\\s*")
-                val match = headerRegex.find(line)
-                if (match != null) {
-                    val markerEnd = match.range.last + 1
-                    // "> [!TYPE] " → 투명 (크기 유지 + chrome 보상)
-                    spans += (lineDocStart until lineDocStart + markerEnd) to headerPrefixStyle
-                    // Title 부분 → bold + 인라인 스캔
-                    if (markerEnd < line.length) {
-                        spans += (lineDocStart + markerEnd until lineDocStart + line.length) to config.bold
-                        scanInline(line, markerEnd, line.length, lineDocStart, spans, config)
-                    }
-                } else {
-                    val contentStart = hideLinePrefix(line, lineDocStart, spans, config)
-                    scanInline(line, contentStart, line.length, lineDocStart, spans, config)
-                }
-            } else {
-                // 나머지 줄: "> Content"
-                // ">" 를 인디케이터로 표시 (연한 색 + body fontSize → 줄 높이 일치)
-                val contentStart = hideCalloutPrefix(line, lineDocStart, spans, config, bodyFontSizeStyle)
-                // body fontSize 적용 (오버레이와 줄 높이 일치)
-                if (bodyFontSizeStyle != null && contentStart < line.length) {
-                    spans += (lineDocStart + contentStart until lineDocStart + line.length) to bodyFontSizeStyle
-                }
-                scanInline(line, contentStart, line.length, lineDocStart, spans, config)
-            }
-            lineStart += line.length + 1
-        }
-        return spans
-    }
-
-    /**
-     * Callout body 줄의 ">" prefix를 인디케이터로 표시한다.
-     * blockTransparent 대신 calloutIndicator(연한 색)를 사용하여 들여쓰기 역할.
-     * bodyFontSizeStyle이 있으면 merge하여 ">" 문자도 body와 동일한 줄 높이를 갖게 한다.
-     *
-     * @return 컨텐츠 시작 인덱스 (line 내 상대 위치)
-     */
-    private fun hideCalloutPrefix(
-        line: String,
-        lineDocStart: Int,
-        spans: MutableList<Pair<IntRange, SpanStyle>>,
-        config: MarkdownStyleConfig,
-        bodyFontSizeStyle: SpanStyle? = null,
-    ): Int {
-        if (!line.startsWith(">")) return 0
-        val indicatorStyle = if (bodyFontSizeStyle != null) {
-            config.calloutIndicator.merge(bodyFontSizeStyle)
-        } else {
-            config.calloutIndicator
-        }
-        var pos = 0
-        while (pos < line.length && line[pos] == '>') {
-            spans += (lineDocStart + pos until lineDocStart + pos + 1) to indicatorStyle
-            pos++
-            if (pos < line.length && line[pos] == ' ') pos++ // 공백은 유지
-        }
-        return pos
-    }
-
-    /** Float.pow for simple integer exponent */
-    private fun Float.pow(n: Int): Float {
-        var result = 1f
-        repeat(n) { result *= this }
-        return result
     }
 
     /** TextBlock, Blockquote, BulletList, OrderedList 등 줄 단위 스캔 */
@@ -352,15 +206,23 @@ internal object InlineStyleScanner {
                 }
 
                 // InlineCode: `text`
+                // 단, 연속 3개 이상의 backtick 은 코드 블록 fence — inline code 매칭 대상 아님.
+                // 또한 길이 0 inline code (인접 backtick) 도 매칭 거름 → BlockDecorationDrawer 의
+                // 길이 0 RoundRect 배경 표시 원천 차단. (raw 블록의 ``` 가 일반 텍스트로 보이게)
                 ch == '`' -> {
-                    val close = line.indexOf('`', i + 1).takeIf { it in 0 until to }
-                    if (close != null) {
-                        spans += abs(lineDocStart + i, lineDocStart + i + 1) to config.marker
-                        if (i + 1 < close)
+                    var runLen = 0
+                    while (i + runLen < to && line[i + runLen] == '`') runLen++
+                    if (runLen >= 3) {
+                        i += runLen
+                    } else {
+                        val close = line.indexOf('`', i + 1).takeIf { it in 0 until to }
+                        if (close != null && close > i + 1) {
+                            spans += abs(lineDocStart + i, lineDocStart + i + 1) to config.marker
                             spans += abs(lineDocStart + i + 1, lineDocStart + close) to config.codeInline
-                        spans += abs(lineDocStart + close, lineDocStart + close + 1) to config.marker
-                        i = close + 1
-                    } else i++
+                            spans += abs(lineDocStart + close, lineDocStart + close + 1) to config.marker
+                            i = close + 1
+                        } else i++
+                    }
                 }
 
                 // EmbedLink: ![[파일명]]

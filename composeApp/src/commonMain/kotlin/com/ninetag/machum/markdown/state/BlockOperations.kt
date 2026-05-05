@@ -163,6 +163,13 @@ object BlockOperations {
      * 사용자가 TextBlock 안에서 callout, codeblock, table, HR 등을 입력했을 때
      * 해당 패턴을 감지하여 적절한 블록으로 변환.
      *
+     * dissolve 정책 v3 (CLAUDE_sub.md 섹션 10):
+     * rawMode=true 인 블록의 reparse 호출은 focus-out 시점뿐이므로
+     * (snapshotFlow 는 TextBlockEditor 에서 rawMode 가드로 차단) 무조건 적용한다.
+     * - 마커 살아있음 (parsed = 단일 특수 블록) → 특수 블록으로 변환 (rendering 복귀)
+     * - 마커 깨짐 + 단일 일반 텍스트 → rawMode=false 인 새 Text 로 교체 (자동 해제)
+     * - 마커 깨짐 + 여러 블록 → 일반 분리 흐름
+     *
      * @return 변경된 블록 리스트, 또는 분리할 것이 없으면 null
      */
     fun tryReparse(
@@ -175,7 +182,32 @@ object BlockOperations {
         if (text.isEmpty()) return null
 
         val parsed = MarkdownBlockParser.parse(text, excludeCalloutTypes)
-        // 단일 TextBlock이면 변경 없음
+
+        // dissolve 직후 rawMode 블록: focus-out 시점이라 무조건 적용 (v3)
+        if (block.rawMode) {
+            val newBlocks = blocks.toMutableList()
+
+            // 마커 살아있음 → 특수 블록으로 변환 (rendering 복귀)
+            if (parsed.size == 1 && parsed[0] !is EditorBlock.Text) {
+                newBlocks[blockIndex] = parsed[0]
+                return SplitResult(newBlocks, focusBlockIndex = blockIndex)
+            }
+
+            // 마커 깨짐 + 단일 일반 텍스트 → rawMode=false 인 새 Text 로 교체 (자동 해제)
+            if (parsed.size <= 1 && parsed.firstOrNull() is EditorBlock.Text) {
+                newBlocks[blockIndex] = parsed[0]
+                return SplitResult(newBlocks, focusBlockIndex = blockIndex)
+            }
+
+            // 마커 깨짐 + 여러 블록 → 일반 분리
+            newBlocks.removeAt(blockIndex)
+            newBlocks.addAll(blockIndex, parsed)
+            val specialIdx = parsed.indexOfFirst { it !is EditorBlock.Text }
+            val focusIdx = blockIndex + if (specialIdx >= 0) specialIdx else parsed.lastIndex
+            return SplitResult(newBlocks, focusBlockIndex = focusIdx)
+        }
+
+        // rawMode=false 일반 흐름: 단일 TextBlock이면 변경 없음
         if (parsed.size <= 1 && parsed.firstOrNull() is EditorBlock.Text) return null
 
         val newBlocks = blocks.toMutableList()
@@ -190,7 +222,76 @@ object BlockOperations {
         return SplitResult(newBlocks, focusBlockIndex = focusIdx)
     }
 
+    /**
+     * 특수 블록(Code/Callout/Table)을 raw markdown TextBlock 으로 풀어낸다.
+     * 인접 블록과 merge 하지 않고, 같은 자리에 1개 TextBlock(rawMode=true) 으로 교체.
+     *
+     * 트리거: 특수 블록 다음 TextBlock 의 위치 0 에서 Backspace.
+     * (호출자는 currentIndex - 1 = 직전 특수 블록 인덱스를 specialIndex 로 전달)
+     */
+    fun dissolveSpecial(
+        blocks: List<EditorBlock>,
+        specialIndex: Int,
+    ): DissolveResult? {
+        val target = blocks.getOrNull(specialIndex) ?: return null
+        val origin = when (target) {
+            is EditorBlock.Code -> RawOrigin.CODE
+            is EditorBlock.Callout -> RawOrigin.CALLOUT
+            is EditorBlock.Table -> RawOrigin.TABLE
+            is EditorBlock.Embed -> RawOrigin.EMBED
+            else -> return null
+        }
+        val raw = target.toMarkdown()
+        val newText = EditorBlock.Text(
+            textFieldState = TextFieldState(raw),
+            rawMode = true,
+            rawOrigin = origin,
+        )
+        val newBlocks = blocks.toMutableList()
+        newBlocks[specialIndex] = newText
+        return DissolveResult(
+            newBlocks = newBlocks,
+            targetBlockId = newText.id,
+            cursorOffset = raw.length,
+        )
+    }
+
+    /**
+     * Callout 만 dissolve. (Callout title 위치 0 Backspace 트리거)
+     * 인접 블록과 merge 안 함. 동작은 [dissolveSpecial] 의 Callout 케이스와 동일하지만
+     * 트리거 의미를 명확히 하기 위해 별도 함수로 둔다.
+     */
+    fun dissolveCallout(
+        blocks: List<EditorBlock>,
+        calloutIndex: Int,
+    ): DissolveResult? {
+        val target = blocks.getOrNull(calloutIndex) as? EditorBlock.Callout ?: return null
+        val raw = target.toMarkdown()
+        val newText = EditorBlock.Text(
+            textFieldState = TextFieldState(raw),
+            rawMode = true,
+            rawOrigin = RawOrigin.CALLOUT,
+        )
+        val newBlocks = blocks.toMutableList()
+        newBlocks[calloutIndex] = newText
+        return DissolveResult(
+            newBlocks = newBlocks,
+            targetBlockId = newText.id,
+            cursorOffset = raw.length,
+        )
+    }
+
 }
+
+/**
+ * dissolve 결과. [BlockNavigation.onDissolveSelf] 라우팅이나
+ * onMergeWithPrevious 에서 직전 특수블록 dissolve 시 사용.
+ */
+data class DissolveResult(
+    val newBlocks: List<EditorBlock>,
+    val targetBlockId: String,
+    val cursorOffset: Int,
+)
 
 data class SplitResult(
     val newBlocks: List<EditorBlock>,

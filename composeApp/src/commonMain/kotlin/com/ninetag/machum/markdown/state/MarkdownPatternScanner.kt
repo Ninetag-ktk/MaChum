@@ -6,12 +6,11 @@ import androidx.compose.ui.text.SpanStyle
 
 /**
  * 블록 데코레이션이 필요한 특수 블록 타입.
+ *
+ * v2 블록 에디터에서는 TextBlock 콘텐츠 내부 데코레이션만 다룬다.
+ * Callout/Code/Table 은 각각 전용 Composable 이 처리하므로 본 스캐너는 다루지 않는다.
  */
 enum class BlockType {
-    CODE_BLOCK,
-    CALLOUT,
-    EMBED,
-    TABLE,
     HORIZONTAL_RULE,
     BLOCKQUOTE,
 }
@@ -21,7 +20,7 @@ enum class BlockType {
  *
  * @param type       블록 타입
  * @param textRange  문서 내 절대 문자 범위 (inclusive)
- * @param meta       블록별 메타데이터 (예: "calloutType" → "NOTE", "language" → "python")
+ * @param meta       블록별 메타데이터
  */
 data class BlockRange(
     val type: BlockType,
@@ -33,7 +32,7 @@ data class BlockRange(
  * [MarkdownPatternScanner]의 스캔 결과.
  *
  * @param spans   (문서 내 범위, SpanStyle) 쌍 목록 — OutputTransformation에서 사용
- * @param blocks  특수 블록 범위 목록 — 블록 수준 커서 감지 + DrawBehind에서 사용
+ * @param blocks  특수 블록 범위 목록 — DrawBehind 에서 사용 (BLOCKQUOTE, HORIZONTAL_RULE)
  */
 data class ScanResult(
     val spans: List<Pair<IntRange, SpanStyle>>,
@@ -41,21 +40,19 @@ data class ScanResult(
 )
 
 /**
- * 문서 전체의 raw 텍스트를 스캔하여 서식 범위 목록과 블록 범위 목록을 반환한다.
+ * TextBlock 의 raw 텍스트를 스캔하여 인라인 서식 spans 와 데코레이션 blocks 를 반환한다.
  * 기호를 제거하지 않고, 기호 범위(MARKER)와 내용 범위(SpanStyle)만 알려준다.
  *
- * Phase 2 (raw text 방식)의 핵심 컴포넌트.
+ * v2 블록 에디터에서 TextBlockEditor 의 OutputTransformation 이 호출.
  */
 internal object MarkdownPatternScanner {
 
-    private val calloutHeaderRegex = Regex("^(>+) ?\\[!(\\w+)]\\s*")
-
     /**
-     * @param text   문서 전체 raw 텍스트
+     * @param text   TextBlock 의 raw 텍스트
      * @param config 서식 스타일 설정
-     * @return [ScanResult] — 서식 범위 + 블록 범위
+     * @return [ScanResult] — 인라인 서식 + 데코레이션 블록 범위
      */
-    fun scan(text: String, config: MarkdownStyleConfig, excludeCalloutTypes: Set<String> = emptySet()): ScanResult {
+    fun scan(text: String, config: MarkdownStyleConfig): ScanResult {
         if (text.isEmpty()) return ScanResult(emptyList(), emptyList())
 
         val spans = mutableListOf<Pair<IntRange, SpanStyle>>()
@@ -64,117 +61,13 @@ internal object MarkdownPatternScanner {
         var i = 0
         var offset = 0
 
-        // excludeCalloutTypes를 고려한 blockquote 판별
-        fun isEffectiveBlockquote(line: String): Boolean {
-            if (!line.startsWith(">")) return false
-            val match = calloutHeaderRegex.find(line) ?: return true // callout 패턴 아님 → blockquote
-            val type = match.groupValues[2]
-            return excludeCalloutTypes.any { it.equals(type, ignoreCase = true) } // exclude 대상이면 blockquote
-        }
-        var inCodeBlock = false
-        var codeBlockStart = 0
-        val codeBlockLines = mutableListOf<String>()
-
         // 블록 prefix 없는 연속 일반 텍스트 줄 그룹핑 (멀티라인 인라인 서식 지원)
         var groupStart = -1
         val groupText = StringBuilder()
 
         while (i < lines.size) {
             val line = lines[i]
-            val isFence = line.trimStart().startsWith("```")
 
-            // ── 코드 블록 시작 ──
-            if (isFence && !inCodeBlock) {
-                flushGroup(groupText, groupStart, spans, config)
-                groupStart = -1
-                inCodeBlock = true
-                codeBlockStart = offset
-                codeBlockLines.clear()
-                codeBlockLines.add(line)
-                offset += line.length + 1
-                i++
-                continue
-            }
-
-            // ── 코드 블록 종료 ──
-            if (isFence && inCodeBlock) {
-                codeBlockLines.add(line)
-                val blockText = codeBlockLines.joinToString("\n")
-                spans += InlineStyleScanner.computeSpans(
-                    MarkdownBlock.CodeBlock(),
-                    blockText, codeBlockStart, config,
-                )
-                blocks += BlockRange(
-                    type = BlockType.CODE_BLOCK,
-                    textRange = codeBlockStart until (offset + line.length),
-                )
-                inCodeBlock = false
-                offset += line.length + 1
-                i++
-                continue
-            }
-
-            // ── 코드 블록 내부 ──
-            if (inCodeBlock) {
-                codeBlockLines.add(line)
-                offset += line.length + 1
-                i++
-                continue
-            }
-
-            // ── Callout 감지: "> [!TYPE]" 패턴 (excludeCalloutTypes에 포함된 타입은 blockquote로 처리) ──
-            val calloutPreMatch = calloutHeaderRegex.find(line)
-            val calloutPreType = calloutPreMatch?.groupValues?.get(2)
-            val isExcludedCallout = calloutPreType != null && excludeCalloutTypes.any { it.equals(calloutPreType, ignoreCase = true) }
-            if (calloutPreMatch != null && !isExcludedCallout) {
-                flushGroup(groupText, groupStart, spans, config)
-                groupStart = -1
-
-                val calloutStart = offset
-                val calloutLines = mutableListOf(line)
-                val headerMatch = calloutHeaderRegex.find(line)
-                val calloutDepth = headerMatch?.groupValues?.get(1)?.length ?: 1
-                val calloutType = headerMatch?.groupValues?.get(2) ?: "NOTE"
-
-                var j = i + 1
-                var calloutOffset = offset + line.length + 1
-                // 후속 ">" 줄을 소비 (같은 depth 이하의 새 Callout 헤더가 나오면 중단)
-                while (j < lines.size) {
-                    val nextLine = lines[j]
-                    if (!nextLine.startsWith(">")) break
-                    val nextMatch = calloutHeaderRegex.find(nextLine)
-                    if (nextMatch != null) {
-                        val nextDepth = nextMatch.groupValues[1].length
-                        if (nextDepth <= calloutDepth) break
-                    }
-                    calloutLines.add(nextLine)
-                    calloutOffset += nextLine.length + 1
-                    j++
-                }
-
-                val calloutText = calloutLines.joinToString("\n")
-                val calloutEnd = calloutStart + calloutText.length
-
-                spans += InlineStyleScanner.calloutSpans(calloutText, calloutStart, config, depth = calloutDepth, calloutType = calloutType)
-                // body 줄이 있을 때만 CALLOUT 블록(오버레이 대상)으로 등록
-                // 헤더만 있는 Callout은 인라인 스타일로만 렌더링
-                if (calloutLines.size >= 2) {
-                    blocks += BlockRange(
-                        type = BlockType.CALLOUT,
-                        textRange = calloutStart until calloutEnd,
-                        meta = mapOf(
-                            "calloutType" to calloutType,
-                            "depth" to calloutDepth.toString(),
-                        ),
-                    )
-                }
-
-                offset = calloutOffset
-                i = j
-                continue
-            }
-
-            // ── 일반 줄 처리 (기존 로직) ──
             if (line.isNotEmpty()) {
                 val headingLevel = detectHeadingLevel(line)
                 when {
@@ -196,7 +89,7 @@ internal object MarkdownPatternScanner {
                             textRange = offset until (offset + line.length),
                         )
                     }
-                    isEffectiveBlockquote(line) -> {
+                    line.startsWith(">") -> {
                         flushGroup(groupText, groupStart, spans, config)
                         groupStart = -1
                         // 연속 > 줄 그룹화
@@ -207,7 +100,7 @@ internal object MarkdownPatternScanner {
                         var bqEnd = offset + line.length
                         var j = i + 1
                         var bqOffset = offset + line.length + 1
-                        while (j < lines.size && isEffectiveBlockquote(lines[j])) {
+                        while (j < lines.size && lines[j].startsWith(">")) {
                             spans += InlineStyleScanner.computeSpans(
                                 MarkdownBlock.TextBlock, lines[j], bqOffset, config,
                             )
@@ -229,46 +122,6 @@ internal object MarkdownPatternScanner {
                         spans += InlineStyleScanner.computeSpans(
                             MarkdownBlock.TextBlock, line, offset, config,
                         )
-                    }
-                    isEmbedLine(line) -> {
-                        flushGroup(groupText, groupStart, spans, config)
-                        groupStart = -1
-                        spans += InlineStyleScanner.computeSpans(
-                            MarkdownBlock.Embed(), line, offset, config,
-                        )
-                        blocks += BlockRange(
-                            type = BlockType.EMBED,
-                            textRange = offset until (offset + line.length),
-                        )
-                    }
-                    isTableLine(line) -> {
-                        flushGroup(groupText, groupStart, spans, config)
-                        groupStart = -1
-                        // Table: 연속 | 줄 소비
-                        val tableStart = offset
-                        val tableLines = mutableListOf(line)
-                        var j = i + 1
-                        var tableOffset = offset + line.length + 1
-                        while (j < lines.size && isTableLine(lines[j])) {
-                            tableLines.add(lines[j])
-                            tableOffset += lines[j].length + 1
-                            j++
-                        }
-                        // 최소 2줄(헤더 + 구분자) 이상이면 Table 블록
-                        if (tableLines.size >= 2) {
-                            val tableText = tableLines.joinToString("\n")
-                            blocks += BlockRange(
-                                type = BlockType.TABLE,
-                                textRange = tableStart until (tableStart + tableText.length),
-                            )
-                            // Table 내부는 인라인 스캔 (오버레이가 담당하므로 기본 처리)
-                            spans += InlineStyleScanner.computeSpans(
-                                MarkdownBlock.Table(), tableText, tableStart, config,
-                            )
-                        }
-                        offset = tableOffset
-                        i = j
-                        continue
                     }
                     else -> {
                         // 블록 prefix 없는 일반 텍스트 → 그룹에 추가
@@ -292,19 +145,6 @@ internal object MarkdownPatternScanner {
 
         // 남은 그룹 처리
         flushGroup(groupText, groupStart, spans, config)
-
-        // 닫히지 않은 코드 블록 처리
-        if (inCodeBlock) {
-            val blockText = codeBlockLines.joinToString("\n")
-            spans += InlineStyleScanner.computeSpans(
-                MarkdownBlock.CodeBlock(),
-                blockText, codeBlockStart, config,
-            )
-            blocks += BlockRange(
-                type = BlockType.CODE_BLOCK,
-                textRange = codeBlockStart until (codeBlockStart + blockText.length),
-            )
-        }
 
         return ScanResult(spans, blocks)
     }
@@ -345,10 +185,6 @@ internal object MarkdownPatternScanner {
         return level
     }
 
-    /** 줄이 blockquote(> )로 시작하는지 판별 (Callout 아닌) */
-    private fun isBlockquoteLine(line: String): Boolean =
-        line.startsWith(">") && !calloutHeaderRegex.containsMatchIn(line)
-
     /** 줄이 블록 레벨 prefix(>, -, *, 숫자.)로 시작하는지 판별 */
     private fun hasBlockPrefix(line: String): Boolean {
         if (line.startsWith(">")) return true
@@ -366,17 +202,5 @@ internal object MarkdownPatternScanner {
         if (j > 0 && j + 1 < rest.length && rest[j] == '.' && rest[j + 1] == ' ') return true
 
         return false
-    }
-
-    /** 줄이 임베드 링크인지 판별 */
-    private fun isEmbedLine(line: String): Boolean {
-        val trimmed = line.trim()
-        return trimmed.startsWith("![[") && trimmed.endsWith("]]")
-    }
-
-    /** 줄이 테이블 행인지 판별 (| 로 시작하고 | 를 2개 이상 포함) */
-    private fun isTableLine(line: String): Boolean {
-        val trimmed = line.trim()
-        return trimmed.startsWith("|") && trimmed.count { it == '|' } >= 2
     }
 }
