@@ -151,21 +151,24 @@ object MarkdownBlockParser {
                     }
                 }
 
-                // ── Table: | 시작 (2줄 이상일 때만 변환) ──
+                // ── Table: | 시작 + 두 번째 줄이 |---| 구분자 (둘 다 만족할 때만 변환) ──
+                // 구분자 행 강제: dissolve 된 raw Table 에서 사용자가 |---| 행을 지웠을 때
+                // 다시 Table 로 자동 변환되며 toMarkdown() 이 |---| 를 부활시키는 회귀를 막음.
                 isTableLine(line) -> {
-                    // 유효한 테이블(2줄+) 여부를 먼저 확인 — flushText 전에
+                    // 유효한 테이블(2줄+ + 구분자) 여부를 먼저 확인 — flushText 전에
                     var j = i + 1
                     while (j < lines.size && isTableLine(lines[j])) j++
                     val tableLineCount = j - i
+                    val hasSeparator = i + 1 < lines.size && lines[i + 1].contains("---")
 
-                    if (tableLineCount >= 2) {
+                    if (tableLineCount >= 2 && hasSeparator) {
                         // 유효한 테이블 → flushText 후 Table 블록 생성
                         flushText()
                         val tableLines = (i until j).map { lines[it] }
                         blocks += parseTable(tableLines)
                         i = j
                     } else {
-                        // 1줄만 → TextBlock에 유지 (flushText 하지 않음)
+                        // 1줄만 또는 구분자 행 없음 → TextBlock 에 유지 (flushText 하지 않음)
                         if (pendingNewlines > 0) {
                             if (textAccum.isNotEmpty()) textAccum.append('\n')
                             repeat(pendingNewlines) { textAccum.append('\n') }

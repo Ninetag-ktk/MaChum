@@ -149,6 +149,16 @@ private fun StandardCallout(
                 }
                 true
             }
+            Key.Tab -> {
+                // Enter 와 동일 — body 생성/이동. 명시 핸들러로 default focus traversal(SingleLine) 가로채기.
+                if (block.bodyBlocks.isEmpty()) {
+                    onBlocksChanged(listOf(EditorBlock.Text(textFieldState = TextFieldState(""))))
+                    pendingBodyFocus++
+                } else {
+                    focusBodyStart()
+                }
+                true
+            }
             Key.DirectionDown -> {
                 if (block.bodyBlocks.isNotEmpty()) {
                     focusBodyStart()
@@ -221,6 +231,7 @@ private fun StandardCallout(
                     }
                 },
                 onEscapeToNext = navigation.onMoveToNext,
+                enableEnterEscape = true,  // body 안 TextBlock 에서 빈 마지막 줄 + Enter → 탈출 (#20 v2)
             )
         }
     }
@@ -274,6 +285,16 @@ private fun DialogueCallout(
         val sel = block.titleState.selection
         when (event.key) {
             Key.Enter -> {
+                if (block.bodyBlocks.isEmpty()) {
+                    onBlocksChanged(listOf(EditorBlock.Text(textFieldState = TextFieldState(""))))
+                    pendingBodyFocus++
+                } else {
+                    focusBodyStart()
+                }
+                true
+            }
+            Key.Tab -> {
+                // Enter 와 동일 — body 생성/이동. 명시 핸들러로 default \t 입력(MultiLine) 가로채기.
                 if (block.bodyBlocks.isEmpty()) {
                     onBlocksChanged(listOf(EditorBlock.Text(textFieldState = TextFieldState(""))))
                     pendingBodyFocus++
@@ -342,6 +363,7 @@ private fun DialogueCallout(
                         selection = androidx.compose.ui.text.TextRange(block.titleState.text.length)
                     }
                 },
+                enableEnterEscape = true,  // body 안 TextBlock 에서 빈 마지막 줄 + Enter → 탈출 (#20 v2)
             )
         }
     }

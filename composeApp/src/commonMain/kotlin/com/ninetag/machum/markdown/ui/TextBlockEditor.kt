@@ -57,6 +57,13 @@ internal fun TextBlockEditor(
     focusRequester: FocusRequester = remember { FocusRequester() },
     navigation: BlockNavigation = BlockNavigation(),
     cursorHint: CursorHint? = null,
+    /**
+     * 빈 마지막 줄 + Enter → trailing \n 제거 + onMoveToNext 호출.
+     * Callout body 안 TextBlock 에서만 true (CalloutBlockEditor 의 body MarkdownBlockEditor 호출 →
+     * BlockItem → TextBlockEditor 체인). 외부 TextBlock 은 false (default) 로 두어 ZWSP/격하 결과물의
+     * 의도치 않은 탈출 방지. CLAUDE_sub.md #20 정책 v2.
+     */
+    escapeOnEmptyEnter: Boolean = false,
 ) {
     val normalizedTextStyle = remember(textStyle) {
         val effectiveLineHeight = if (textStyle.lineHeight.isUnspecified) 1.5.em else textStyle.lineHeight
@@ -170,10 +177,30 @@ internal fun TextBlockEditor(
                     true
                 } else false
             }
-            // Smart Enter 블록 탈출은 TextBlock 에서는 적용하지 않음 (CodeBlock/Callout body 에만 적용).
-            // TextBlock 은 박스 UI 가 없어 탈출 통로가 필요 없고, 다음 블록 이동은 ↓ 방향키로 충분.
-            // 빈 TextBlock 또는 ZWSP placeholder 에서 Enter 가 의도치 않은 탈출을 일으키던 부작용 해소.
-            // (BasicTextField 기본 동작: Enter = \n 추가)
+            // Smart Enter 블록 탈출 (#20 정책 v2):
+            // 외부 TextBlock 은 미적용 (escapeOnEmptyEnter=false default). Callout body 안 TextBlock 만
+            // 활성화 (CalloutBlockEditor 가 body MarkdownBlockEditor 호출 시 enableEnterEscape=true 전달).
+            // 조건: 마지막 줄이 빈 상태 (lineStart == lineEnd) + Enter → trailing \n 제거 + onMoveToNext.
+            // body 안 다음 블록이 있으면 그쪽으로, 마지막이면 onEscapeToNext 체인 → Callout 외부 탈출.
+            Key.Enter -> {
+                if (escapeOnEmptyEnter && sel.collapsed) {
+                    val text = block.textFieldState.text.toString()
+                    val nextNewline = text.indexOf('\n', sel.start)
+                    val isLastLine = nextNewline == -1
+                    val lineStart = if (sel.start == 0) 0 else text.lastIndexOf('\n', sel.start - 1) + 1
+                    val lineEnd = if (isLastLine) text.length else nextNewline
+                    val isCurrentLineEmpty = lineStart == lineEnd
+                    if (isLastLine && isCurrentLineEmpty) {
+                        if (lineStart > 0) {
+                            block.textFieldState.edit {
+                                replace(lineStart - 1, lineStart, "")
+                            }
+                        }
+                        navigation.onMoveToNext()
+                        true
+                    } else false
+                } else false
+            }
             Key.DirectionUp -> {
                 if (sel.collapsed) {
                     val text = block.textFieldState.text.toString()
@@ -200,6 +227,16 @@ internal fun TextBlockEditor(
             Key.DirectionLeft -> {
                 if (sel.collapsed && sel.start == 0) {
                     navigation.onMoveLeft()
+                    true
+                } else false
+            }
+            Key.DirectionRight -> {
+                // ← 와 대칭. cursor 가 text 끝에 도달하면 다음 블록 시작 위치로 진입.
+                // BasicTextField 기본 동작은 블록 경계에서 멈추므로 명시 핸들러 필요.
+                // raw 블록의 multi-line 텍스트(예: dissolve 된 Callout 의 `> [!NOTE] ...\n> body`) 에서
+                // 끝까지 도달 시 다음 블록으로 자연스럽게 넘어가야 하는 케이스를 해결.
+                if (sel.collapsed && sel.start == block.textFieldState.text.length) {
+                    navigation.onMoveToNext()
                     true
                 } else false
             }

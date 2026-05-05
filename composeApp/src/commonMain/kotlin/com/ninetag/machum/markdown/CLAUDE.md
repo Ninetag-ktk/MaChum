@@ -9,7 +9,7 @@
 문서를 `List<EditorBlock>`(블록 리스트)로 관리하고, 각 블록이 독립 Composable로 렌더링된다.
 이전 v1(단일 BasicTextField + overlay Composable) 아키텍처를 대체함.
 
-**상세 설계: `CLAUDE_sub.md`** | **체크리스트: `compact.md`**
+**상세 설계: `CLAUDE_sub.md`** | **체크리스트: `compact.md`** | **Cross-block selection: `SELECTION.md`** (Phase 3 #21)
 
 ### 핵심 컴포넌트
 
@@ -20,8 +20,8 @@
 | `BlockOperations` | `state/BlockOperations.kt` | 블록 분할/병합/재파싱 (특수블록 우선 포커스) |
 | `MarkdownBlockEditor` | `ui/MarkdownBlockEditor.kt` | LazyColumn 블록 dispatcher + escape 콜백 |
 | `MarkdownBlockTextField` | `ui/MarkdownBlockTextField.kt` | 공개 API + M3 래퍼 |
-| `TextBlockEditor` | `ui/TextBlockEditor.kt` | 텍스트 블록 (인라인 서식 + ←↑↓ 블록 이동) |
-| `CalloutBlockEditor` | `ui/block/CalloutBlockEditor.kt` | Callout (Standard ↓↑ / DL ←→, Enter body 생성) |
+| `TextBlockEditor` | `ui/TextBlockEditor.kt` | 텍스트 블록 (인라인 서식 + ←↑↓→ 블록 이동) |
+| `CalloutBlockEditor` | `ui/block/CalloutBlockEditor.kt` | Callout (Standard ↓↑ / DL ←→, Enter/Tab body 생성) |
 | `CodeBlockEditor` | `ui/block/CodeBlockEditor.kt` | CodeBlock (monospace, ↑↓ 블록 이동) |
 | `TableBlockEditor` | `ui/block/TableBlockEditor.kt` | Table (2D focusGrid, Tab/Enter 행 추가, +버튼) |
 | `HorizontalRuleDivider` | `ui/block/HorizontalRuleDivider.kt` | HR (미사용 — TextBlock 인라인 렌더링으로 전환) |
@@ -90,12 +90,16 @@ raw 블록에서 다른 곳으로 포커스 이동 → 200ms delay → `tryRepar
 
 **자동 격하 / 자동 해제:**
 
-- **Block 유형 (Code/Callout/Table)**: 모든 state 가 빈 순간 (한 번이라도 내용이 있었던 경우) → 빈 일반 TextBlock 으로 자동 격하. 박스 사라짐
-- **raw 블록**: 텍스트가 빈 순간 → `rawMode=false` 인 일반 TextBlock 으로 즉시 변환 (id/textFieldState 유지, transient 상태 정리)
+- **raw 블록 마커 깨짐**: dissolve 된 raw TextBlock 에서 사용자가 마커를 손상시키면 (`> [!NOTE]` → `> [!NOTE`, `\|---\|` 구분자 행 삭제 등) focus-out 시점에 `tryReparse` 의 rawMode 분기가 자동 처리 — 마커 살아있으면 특수 블록으로 복귀, 단일 일반 텍스트면 `rawMode=false` 로 격하, 여러 블록이면 분리. 이게 자동 격하 정책의 본체
+- **raw 블록 빈 텍스트**: rawMode=true 인 블록의 텍스트가 빈 순간 → `rawMode=false` 로 즉시 플래그 해제 (id/textFieldState 유지, transient 상태 정리)
 - **ZWSP placeholder**: Block→Block 빈 줄 마커가 있는 TextBlock 에 사용자가 입력하는 순간 ZWSP 자동 제거 → 일반 TextBlock 으로 격하 (line prefix 매칭 깨짐 방지)
+- **Block 유형 (Code/Callout/Table) 의 state-empty 자동 격하는 두지 않음**: 사용자가 title 만 잠깐 비운 채 다시 입력하려는 케이스에서 박스가 사라지는 부작용을 막기 위해 제거. 빈 박스는 그대로 유지하고 dissolve 는 명시적 트리거(title 위치 0 Backspace 등) 로만 발동
 - **Embed 변환 비활성화 (현재)**: parser 와 tryReparse 가 `![[xxx]]` 를 Embed 블록으로 변환하지 않음. 일반 TextBlock 텍스트로 그대로 남음. 박스 UI 가 미구현(#23) 인 상태에서는 변환의 의미가 없고 focus 끊김 등 부작용만 발생하므로 비활성화. Embed 클래스 / RawOrigin.EMBED / dissolveSpecial 의 Embed 케이스 / BlockItem 의 Embed 분기 + promotion 로직은 모두 보존되어 #23 진입 시 parser 한 줄 활성화로 복귀 가능
 
-**Smart Enter 정책 (#20):** 박스 UI 가 있는 CodeBlock 에만 적용 (빈 마지막 줄 + Enter → 탈출). TextBlock 은 미적용 — 다음 블록 이동은 ↓ 방향키 사용. Callout body 도 ↓ 방향키 경로로 외부 탈출.
+**Smart Enter 정책 (#20):** 박스 UI 안에 있는 블록에 한해 적용 (빈 마지막 줄 + Enter → 탈출).
+- **CodeBlock**: 적용 (codeState 마지막 줄 빈 + Enter → onMoveToNext)
+- **Callout body 안 TextBlock**: 적용 (Callout body MarkdownBlockEditor 의 `enableEnterEscape=true` → body 안 모든 TextBlock 의 마지막 줄 빈 + Enter → onMoveToNext → body 끝이면 onEscapeToNext 체인으로 Callout 외부 탈출)
+- **외부 TextBlock**: 미적용 (박스 없으므로 탈출 통로 불필요. 다음 블록 이동은 ↓ 방향키. ZWSP placeholder / 자동 격하 결과물에서 의도치 않은 탈출 방지)
 
 **raw 상태 시각 정책:** raw zone (포커스 줄 / rawMode=true 블록 전체) 에서는 `> ` blockquote 의 좌측 회색 바를 그리지 않음. raw 마커가 그대로 보이는 상태에서 좌측 바가 같이 표시되면 시각적 충돌 — 특히 dissolve 된 Callout raw TextBlock 의 `> body` 텍스트에서 어색했음.
 

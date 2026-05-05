@@ -27,7 +27,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import com.ninetag.machum.markdown.state.RawOrigin
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import androidx.compose.ui.Modifier
@@ -76,9 +75,6 @@ data class BlockNavigation(
     /** raw 블록(rawMode=true) 의 텍스트가 빈 상태가 되면 즉시 rawMode 해제.
      *  block.id/textFieldState 유지하므로 cursor/focus 보존 (transient 상태 정리) */
     val onClearRawMode: () -> Unit = {},
-    /** Block 유형(Code/Callout)의 모든 state 가 빈 순간 → 빈 일반 TextBlock 으로 격하.
-     *  block.id 는 새로 만들어짐. focus 는 새 빈 TextBlock 으로 이동 */
-    val onDegradeToText: () -> Unit = {},
 )
 
 /**
@@ -102,6 +98,12 @@ internal fun MarkdownBlockEditor(
     onLastBlockBottomEntryRegistered: (FocusRequester?) -> Unit = {},
     /** tryReparse 시 생성을 금지할 Callout 타입 (DL 중첩 방지 등) */
     excludeCalloutTypes: Set<String> = emptySet(),
+    /**
+     * 이 컨테이너 안의 TextBlock 에서 빈 마지막 줄 + Enter → 다음 블록으로 탈출 활성화.
+     * Callout 의 body 호출에서만 true. 외부(최상위) 호출에서는 false (default).
+     * CLAUDE_sub.md #20 정책 v2.
+     */
+    enableEnterEscape: Boolean = false,
 ) {
     // LazyColumn 스크롤 상태 (화면 밖 블록에 포커스 시 스크롤 필요)
     val lazyListState = rememberLazyListState()
@@ -348,18 +350,6 @@ internal fun MarkdownBlockEditor(
                     onBlocksChanged(newBlocks)
                 }
             },
-            onDegradeToText = {
-                val newBlocks = currentBlocks.toMutableList()
-                val newText = EditorBlock.Text(textFieldState = TextFieldState(""))
-                newBlocks[currentIndex] = newText
-                onBlocksChanged(newBlocks)
-                // 새 빈 TextBlock 으로 focus 이동 (사용자가 그 자리에서 계속 편집 가능)
-                focusRequesterMap.getOrPut(newText.id) { FocusRequester() }
-                pendingFocusBlockId = newText.id
-                pendingCursorHint = CursorHint.Start
-                pendingUseBottomEntry = false
-                focusRequestCounter++
-            },
         )
 
         BlockItem(
@@ -373,6 +363,7 @@ internal fun MarkdownBlockEditor(
             onBlocksChanged = onBlocksChanged,
             allBlocks = blocks,
             blockIndex = index,
+            enableEnterEscape = enableEnterEscape,
             onRegisterBottomEntryFR = { frOrNull ->
                 if (frOrNull != null) {
                     bottomEntryFRMap[block.id] = frOrNull
@@ -418,50 +409,17 @@ private fun BlockItem(
     onBlocksChanged: (List<EditorBlock>) -> Unit,
     allBlocks: List<EditorBlock>,
     blockIndex: Int,
+    enableEnterEscape: Boolean = false,
     onRegisterBottomEntryFR: (FocusRequester?) -> Unit = {},
 ) {
     // LazyColumn이 아이템 recomposition을 skip해도 클로저가 최신 값을 참조하도록 보장
     val latestAllBlocks by rememberUpdatedState(allBlocks)
     val latestBlockIndex by rememberUpdatedState(blockIndex)
 
-    // Block 유형(Code/Callout/Table) 자동 격하: 한 번 내용이 있었다가 모두 비워진 순간
-    // → 빈 일반 TextBlock 으로 교체 (CLAUDE_sub.md 섹션 10).
-    // 새로 만들어진 빈 Block 은 격하되지 않도록 hasHadContent 플래그로 가드.
-    val initiallyHasContent = remember(block.id) {
-        when (block) {
-            is EditorBlock.Code -> block.codeState.text.isNotEmpty()
-            is EditorBlock.Callout -> block.titleState.text.isNotEmpty() ||
-                block.bodyBlocks.any { (it as? EditorBlock.Text)?.textFieldState?.text?.isNotEmpty() ?: true }
-            is EditorBlock.Table -> block.headerStates.any { it.text.isNotEmpty() } ||
-                block.rowStates.any { row -> row.any { it.text.isNotEmpty() } }
-            else -> true  // Text/Embed/HR 은 자동 격하 대상 아님
-        }
-    }
-    val hasHadContent = remember(block.id) { mutableStateOf(initiallyHasContent) }
-    LaunchedEffect(block) {
-        if (block !is EditorBlock.Code && block !is EditorBlock.Callout && block !is EditorBlock.Table) {
-            return@LaunchedEffect
-        }
-        snapshotFlow {
-            when (block) {
-                is EditorBlock.Code -> block.codeState.text.toString().isEmpty()
-                is EditorBlock.Callout ->
-                    block.titleState.text.toString().isEmpty() &&
-                        block.bodyBlocks.all { (it as? EditorBlock.Text)?.textFieldState?.text?.isEmpty() == true }
-                is EditorBlock.Table ->
-                    block.headerStates.all { it.text.isEmpty() } &&
-                        block.rowStates.all { row -> row.all { it.text.isEmpty() } }
-            }
-        }
-            .distinctUntilChanged()
-            .collect { isAllEmpty ->
-                if (!isAllEmpty) {
-                    hasHadContent.value = true
-                } else if (hasHadContent.value) {
-                    navigation.onDegradeToText()
-                }
-            }
-    }
+    // Block 유형(Code/Callout/Table) 의 state-empty 자동 격하는 두지 않는다 (CLAUDE_sub.md 섹션 10 정책 정정).
+    // 자동 격하의 본래 의도는 raw 블록의 마커 깨짐을 일반 텍스트로 정리하는 것이며 이는 tryReparse 가 처리.
+    // 박스 UI 자체의 state-empty 트리거는 사용자가 title 잠깐 비운 채 다시 입력하려는 단순 편집에서도
+    // 박스가 사라지는 부작용이 있어 제거됨.
 
     when (block) {
         is EditorBlock.Text -> TextBlockEditor(
@@ -472,6 +430,7 @@ private fun BlockItem(
             focusRequester = focusRequester,
             navigation = navigation,
             cursorHint = cursorHint,
+            escapeOnEmptyEnter = enableEnterEscape,
         )
         is EditorBlock.Callout -> CalloutBlockEditor(
             block = block,

@@ -38,7 +38,10 @@
       "Bash(./gradlew :composeApp:compileKotlinJvm :composeApp:compileAndroidMain --console=plain)",
       "Bash(./gradlew :composeApp:compileKotlinJvm --rerun-tasks)",
       "Bash(awk 'NR==416' \"C:\\\\Users\\\\lurel\\\\Desktop\\\\MaChum\\\\composeApp\\\\src\\\\commonMain\\\\kotlin\\\\com\\\\ninetag\\\\machum\\\\markdown\\\\CLAUDE_sub.md\")",
-      "Bash(awk *)"
+      "Bash(awk *)",
+      "WebSearch",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\lurel\\\\Desktop\\\\MaChum\" -Recurse -Directory)",
+      "Bash(Select-Object -ExpandProperty FullName)"
     ]
   }
 }

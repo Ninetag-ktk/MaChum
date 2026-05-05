@@ -183,8 +183,8 @@ CalloutBlockEditor는 `onRegisterBottomEntryFR: (FocusRequester?) -> Unit` 콜�
 - focus-out reparse: `LaunchedEffect(isFocused, block.rawMode)` 에서 `block.rawMode && !isFocused` 일 때 200ms delay 후 `onReparseSilent()` 1회 (dissolve 정책 v3, 섹션 10)
 - 빈 raw 자동 해제: `LaunchedEffect(block.rawMode)` 에서 rawMode 인 블록의 텍스트가 빈 순간 `onClearRawMode()` 호출 (rawMode=false 로 플래그만 해제)
 - ZWSP 자동 제거: `LaunchedEffect(block.textFieldState)` 에서 text 가 `BLANK_LINE_MARKER` 포함 + length>1 이면 ZWSP 제거 (placeholder → 일반 TextBlock 격하)
-- 블록 이동: ↑(첫 줄)→prev, ↓(마지막 줄)→next, ←(위치 0)→moveLeft, Backspace(위치 0)→merge
-- **Enter 핸들러 없음**: TextBlock 은 박스 UI 가 없어 Smart Enter 탈출이 불필요. BasicTextField 기본 동작(`\n` 추가) 사용. CodeBlock/Callout 의 Smart Enter 와는 분리
+- 블록 이동: ↑(첫 줄)→prev, ↓(마지막 줄)→next, ←(위치 0)→moveLeft, →(위치 text.length)→next, Backspace(위치 0)→merge. → 는 ← 와 대칭으로 다음 블록 시작 위치로 진입 (BasicTextField 기본 동작은 블록 경계에서 멈추므로 명시 핸들러 필요). raw 블록의 multi-line 텍스트에서 끝까지 도달 시 다음 블록으로 자연스럽게 넘어감
+- **Enter 핸들러 (조건부 활성화)**: 외부 TextBlock 은 박스 UI 가 없어 Smart Enter 탈출 불필요 (BasicTextField 기본 동작 = `\n` 추가). 단 **Callout body 안 TextBlock** 은 `escapeOnEmptyEnter=true` 로 활성화 — 빈 마지막 줄 + Enter → trailing `\n` 제거 + `onMoveToNext` 호출 (조건: `isLastLine && lineStart == lineEnd`). Callout body 마지막 TextBlock 에서 발동 시 `onMoveToNext` → `onEscapeToNext` 체인 → Callout 외부 탈출. 활성화 흐름: `MarkdownBlockEditor.enableEnterEscape: Boolean` 파라미터 → `BlockItem` 이 Text 블록의 `TextBlockEditor` 에 `escapeOnEmptyEnter` 로 전달. Callout 의 body 호출에서만 true
 - DrawBehind: `drawBlockDecorations(blocks, config, scrollOffset, inlineCodeRanges, rawZones)` — BLOCKQUOTE 좌측 바 + HR 구분선 + inline code RoundRect 배경. **raw zone 안의 줄은 BLOCKQUOTE 좌측 바를 그리지 않음** (raw 마커가 보이는 상태에서는 좌측 바도 숨김)
 - raw zone 결정: `RawMarkdownOutputTransformation.currentRawZones` — `isRawMode=true` (block.rawMode) 면 전체 텍스트, `isFocused=true` 면 커서 줄, 그 외 빈 리스트. dissolve 된 raw TextBlock 의 경우 (Callout/Code dissolve 결과의 `> body` / ` ``` ` 텍스트) 좌측 바가 자연스럽게 숨겨짐
 
@@ -244,6 +244,7 @@ CalloutBlockEditor는 `onRegisterBottomEntryFR: (FocusRequester?) -> Unit` 콜�
 | title | ↑ | 이전 블록으로 탈출 |
 | title | ↓ | body 있으면 body 맨 앞, 없으면 다음 블록 |
 | title | Enter | body 생성/이동 (위 참고) |
+| title | Tab | Enter 와 동일 — body 생성/이동. 명시 핸들러로 가로채어 default focus traversal 우회 |
 | title | **Backspace at offset 0** | **`onDissolveSelf` → Callout 자리에 raw TextBlock(rawOrigin=CALLOUT) 으로 풀림 (dissolve 정책 v3, 섹션 10)** |
 | body | ↑(첫 줄, 위치 0) | title로 이동 |
 | body | ↓(마지막) | 다음 블록으로 탈출 |
@@ -255,6 +256,7 @@ CalloutBlockEditor는 `onRegisterBottomEntryFR: (FocusRequester?) -> Unit` 콜�
 | title | ↓ | 다음 블록으로 탈출 |
 | title | →(맨 끝) | body 있으면 body 맨 앞으로 이동 |
 | title | Enter | body 생성/이동 (위 참고) |
+| title | Tab | Enter 와 동일 — body 생성/이동. 명시 핸들러로 가로채어 default \t 입력 우회 |
 | title | **Backspace at offset 0** | **`onDissolveSelf` → Callout 자리에 raw TextBlock(rawOrigin=CALLOUT) 으로 풀림 (dissolve 정책 v3, 섹션 10)** |
 | body | ←(위치 0) | title 맨 끝으로 이동 |
 | body | ↑ | 이전 줄 있으면 줄 이동, 첫 줄이면 이전 블록으로 탈출 |
@@ -355,9 +357,11 @@ title→body 내부 이동:
 | **dissolve v3 — focus-out 후 rendering 복귀 안 됨** | `tryReparse` 의 rawMode 분기가 v2 잔재(`if (sameOrigin) return null`) 그대로 남아 focus-out 시 적용을 막았음. v3 트리거 정책에 맞춰 분기를 self-contained 처리로 정정 (마커 살아있음 → 특수 블록 변환 / 마커 깨짐 + 단일 Text → rawMode=false 교체 / 여러 블록 → 분리). (`BlockOperations.kt:172~`) |
 | **dissolve v3 — raw 블록의 ``` 가 투명/배경 처리** | `InlineStyleScanner` 의 InlineCode 매칭이 backtick 개수 검사 없이 인접 backtick 두 개를 길이 0 inline code 로 매칭 → marker(투명) 적용 + 길이 0 range 가 `inlineCodeRanges` 에 수집되어 RoundRect 배경 그려짐. fence 가드(연속 3+ backtick 시 skip) + 길이 0 가드(`close > i + 1`) 추가. (`InlineStyleScanner.kt:208~`) |
 | **dissolve v3 — focus-out reparse 시 focus 가 새 rendering 블록으로 끌려감** | `applyResult` 가 항상 `pendingFocusBlockId` 설정 → 사용자가 이미 다른 블록으로 옮긴 포커스가 새 Code/Callout/Table 블록으로 강제 이동. `BlockNavigation.onReparseSilent` 콜백 + `applyResult(requestFocus = false)` 옵션 추가. focus-out LaunchedEffect 가 silent 버전을 호출하여 사용자 포커스 위치 보존. (`MarkdownBlockEditor.kt`, `TextBlockEditor.kt`) |
-| **Block 유형 자동 격하 (Code/Callout/Table)** | Block 유형은 마커가 state 에 없고 `toMarkdown()` 시 자동 생성되므로, state 를 다 비워도 박스가 사라지지 않음 (MarkdownTextField 유형의 마커 삭제와 비대칭). `BlockNavigation.onDegradeToText` 콜백 + `BlockItem` 의 LaunchedEffect 가 모든 state 빈 상태를 감지하면 빈 일반 TextBlock 으로 교체. `hasHadContent` 가드로 새로 만들어진 빈 Block 은 격하 X. (`MarkdownBlockEditor.kt:BlockItem`) |
+| **Block 유형 state-empty 자동 격하 — 제거 (정책 정정)** | 이전에 `BlockNavigation.onDegradeToText` + `BlockItem` LaunchedEffect 로 Block 유형의 모든 state 가 비면 빈 TextBlock 으로 격하했음. 그러나 사용자가 title 을 잠깐 비운 채 다시 입력하려는 단순 편집 흐름에서도 박스가 사라지는 부작용 발생. **자동 격하의 본래 의도는 raw 블록의 마커 깨짐(`> [!note]` → `> [!note`, `\|---\|` 행 삭제 등) 을 일반 텍스트로 정리하는 것** — 이는 이미 `tryReparse` 의 rawMode 분기가 focus-out 시점에 처리. Block 유형(rawMode=false 박스) 의 state-empty 격하는 잘못된 해석이었으므로 LaunchedEffect 와 `onDegradeToText` 콜백 모두 제거. dissolve 가 필요하면 사용자가 명시적 트리거(title 위치 0 Backspace 등) 를 사용. (`MarkdownBlockEditor.kt`) |
 | **dissolve v3 — 빈 raw 블록의 transient 상태** | rawMode=true 인 블록의 텍스트를 다 지우면 시각적으로 일반 TextField 인데 내부 플래그가 살아있어 snapshotFlow 가드가 작동 중인 어색한 상태. `BlockNavigation.onClearRawMode` 콜백 + `TextBlockEditor` 의 LaunchedEffect 가 빈 상태 감지 시 즉시 `block.copy(rawMode=false, rawOrigin=null)` 로 플래그만 해제 (id/textFieldState 유지). (`MarkdownBlockEditor.kt`, `TextBlockEditor.kt`) |
 | **Embed dissolve 통합** | `RawOrigin.EMBED` 추가 + `dissolveSpecial` when 에 `is EditorBlock.Embed -> RawOrigin.EMBED`. 이전엔 `else -> return null` 로 빠져 Embed 삭제 경로가 막혀 있었음. 다음 TextBlock 위치 0 Backspace → dissolve → raw `![[xxx]]` → 다 지우면 onClearRawMode → 빈 일반 TextBlock → Backspace 로 위 블록과 병합 (다른 Block 과 동일 패턴). (`EditorBlock.kt`, `BlockOperations.kt`) |
+| **Table parser — `\|---\|` 구분자 행 필수화** | 기존 `MarkdownBlockParser` 가 `\|` 로 시작하는 줄 2개 이상이면 무조건 Table 로 인식 (구분자 행 없이도). `EditorBlock.Table.toMarkdown()` 이 항상 `\| --- \|` 자동 생성하므로, dissolve 된 raw Table 에서 사용자가 구분자 행을 지워도 focus-out 후 reparse 시 다시 Table 로 변환되며 자동으로 구분자가 부활하는 회귀가 있었음. parser 의 Table 분기에 "두 번째 줄이 `---` 포함" 조건 추가 → 구분자 없는 raw 는 일반 TextBlock 으로 처리 (`MarkdownBlockParser.kt:154~`) |
+| **TextBlock → 방향키로 다음 블록 진입** | `Key.DirectionRight` 핸들러 부재로 BasicTextField 가 cursor 를 `text.length` 에 도달시키면 그대로 멈춤 — 다음 블록으로 넘어갈 통로가 없었음. raw 블록의 multi-line 텍스트(`> [!NOTE] ...\n> body`) 에서 특히 두드러짐. ← 와 대칭으로 `Key.DirectionRight` 핸들러 추가: `sel.collapsed && sel.start == text.length` 면 `navigation.onMoveToNext()` 호출 → 다음 블록 Start 위치로 진입 (`TextBlockEditor.kt`) |
 
 ### #18-3 Callout body 유실 버그 — 해결 기록
 
@@ -443,13 +447,14 @@ EditorBlock, Parser, toMarkdown, BlockEditor, TextBlock, Callout, Code, Table, H
   - ✅ **Callout ↑ 진입 시 body 마지막**: `bottomEntryFRMap` + `onLastBlockBottomEntryRegistered` 체인으로 해결. 중첩 Callout(depth0~N)에서도 가장 깊은 body로 진입
   - ✅ **Table ↑ 진입 시 마지막 행 첫 열**: `bottomEntryFRMap`에 `focusGrid[lastRow][0]` 등록. `onRegisterBottomEntryFR` 콜백으로 `BlockItem`에서 전달 (`TableBlockEditor.kt`, `MarkdownBlockEditor.kt`)
   - ⬜ **soft wrap 줄 이동**: `isFirstLine`/`isLastLine`이 `\n` 기준이라 soft wrap 줄에서 ↑↓ 시 즉시 블록 탈출. 단순히 `textLayoutResult.getLineForOffset()` 조건 교체만으로는 해결 안 됨 — `onPreviewKeyEvent`에서 이벤트를 소비하면 BasicTextField 내부의 커서 이동이 차단되어 심각한 사이드이펙트 발생. BasicTextField의 내부 ↑↓ 처리와 블록 탈출 판단을 분리하는 별도 설계 필요
-- ~~#20 Smart Enter 블록 탈출~~ ✅ — 박스 UI 가 있는 블록(CodeBlock/Callout body)에 한해 적용. **TextBlock 에서는 미적용**.
-  - CodeBlock: 코드 입력 후 Enter(빈 줄 생성) → 빈 마지막 줄에서 Enter → trailing `\n` 제거 + 탈출 (`CodeBlockEditor.kt:57~`)
-  - Callout body: title 에서 Enter → body 생성, 빈 body 마지막 줄에서 ↓ 방향키 → `onEscapeToNext` 체인으로 Callout 외부로 이동 (방향키 경로)
-  - **TextBlock 미적용 (정정)**: TextBlock 은 박스 UI 가 없어 탈출 통로가 필요 없고, 다음 블록 이동은 ↓ 방향키로 충분. 이전엔 적용했으나 ZWSP placeholder 또는 자동 격하 결과물에서 의도치 않은 탈출 발생 → 핸들러 자체 제거 (`TextBlockEditor.kt` 의 `Key.Enter` 분기 삭제, BasicTextField 기본 동작 `\n` 추가만 남음)
-  - ZWSP 빈 줄 블록은 사용자 입력(텍스트 또는 Enter) 시 자동 제거됨 (섹션 10 ZWSP 자동 제거 정책 참고)
-  - 조건 (CodeBlock 잔존): `sel.collapsed && isLastLine && isCurrentLineEmpty`. trailing `\n` 제거: `lineStart > 0` 이면 `edit { replace(lineStart-1, lineStart, "") }` + `onMoveToNext`
+- ~~#20 Smart Enter 블록 탈출 (정책 정정 v2)~~ ✅ — 박스 UI 안에 있는 블록에 한해 적용 (CodeBlock + **Callout body 안 TextBlock**). 외부 TextBlock 은 미적용.
+  - **CodeBlock**: 코드 입력 후 Enter(빈 줄 생성) → 빈 마지막 줄에서 Enter → trailing `\n` 제거 + `onMoveToNext` (`CodeBlockEditor.kt:57~`)
+  - **Callout body 안 TextBlock**: 빈 마지막 줄 + Enter → trailing `\n` 제거 + `onMoveToNext`. body 안 다음 블록이 있으면 그쪽으로, 마지막 블록이면 `onEscapeToNext` 체인 → Callout 외부 탈출. 활성화 흐름: `CalloutBlockEditor` 가 body `MarkdownBlockEditor` 를 호출할 때 `enableEnterEscape=true` → `BlockItem` 이 Text 블록의 `TextBlockEditor` 에 `escapeOnEmptyEnter=true` 로 전달 → `Key.Enter` 분기 활성
+  - **외부 TextBlock 미적용**: 박스 UI 가 없어 탈출 통로 불필요. 다음 블록 이동은 ↓ 방향키로 충분. 이전 a91f994 에서 모든 TextBlock 에 적용했으나 ZWSP placeholder / 자동 격하 결과물에서 의도치 않은 탈출 발생 → 외부 호출에서는 `enableEnterEscape=false` (default) 로 비활성
+  - 조건: `sel.collapsed && isLastLine && lineStart == lineEnd`. trailing `\n` 제거: `lineStart > 0` 이면 `edit { replace(lineStart-1, lineStart, "") }` + `onMoveToNext`
   - **`isCurrentLineEmpty` 판정**: `lineStart == lineEnd` (줄의 시작 == 줄의 끝). 이전엔 `sel.start == lineStart` 만 봐서 "내용 있는 줄의 맨 앞"도 빈 줄로 오판하는 버그가 있었음. 수정 후 정상
+  - ZWSP 빈 줄 블록은 사용자 입력(텍스트 또는 Enter) 시 자동 제거됨 (섹션 10 ZWSP 자동 제거 정책 참고)
+  - 회귀 이력: dissolve v3 작업 중 외부 TextBlock 에서의 부작용을 막기 위해 `Key.Enter` 분기를 제거했었으나, Callout body 의 a91f994 동작도 함께 사라지는 회귀 발생. 위와 같이 `enableEnterEscape` 로 컨텍스트별 분기로 복원
 
 ### Phase 3: 고급 기능
 
@@ -464,9 +469,44 @@ EditorBlock, Parser, toMarkdown, BlockEditor, TextBlock, Callout, Code, Table, H
 
 ## 6. Cross-Block Selection (Phase 3, #21)
 
-문서 레벨 가상 selection: `DocumentSelection(startBlockId, startOffset, endBlockId, endOffset)`
-시각: 시작 블록 네이티브 selection, 중간 블록 DrawBehind 전체, 끝 블록 DrawBehind 부분.
-복사: 각 블록 `toMarkdown()` 범위 추출.
+**상세 설계는 `SELECTION.md` 로 분리.** 본 섹션은 요약만 유지.
+
+### 6.1 개요
+
+블록 경계를 넘는 selection / 클립보드 / 키보드 네비게이션 도입. 5 phase 로드맵으로 점진 구현.
+
+- **Phase 1**: 모델(`DocumentSelection`) + Ctrl+A/C + Shift+↑↓ + Esc + 시각화 (다음 PR)
+- **Phase 2**: 마우스 드래그 selection + auto-scroll
+- **Phase 3**: 잘라내기/붙여넣기 (`Ctrl+X/V`) + selection-replace
+- **Phase 4**: 글자/단어/줄/페이지 단위 Shift+화살표
+- **Phase 5**: Table/CodeBlock cross-selection 정책 확정 (현재 atomic)
+
+### 6.2 핵심 모델 (`DocumentSelection`)
+
+```kotlin
+sealed class DocumentSelection {
+    data object None : DocumentSelection()
+    data class Multi(val anchor: SelectionEndpoint, val focus: SelectionEndpoint) : DocumentSelection()
+}
+
+data class SelectionEndpoint(
+    val containerPath: List<String>,  // 최상위 → 가장 가까운 컨테이너까지의 id chain
+    val blockId: String,
+    val offset: Int,
+)
+```
+
+### 6.3 atomic 정책
+
+- `Text` 외부 — 부분 선택 가능
+- `Callout` — 외부 atomic (title+body 통째), 내부 cross-selection 가능 (재귀)
+- `Code/Table/Embed/HR` — atomic (Phase 1 한정)
+
+### 6.4 컨테이너 횡단
+
+`Multi.anchor` 와 `focus` 의 `containerPath` 가 달라도 허용. selection 이 컨테이너 밖으로 확장되면 그 Callout 은 atomic 으로 통째 들어감.
+
+상세 (모델 비교 함수, 시각화 정책, clipboard 통합, Phase 별 작업 목록) 은 `SELECTION.md` 참조.
 
 ---
 
@@ -605,17 +645,21 @@ raw 블록은 시각적으로 MarkdownTextField 유형이지만 내부 플래그
 
 #### 자동 격하 / 자동 해제 정책
 
-두 유형 사이의 비대칭(Block 유형이 빈 상태로 잔류) 을 메우기 위해 다음 자동 변환이 적용됨:
+두 유형 사이의 비대칭을 메우기 위해 다음 자동 변환이 적용됨. **격하의 본래 의도는 raw 블록의 마커가 깨졌을 때** (예: Callout dissolve raw 의 `> [!note]` → `> [!note` 로 ] 가 삭제, Table dissolve raw 의 `|---|` 구분자 행 삭제) **일반 텍스트로 정리** 하는 것. Block 유형(rawMode=false 인 박스 UI) 자체에서 state 가 빈 순간을 트리거로 잡으면 사용자가 단순 편집 중에도 박스가 사라지는 문제가 발생하므로 그런 트리거는 두지 않는다.
 
-**1. Block 유형 자동 격하 (`onDegradeToText`)**
+**1. raw 블록 마커 깨짐 → 자동 격하 (focus-out 트리거, `tryReparse` 의 rawMode 분기)**
 
-| Block | 트리거 조건 (모두 빈 상태) | 결과 |
-|---|---|---|
-| Code | `codeState.text.isEmpty()` | 같은 자리에 빈 일반 TextBlock 생성 + 새 TextBlock 으로 focus 이동 |
-| Callout | `titleState.text.isEmpty()` && `bodyBlocks` 모두 빈 Text | 동일 |
-| Table | `headerStates` + `rowStates` 모든 셀의 text 가 빈 상태 | 동일 |
+dissolve 된 raw TextBlock(`rawMode=true, rawOrigin=...`) 에서 사용자가 마커를 손상시킨 경우, focus-out 시 `BlockOperations.tryReparse` 의 rawMode 분기가 자체 적용:
 
-가드: `hasHadContent` 플래그 — 한 번이라도 내용이 있었던 적이 있을 때만 트리거. 새로 생성된 빈 Block (사용자가 ` ``` ` / `> [!NOTE]` / `|...|` 입력으로 막 변환된 직후 빈 상태) 은 격하되지 않음. 구현: `MarkdownBlockEditor.kt` 의 `BlockItem` 안 LaunchedEffect.
+| 조건 (parsed 결과) | 결과 |
+|---|---|
+| 마커 살아있음 (특수 블록 1개로 파싱됨) | 그 특수 블록으로 교체 (rendering 복귀) |
+| 마커 깨짐 (단일 일반 Text 로 파싱됨) | `rawMode=false` 인 새 Text 로 교체 (자동 해제) |
+| 마커 부분 깨짐 (여러 블록으로 파싱됨) | 일반 분리 |
+
+이 흐름이 사용자가 의도한 격하 정책의 본체. focus-out 시점에서만 발동하고, 편집 중에는 `snapshotFlow` 의 rawMode 가드로 reparse 가 차단되므로 박스가 갑자기 사라지지 않음. 상세는 본 섹션 10 의 트리거 매트릭스.
+
+**Block 유형(rawMode=false) 자체의 state-empty 자동 격하는 두지 않음.** 사용자가 title 만 잠깐 비운 채 다시 입력하려는 경우에도 박스가 사라지는 부작용이 있어 제거됨. 빈 박스 자체는 그대로 유지하고, dissolve 가 필요하면 사용자가 명시적 트리거(`title 위치 0 Backspace` 등) 를 사용한다.
 
 **2. raw 블록 자동 해제 (`onClearRawMode`)**
 
