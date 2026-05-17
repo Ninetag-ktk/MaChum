@@ -283,7 +283,9 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     private suspend fun readConfig(): ProjectConfig? = withContext(Dispatchers.IO) {
         try {
             val configFile = _bookmarks.value.projectData!!.list().find { it.name == ".machum.json" } ?: return@withContext null
+            println("configFile: $configFile")
             val content = configFile.readString()
+            println("content: $content")
             if (content.isBlank()) return@withContext null
 
             Json.decodeFromString(ProjectConfig.serializer(), content)
@@ -373,10 +375,13 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      */
     suspend fun setWorkflow() = withContext(Dispatchers.IO) {
         val config = readConfig()
+        println("configData : $config")
         if (config != null) {
             val workflowFile = getWorkflow(config.workflow) ?: return@withContext
+            println("workflowFile: $workflowFile")
             if (workflowFile.getLastModified() != workflowFile.getLastModified()) _needUpdateWorkflow.value = true
             _workflow.value = workflowParser.parse(workflowFile.readString())
+            println("workflowStatic : $workflow")
         } else {
             if (_workflowList.value.size == 1) {
                 val workflow = _workflowList.value.first()

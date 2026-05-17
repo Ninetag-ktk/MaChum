@@ -55,16 +55,18 @@
 
 ### Phase 3: 고급 기능
 - [ ] **#21 Cross-block selection** — 설계 완료 (`SELECTION.md`). 5 phase 로드맵.
-  - **Phase 1 (다음 PR)**: 모델 + Ctrl+A/C + Shift+↑↓ + Esc + 시각화
-    - [ ] `state/DocumentSelection.kt` 신규 — `DocumentSelection` sealed class + `SelectionEndpoint` + `isAtomic` + `normalize` + `extractMarkdown`
-    - [ ] `MarkdownBlockEditor` 에 `documentSelection: MutableState<DocumentSelection>` + `containerPath: List<String>` 파라미터 추가, 재귀 자식에 전파
-    - [ ] BlockNavigation 에 `onExtendSelectionToPrevious/Next` 추가
-    - [ ] `BlockItem` 시각화 — selection.value 가 포함하는 atomic 블록 위에 `Modifier.drawBehind` 반투명 배경. endpoint 블록은 native TextFieldState selection 동기화
-    - [ ] `MarkdownBlockTextField` 최상단 키 핸들러 — Ctrl+A (전체 선택), Ctrl+C (clipboard write), Esc (None 리셋)
-    - [ ] `TextBlockEditor` 의 Shift+↑/↓ 트리거
-    - [ ] `CalloutBlockEditor` 재귀 path 전파 + title/body 의 Shift+↑/↓ endpoint 처리
-    - [ ] `LocalClipboardManager` 통합
-    - [ ] 빌드 검증 + 시나리오 A~F 수동 검증 (`SELECTION.md` 의 Phase 1 시나리오)
+  - **Phase 1 Step A (완료)**: 모델 + Ctrl+A/C + Esc + 시각화
+    - [x] `state/DocumentSelection.kt` 신규 — `DocumentSelection` sealed class + `SelectionEndpoint` + `isAtomic` + `normalize` + `extractMarkdown` + private 헬퍼
+    - [x] `service/MarkdownStyleConfig.kt` 에 `selectionAccent: Color` 추가
+    - [x] `MarkdownBlockEditor` 에 `documentSelection: MutableState<DocumentSelection>?` + `containerPath: List<String>` 파라미터, `isBlockSelected(index)` 헬퍼, `BlockWithNav` 의 `Box(Modifier.background(selectionAccent))` 시각화
+    - [x] `MarkdownBlockTextField` 최상단 키 핸들러 — Ctrl/Cmd+A (전체), Ctrl/Cmd+C (`LocalClipboardManager.setText`), Esc (None 리셋), 외부 value 변경 시 selection 리셋
+    - [x] 빌드 검증 (`:composeApp:compileKotlinJvm` BUILD SUCCESSFUL, deprecation 경고 1건 — `LocalClipboardManager` → `LocalClipboard` 마이그레이션 권장)
+    - [ ] 수동 검증 (SELECTION.md 의 Step A 검증 시나리오 1~5)
+  - **Phase 1 Step B**: 분리 + Shift+↑/↓ 확장 + Callout 정책 (옵션 C v2 — SELECTION.md 2.4)
+    - [x] **B-1 Refactor**: `ui/selection/SelectionUiHelpers.kt` 신규 (시각화 / 단축키 / 확장 / focus reset / 유틸 5 섹션). `MarkdownBlockTextField`/`MarkdownBlockEditor` 의 selection 코드를 헬퍼 호출로 단순화. CompositionLocal `LocalDocumentSelection` + `Modifier.resetDocumentSelectionOnFocus()` 추가 (focus 이동 자동 해제)
+    - [x] **B-2b Callout title Shift+↑/↓ → Callout 자체만 atomic**: `BlockNavigation.onSelectSelfAsAtomic` + `selectBlockAsAtomic` 헬퍼. `CalloutBlockEditor` Standard/Dialogue title 의 Shift 분기 변경
+    - [ ] **B-2a 재작업 (외부 → atomic 진입 시 atomic 만 selection)**: 현재 헬퍼가 다음/이전 블록이 atomic 여도 외부 Text 의 anchor 보존 → 외부 + atomic 모두 selected (사용자 의도와 다름). `extendSelectionToPrevious/Next` 안에서 `isAtomic(next/prevBlock)` 검사 → atomic 이면 `selectBlockAsAtomic` 분기. SELECTION.md 9.4 참조
+    - [ ] **B-2c body 안 cross-selection + 경계 박스 탈출**: `CalloutBlockEditor` 가 body `MarkdownBlockEditor` 에 `documentSelection`/`containerPath` 전파. body 첫 블록 첫 줄 + Shift+↑ / 마지막 블록 마지막 줄 + Shift+↓ → `onEscapeSelection*` 콜백 → 외부 `onSelectSelfAsAtomic` 발동. body 안 중간 위치는 body 내 cross-selection. **현재 body 의 Shift+↑ 가 전혀 작동 안 함** (documentSelection 미전달). SELECTION.md 9.4 참조
   - **Phase 2**: 마우스 드래그 selection + auto-scroll
   - **Phase 3**: 잘라내기/붙여넣기 (Ctrl+X/V) + selection-replace
   - **Phase 4**: 글자/단어/줄/페이지 단위 Shift+화살표

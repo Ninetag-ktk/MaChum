@@ -4,6 +4,7 @@ import com.ninetag.machum.markdown.service.MarkdownStyleConfig
 import com.ninetag.machum.markdown.state.EditorBlock
 import com.ninetag.machum.markdown.ui.BlockNavigation
 import com.ninetag.machum.markdown.ui.MarkdownBlockEditor
+import com.ninetag.machum.markdown.ui.selection.resetDocumentSelectionOnFocus
 
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.LaunchedEffect
@@ -15,6 +16,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
@@ -160,7 +162,11 @@ private fun StandardCallout(
                 true
             }
             Key.DirectionDown -> {
-                if (block.bodyBlocks.isNotEmpty()) {
+                if (event.isShiftPressed) {
+                    // Shift+↓ from title → Callout 자체만 atomic selection (외부 다른 블록 포함 X).
+                    // SELECTION.md 2.4 옵션 C B 정책 — "박스 탈출"
+                    navigation.onSelectSelfAsAtomic()
+                } else if (block.bodyBlocks.isNotEmpty()) {
                     focusBodyStart()
                 } else {
                     navigation.onMoveToNext()
@@ -168,7 +174,12 @@ private fun StandardCallout(
                 true
             }
             Key.DirectionUp -> {
-                navigation.onMoveToPrevious()
+                if (event.isShiftPressed) {
+                    // Shift+↑ from title → Callout 자체만 atomic selection (외부 다른 블록 포함 X)
+                    navigation.onSelectSelfAsAtomic()
+                } else {
+                    navigation.onMoveToPrevious()
+                }
                 true
             }
             Key.Backspace -> {
@@ -206,6 +217,7 @@ private fun StandardCallout(
                 textStyle = textStyle.merge(TextStyle(fontWeight = FontWeight.Bold)),
                 modifier = Modifier.weight(1f)
                     .focusRequester(titleFocusRequester)
+                    .resetDocumentSelectionOnFocus()
                     .then(titleKeyHandler),
                 lineLimits = TextFieldLineLimits.SingleLine,
                 cursorBrush = cursorBrush,
@@ -309,8 +321,24 @@ private fun DialogueCallout(
                     true
                 } else false
             }
-            Key.DirectionDown -> { navigation.onMoveToNext(); true }
-            Key.DirectionUp -> { navigation.onMoveToPrevious(); true }
+            Key.DirectionDown -> {
+                if (event.isShiftPressed) {
+                    // Shift+↓ from DL title → Callout 자체만 atomic selection (외부 다른 블록 포함 X)
+                    navigation.onSelectSelfAsAtomic()
+                } else {
+                    navigation.onMoveToNext()
+                }
+                true
+            }
+            Key.DirectionUp -> {
+                if (event.isShiftPressed) {
+                    // Shift+↑ from DL title → Callout 자체만 atomic selection (외부 다른 블록 포함 X)
+                    navigation.onSelectSelfAsAtomic()
+                } else {
+                    navigation.onMoveToPrevious()
+                }
+                true
+            }
             Key.Backspace -> {
                 // dissolve 트리거 2: Callout 자리에 raw markdown TextBlock(rawMode=true)
                 if (sel.collapsed && sel.start == 0) {
@@ -338,6 +366,7 @@ private fun DialogueCallout(
                 .widthIn(max = textStyle.fontSize.value.dp * 5)
                 .padding(end = 4.dp)
                 .focusRequester(titleFocusRequester)
+                .resetDocumentSelectionOnFocus()
                 .then(titleKeyHandler),
             lineLimits = TextFieldLineLimits.MultiLine(maxHeightInLines = 2),
             cursorBrush = cursorBrush,

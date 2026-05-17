@@ -3,12 +3,20 @@ package com.ninetag.machum.markdown.ui
 import com.ninetag.machum.markdown.service.MarkdownStyleConfig
 import com.ninetag.machum.markdown.state.BlockOperations
 import com.ninetag.machum.markdown.state.DissolveResult
+import com.ninetag.machum.markdown.state.DocumentSelection
 import com.ninetag.machum.markdown.state.EditorBlock
 import com.ninetag.machum.markdown.state.SplitResult
+import com.ninetag.machum.markdown.state.normalize
 import com.ninetag.machum.markdown.ui.block.CalloutBlockEditor
 import com.ninetag.machum.markdown.ui.block.CodeBlockEditor
 import com.ninetag.machum.markdown.ui.block.TableBlockEditor
+import com.ninetag.machum.markdown.ui.selection.extendSelectionToNext
+import com.ninetag.machum.markdown.ui.selection.extendSelectionToPrevious
+import com.ninetag.machum.markdown.ui.selection.isBlockInSelection
+import com.ninetag.machum.markdown.ui.selection.selectBlockAsAtomic
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
@@ -75,11 +83,26 @@ data class BlockNavigation(
     /** raw 블록(rawMode=true) 의 텍스트가 빈 상태가 되면 즉시 rawMode 해제.
      *  block.id/textFieldState 유지하므로 cursor/focus 보존 (transient 상태 정리) */
     val onClearRawMode: () -> Unit = {},
+    /**
+     * Shift+↑ 등으로 현재 블록의 첫 위치에서 위쪽으로 selection 확장 요청.
+     * Phase 1 Step B: 현재 블록을 atomic 으로 selection 에 포함 + anchor 가 없으면 anchor=현재 끝,
+     * 그 다음 focus 를 이전 블록으로 확장. SELECTION.md 참조
+     */
+    val onExtendSelectionToPrevious: () -> Unit = {},
+    /** Shift+↓ 등으로 현재 블록의 끝 위치에서 아래쪽으로 selection 확장 요청 */
+    val onExtendSelectionToNext: () -> Unit = {},
+    /**
+     * Callout 의 title/body 경계에서 외부로 "박스 탈출" 시 호출.
+     * 현재 블록 (Callout) 자체만 atomic selection 으로 documentSelection 갱신.
+     * 외부 다른 블록은 selection 에 포함 X. SELECTION.md 2.4 옵션 C 정책.
+     */
+    val onSelectSelfAsAtomic: () -> Unit = {},
 )
 
 /**
  * 블록 리스트를 렌더링하는 에디터 Composable.
  */
+@Suppress("RememberInComposition")
 @Composable
 internal fun MarkdownBlockEditor(
     blocks: List<EditorBlock>,
@@ -104,6 +127,16 @@ internal fun MarkdownBlockEditor(
      * CLAUDE_sub.md #20 정책 v2.
      */
     enableEnterEscape: Boolean = false,
+    /**
+     * Cross-block selection 상태. 최상위에서 호이스팅한 [DocumentSelection] 을 공유. Phase 1.
+     * null 이면 selection 기능 비활성 (재귀 호출에서 부모와 같은 인스턴스를 항상 전달).
+     */
+    documentSelection: androidx.compose.runtime.MutableState<com.ninetag.machum.markdown.state.DocumentSelection>? = null,
+    /**
+     * 이 컨테이너의 path — 최상위는 empty, Callout body 호출 시 ["calloutId"] 같이 누적.
+     * SelectionEndpoint 생성 시 사용. SELECTION.md 참조.
+     */
+    containerPath: List<String> = emptyList(),
 ) {
     // LazyColumn 스크롤 상태 (화면 밖 블록에 포커스 시 스크롤 필요)
     val lazyListState = rememberLazyListState()
@@ -248,6 +281,10 @@ internal fun MarkdownBlockEditor(
         focusRequestCounter++
     }
 
+    // Cross-block selection 시각화 (Phase 1) — 정규화는 한 번만 계산 후 isBlockInSelection 헬퍼에 전달.
+    // 재귀 Callout body 안 selection 은 Step B 의 path 전파 완료 후 자연스럽게 동작.
+    val normalizedSelection = (documentSelection?.value as? DocumentSelection.Multi)?.normalize(blocks)
+
     @Composable
     fun BlockWithNav(index: Int, block: EditorBlock) {
         val fr = focusRequesterMap[block.id] ?: remember { FocusRequester() }
@@ -350,8 +387,44 @@ internal fun MarkdownBlockEditor(
                     onBlocksChanged(newBlocks)
                 }
             },
+            onExtendSelectionToPrevious = {
+                extendSelectionToPrevious(
+                    currentBlock = currentBlocks[currentIndex],
+                    currentIndex = currentIndex,
+                    blocksInContainer = currentBlocks,
+                    containerPath = containerPath,
+                    documentSelection = documentSelection,
+                )
+            },
+            onExtendSelectionToNext = {
+                extendSelectionToNext(
+                    currentBlock = currentBlocks[currentIndex],
+                    currentIndex = currentIndex,
+                    blocksInContainer = currentBlocks,
+                    containerPath = containerPath,
+                    documentSelection = documentSelection,
+                )
+            },
+            onSelectSelfAsAtomic = {
+                selectBlockAsAtomic(
+                    block = currentBlocks[currentIndex],
+                    containerPath = containerPath,
+                    documentSelection = documentSelection,
+                )
+            },
         )
 
+        val selected = isBlockInSelection(
+            blockIndex = index,
+            blocksInContainer = blocks,
+            containerPath = containerPath,
+            normalizedSelection = normalizedSelection,
+        )
+        val itemBackground = if (selected) {
+            Modifier.background(styleConfig.selectionAccent)
+        } else Modifier
+
+        Box(modifier = itemBackground) {
         BlockItem(
             block = block,
             styleConfig = styleConfig,
@@ -376,6 +449,7 @@ internal fun MarkdownBlockEditor(
                 }
             },
         )
+        }  // Box (selection 배경 wrapping)
     }
 
     if (isNested) {

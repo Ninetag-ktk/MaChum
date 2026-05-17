@@ -54,6 +54,8 @@ data class MarkdownStyleConfig(
     val blockTransparent: SpanStyle = SpanStyle(color = Color.Transparent),
     val codeBlockBackground: Color = Color(0x11000000),
     val calloutStyles: Map<String, CalloutDecorationStyle> = defaultCalloutStyles(),
+    /** Cross-block selection 의 atomic 블록 배경. M3 테마에서는 primary.copy(alpha=0.2) 등으로 덮어씀 */
+    val selectionAccent: Color = Color(0x33458EFF),
 ) {
     fun headingStyle(level: Int): SpanStyle = when (level) {
         1 -> h1; 2 -> h2; 3 -> h3; 4 -> h4; 5 -> h5; else -> h6

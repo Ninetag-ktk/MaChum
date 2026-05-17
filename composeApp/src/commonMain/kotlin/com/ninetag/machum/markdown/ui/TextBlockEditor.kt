@@ -5,6 +5,7 @@ import com.ninetag.machum.markdown.service.util.handleEditorKeyEvent
 import com.ninetag.machum.markdown.state.EditorInputTransformation
 import com.ninetag.machum.markdown.state.RawMarkdownOutputTransformation
 import com.ninetag.machum.markdown.state.EditorBlock
+import com.ninetag.machum.markdown.ui.selection.resetDocumentSelectionOnFocus
 
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.text.BasicTextField
@@ -25,6 +26,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
@@ -207,8 +209,13 @@ internal fun TextBlockEditor(
                     // sel.start == 0이면 무조건 첫 줄 (leading \n이 있어도)
                     val isFirstLine = sel.start == 0 || text.lastIndexOf('\n', sel.start - 1) == -1
                     if (isFirstLine) {
-                        val cursorX = textLayoutResult?.getHorizontalPosition(sel.start, usePrimaryDirection = true) ?: 0f
-                        navigation.onMoveToPreviousWithX(cursorX)
+                        if (event.isShiftPressed) {
+                            // Shift+↑: 블록 단위 selection 확장 (Phase 1 Step B)
+                            navigation.onExtendSelectionToPrevious()
+                        } else {
+                            val cursorX = textLayoutResult?.getHorizontalPosition(sel.start, usePrimaryDirection = true) ?: 0f
+                            navigation.onMoveToPreviousWithX(cursorX)
+                        }
                         true
                     } else false
                 } else false
@@ -218,8 +225,13 @@ internal fun TextBlockEditor(
                     val text = block.textFieldState.text.toString()
                     val isLastLine = text.indexOf('\n', sel.start) == -1
                     if (isLastLine) {
-                        val cursorX = textLayoutResult?.getHorizontalPosition(sel.start, usePrimaryDirection = true) ?: 0f
-                        navigation.onMoveToNextWithX(cursorX)
+                        if (event.isShiftPressed) {
+                            // Shift+↓: 블록 단위 selection 확장 (Phase 1 Step B)
+                            navigation.onExtendSelectionToNext()
+                        } else {
+                            val cursorX = textLayoutResult?.getHorizontalPosition(sel.start, usePrimaryDirection = true) ?: 0f
+                            navigation.onMoveToNextWithX(cursorX)
+                        }
                         true
                     } else false
                 } else false
@@ -252,6 +264,7 @@ internal fun TextBlockEditor(
             .onFocusChanged { focusState ->
                 isFocused = focusState.isFocused
             }
+            .resetDocumentSelectionOnFocus()
             .drawBehind {
                 val layout = textLayoutResult ?: return@drawBehind
                 drawBlockDecorations(

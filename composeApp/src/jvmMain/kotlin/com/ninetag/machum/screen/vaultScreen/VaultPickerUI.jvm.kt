@@ -48,6 +48,7 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.rememberWindowState
 import com.ninetag.machum.external.FileManager
+import com.ninetag.machum.theme.AppTheme
 import io.github.vinceglb.filekit.FileKit
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.dialogs.openDirectoryPicker
@@ -58,16 +59,18 @@ import org.koin.compose.koinInject
 class DesktopVaultPickerUI : VaultPickerUI {
     @Composable
     override fun Show(reset: () -> Unit) {
-        Window(
-            onCloseRequest = { reset() },
-            state = rememberWindowState(
-                width = 420.dp,
-                height = 560.dp,
-                position = WindowPosition(Alignment.Center),
-            ),
-            resizable = false,
-        ) {
-            DesktopVaultPickerContainer(reset = reset)
+        AppTheme {
+            Window(
+                onCloseRequest = { reset() },
+                state = rememberWindowState(
+                    width = 420.dp,
+                    height = 560.dp,
+                    position = WindowPosition(Alignment.Center),
+                ),
+                resizable = false,
+            ) {
+                DesktopVaultPickerContainer(reset = reset)
+            }
         }
     }
 
@@ -98,6 +101,7 @@ fun DesktopVaultPickerContainer(
                 text = "맞춤",
                 fontSize = 48.sp,
                 fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
             )
             Text(
                 text = "글쓰기 앱",
@@ -151,11 +155,15 @@ private fun Menu(
                     Text(
                         text = "새 보관함 생성",
                         modifier = Modifier.weight(1f),
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                     Button(
                         onClick = onCreateMenuClicked,
                     ) {
-                        Text("생성")
+                        Text(
+                            text = "생성",
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
                     }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.primaryContainer)
@@ -166,6 +174,7 @@ private fun Menu(
                     Text(
                         text = "보관함 열기",
                         modifier = Modifier.weight(1f),
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                     Button(
                         onClick = { scope.launch { fileManager.pickVault()?.let { reset() } } },
@@ -174,7 +183,11 @@ private fun Menu(
                             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                         )
                     ) {
-                        Text("열기")
+                        Text(
+                            text = "열기",
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+
+                        )
                     }
                 }
             }
@@ -209,8 +222,12 @@ private fun Create(
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "BackIcon",
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
-                Text("이전으로 돌아가기")
+                Text(
+                    text = "이전으로 돌아가기",
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
             }
         }
         Surface(
@@ -230,6 +247,7 @@ private fun Create(
                     Text(
                         text = "보관함 이름",
                         modifier = Modifier.weight(1f),
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                     val interactionSource = remember { MutableInteractionSource() }
                     BasicTextField(
@@ -276,6 +294,7 @@ private fun Create(
                     ) {
                         Text(
                             text = "위치",
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
                         )
                         Text(
                             text = parentDirectory?.path ?: "새 보관함의 위치를 정합니다",
@@ -283,6 +302,7 @@ private fun Create(
                             textAlign = TextAlign.End,
                             overflow = TextOverflow.Ellipsis,
                             maxLines = 1,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
                         )
                     }
                     Button(
@@ -292,7 +312,10 @@ private fun Create(
                             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                         )
                     ) {
-                        Text("탐색")
+                        Text(
+                            text = "탐색",
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
                     }
                 }
             }
@@ -307,7 +330,10 @@ private fun Create(
             modifier = Modifier.wrapContentWidth(),
             enabled = parentDirectory != null && vaultName.isNotBlank(),
         ) {
-            Text("Create")
+            Text(
+                text = "Create",
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
         }
     }
 }

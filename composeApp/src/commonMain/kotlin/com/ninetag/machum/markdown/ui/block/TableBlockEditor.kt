@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import com.ninetag.machum.markdown.ui.selection.resetDocumentSelectionOnFocus
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.material.icons.Icons
@@ -210,6 +211,7 @@ internal fun TableBlockEditor(
                                 .weight(1f)
                                 .then(cellKeyHandler(0, col, cellState))
                                 .focusRequester(focusGrid[0][col])
+                                .resetDocumentSelectionOnFocus()
                                 .padding(horizontal = 6.dp, vertical = 4.dp),
                             textStyle = textStyle.merge(TextStyle(fontWeight = FontWeight.Bold)),
                             cursorBrush = cursorBrush,
@@ -240,6 +242,7 @@ internal fun TableBlockEditor(
                                     .weight(1f)
                                     .then(cellKeyHandler(gridRow, col, cellState))
                                     .focusRequester(focusGrid[gridRow][col])
+                                    .resetDocumentSelectionOnFocus()
                                     .padding(horizontal = 6.dp, vertical = 4.dp),
                                 textStyle = textStyle,
                                 cursorBrush = cursorBrush,

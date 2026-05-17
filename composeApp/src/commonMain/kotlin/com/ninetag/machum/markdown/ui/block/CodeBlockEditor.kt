@@ -3,6 +3,7 @@ package com.ninetag.machum.markdown.ui.block
 import com.ninetag.machum.markdown.service.MarkdownStyleConfig
 import com.ninetag.machum.markdown.state.EditorBlock
 import com.ninetag.machum.markdown.ui.BlockNavigation
+import com.ninetag.machum.markdown.ui.selection.resetDocumentSelectionOnFocus
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -99,6 +100,7 @@ internal fun CodeBlockEditor(
         modifier = modifier
             .fillMaxWidth()
             .focusRequester(focusRequester)
+            .resetDocumentSelectionOnFocus()
             .background(styleConfig.codeBlockBackground, RoundedCornerShape(8.dp))
             .padding(12.dp)
             .then(keyHandler),

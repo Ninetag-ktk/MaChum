@@ -27,7 +27,6 @@ fun App() {
     val bookmark by fileManager.bookmarks.collectAsState()
     val workflowList by fileManager.workflowList.collectAsState()
     val workflow by fileManager.workflow.collectAsState()
-    val scope = rememberCoroutineScope()
 
     var showVaultPicker by remember { mutableStateOf(false) }
     var showWorkflowManagement by remember { mutableStateOf(false) }
@@ -45,7 +44,7 @@ fun App() {
                     workflowList.isEmpty() || showWorkflowManagement -> { WorkflowScreen(show = showWorkflowManagement, onDismiss = { showWorkflowManagement = false }) }
                     bookmark.projectData == null -> { ProjectSelectionScreen() }
                     workflow.isEmpty() -> { WorkflowSelectionScreen() }
-                    bookmark.fileData == null -> { scope.launch { fileManager.setFile(bookmark.projectData!!) } }
+                    bookmark.fileData == null -> { LaunchedEffect(bookmark.projectData) { fileManager.setFile(bookmark.projectData!!) } }
                     else -> { MainScreen() }
                 }
             }

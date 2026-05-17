@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ninetag.machum.external.FileManager
 import com.ninetag.machum.screen.common.paddingDefaultHorizontal
+import com.ninetag.machum.theme.AppTheme
 import io.github.vinceglb.filekit.FileKit
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.dialogs.openDirectoryPicker
@@ -99,6 +100,7 @@ private fun Menu(
             text = bookmark.value.vaultData?.nameWithoutExtension ?: "맞춤",
             fontSize = 48.sp,
             fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onPrimaryContainer,
         )
         Text(
             text = bookmark.value.vaultData?.path ?: "글쓰기 앱",
@@ -115,14 +117,17 @@ private fun Menu(
             Icon(
                 imageVector = Icons.Filled.AddCircleOutline,
                 contentDescription = "CreateVaultIcon",
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
             )
             Text(
                 text = "Create new vault",
                 modifier = Modifier.weight(1f),
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
             )
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.NavigateNext,
                 contentDescription = "SelectMenu",
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
             )
         }
         Row(
@@ -133,14 +138,17 @@ private fun Menu(
             Icon(
                 imageVector = Icons.Filled.Folder,
                 contentDescription = "OpenVaultIcon",
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
             )
             Text(
                 text = "Open vault",
                 modifier = Modifier.weight(1f),
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
             )
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.NavigateNext,
                 contentDescription = "SelectMenu",
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
             )
         }
         HorizontalDivider()
@@ -172,6 +180,7 @@ private fun Create(
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                 contentDescription = "BackIcon",
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
             )
             Text("Create new vault",)
         }
@@ -181,14 +190,21 @@ private fun Create(
             value = vaultName,
             onValueChange = { vaultName = it },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("Vault Name") },
-            placeholder = { Text("Enter vaultName") },
+            label = { Text(
+                text = "Vault Name",
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+            ) },
+            placeholder = { Text(
+                text = "Enter vaultName",
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.5f)
+            ,) },
             trailingIcon = {
                 IconButton(
                     onClick = { vaultName = "" }) {
                     Icon(
                         imageVector = Icons.Filled.Cancel,
                         contentDescription = "CancelValue",
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                 }
             },
@@ -231,7 +247,10 @@ private fun Create(
             modifier = Modifier.wrapContentWidth(),
             enabled = parentDirectory != null && vaultName.isNotBlank(),
         ) {
-            Text("Create")
+            Text(
+                text = "Create",
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
         }
     }
 }
