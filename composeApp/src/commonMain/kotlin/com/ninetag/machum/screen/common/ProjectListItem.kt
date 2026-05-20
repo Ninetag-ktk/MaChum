@@ -9,7 +9,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -19,7 +18,6 @@ import androidx.compose.ui.unit.dp
 import com.ninetag.machum.external.FileManager
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.nameWithoutExtension
-import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
 
 @Composable
@@ -28,7 +26,6 @@ internal fun ProjectListItem(
     project: PlatformFile
 ) {
     val fileManager = koinInject<FileManager>()
-    val scope = rememberCoroutineScope()
     var showContextMenu by remember { mutableStateOf(false) }
     var menuPosition by remember { mutableStateOf(Offset.Zero) }
 
@@ -38,11 +35,7 @@ internal fun ProjectListItem(
         CustomListItem(
             selected = isSelected,
             isLongPressed = showContextMenu,
-            onClick = {
-                scope.launch {
-                    fileManager.pickProject(project = project)
-                }
-            },
+            onClick = { fileManager.pickProject(project = project) },
             onContextMenu = { offset ->
                 menuPosition = offset
                 showContextMenu = true

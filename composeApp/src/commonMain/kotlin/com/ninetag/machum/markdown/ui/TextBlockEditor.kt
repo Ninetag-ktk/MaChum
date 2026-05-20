@@ -264,7 +264,7 @@ internal fun TextBlockEditor(
             .onFocusChanged { focusState ->
                 isFocused = focusState.isFocused
             }
-            .resetDocumentSelectionOnFocus()
+            .resetDocumentSelectionOnFocus(block.id)
             .drawBehind {
                 val layout = textLayoutResult ?: return@drawBehind
                 drawBlockDecorations(

@@ -475,11 +475,11 @@ EditorBlock, Parser, toMarkdown, BlockEditor, TextBlock, Callout, Code, Table, H
 
 블록 경계를 넘는 selection / 클립보드 / 키보드 네비게이션 도입. 5 phase 로드맵으로 점진 구현.
 
-- **Phase 1**: 모델(`DocumentSelection`) + Ctrl+A/C + Shift+↑↓ + Esc + 시각화 (다음 PR)
+- **Phase 1 ✅ 완료** (검증 대기): 모델(`DocumentSelection`) + Ctrl+A/C/Esc + Shift+↑/↓ 블록 단위 + body 안 cross-selection + 경계 박스 탈출 + DL Shift+→ + focus 이동 자동 해제 + native selection 색 통합
 - **Phase 2**: 마우스 드래그 selection + auto-scroll
-- **Phase 3**: 잘라내기/붙여넣기 (`Ctrl+X/V`) + selection-replace
-- **Phase 4**: 글자/단어/줄/페이지 단위 Shift+화살표
-- **Phase 5**: Table/CodeBlock cross-selection 정책 확정 (현재 atomic)
+- **Phase 3**: 잘라내기/붙여넣기 (`Ctrl+X/V`) + selection-replace (Phase 1 의 미구현 — selection 상태 입력 시 replace — 도 여기서 통합 진행)
+- **Phase 4**: 글자/단어/줄/페이지 단위 Shift+화살표 (Phase 1 미구현 누적 확장도 여기서 재시도)
+- **Phase 5 ✅ 정책 결정 완료**: Table 셀 단위 누적 사각형 selection (엑셀 형식) + CodeBlock atomic 유지. `SELECTION.md` 7.1 참조
 
 ### 6.2 핵심 모델 (`DocumentSelection`)
 

@@ -65,12 +65,14 @@
   - **Phase 1 Step B**: 분리 + Shift+↑/↓ 확장 + Callout 정책 (옵션 C v2 — SELECTION.md 2.4)
     - [x] **B-1 Refactor**: `ui/selection/SelectionUiHelpers.kt` 신규 (시각화 / 단축키 / 확장 / focus reset / 유틸 5 섹션). `MarkdownBlockTextField`/`MarkdownBlockEditor` 의 selection 코드를 헬퍼 호출로 단순화. CompositionLocal `LocalDocumentSelection` + `Modifier.resetDocumentSelectionOnFocus()` 추가 (focus 이동 자동 해제)
     - [x] **B-2b Callout title Shift+↑/↓ → Callout 자체만 atomic**: `BlockNavigation.onSelectSelfAsAtomic` + `selectBlockAsAtomic` 헬퍼. `CalloutBlockEditor` Standard/Dialogue title 의 Shift 분기 변경
-    - [ ] **B-2a 재작업 (외부 → atomic 진입 시 atomic 만 selection)**: 현재 헬퍼가 다음/이전 블록이 atomic 여도 외부 Text 의 anchor 보존 → 외부 + atomic 모두 selected (사용자 의도와 다름). `extendSelectionToPrevious/Next` 안에서 `isAtomic(next/prevBlock)` 검사 → atomic 이면 `selectBlockAsAtomic` 분기. SELECTION.md 9.4 참조
-    - [ ] **B-2c body 안 cross-selection + 경계 박스 탈출**: `CalloutBlockEditor` 가 body `MarkdownBlockEditor` 에 `documentSelection`/`containerPath` 전파. body 첫 블록 첫 줄 + Shift+↑ / 마지막 블록 마지막 줄 + Shift+↓ → `onEscapeSelection*` 콜백 → 외부 `onSelectSelfAsAtomic` 발동. body 안 중간 위치는 body 내 cross-selection. **현재 body 의 Shift+↑ 가 전혀 작동 안 함** (documentSelection 미전달). SELECTION.md 9.4 참조
+    - [x] **B-2a 재작업 (외부 → atomic 진입 시 atomic 만 selection)**: `extendSelectionToPrevious/Next` 안에서 `isAtomic(next/prevBlock)` 검사 → atomic 이면 `selectBlockAsAtomic` 분기
+    - [x] **B-2c body 안 cross-selection + 경계 박스 탈출**: `CalloutBlockEditor` Standard/Dialogue 시그니처에 `documentSelection`/`containerPath` 추가, body 호출에 `containerPath + block.id` 전파. `MarkdownBlockEditor`/`BlockItem` 도 전달. 헬퍼에 `onEscapeToParent` 콜백 — `currentIndex==0` (또는 lastIndex) + path 비어있지 않으면 호출. body 호출에서 `{ navigation.onSelectSelfAsAtomic() }` 으로 연결 → 부모 Callout 자체 atomic
+    - [x] **DL Shift+→ Callout 자체 atomic**: DialogueCallout title 의 Key.DirectionRight 에 isShiftPressed 분기 추가
+    - [x] **Shift 누적 확장 시도 → 롤백**: focus 기준 baseIndex 재계산 + 누적 분기가 race condition 으로 잘못 작동 → 단일 호출 정책으로 롤백. SELECTION.md 2.5 참조 (보존: cursor 이동 LaunchedEffect + endpoint 비교 reset)
   - **Phase 2**: 마우스 드래그 selection + auto-scroll
   - **Phase 3**: 잘라내기/붙여넣기 (Ctrl+X/V) + selection-replace
   - **Phase 4**: 글자/단어/줄/페이지 단위 Shift+화살표
-  - **Phase 5**: Table/CodeBlock 정책 확정 (사용자 추가 결정 후)
+  - **Phase 5**: Table 셀 단위 누적 사각형 selection (엑셀 형식, 채택 완료) + CodeBlock atomic 유지. `SelectionEndpoint` 에 `cell: TableCell?` 추가, `TableBlockEditor` 의 셀 Shift+→/←/↑/↓ 분기, 사각형 시각화, `\|` join 의 부분 markdown 추출. `SELECTION.md` 7.1 참조
 - [ ] #22 Undo/Redo (문서 스냅샷)
 - [ ] **#23 Embed 블록 렌더링** — 박스 UI (이미지/노트 미리보기) 구현. **현재 Embed 변환 비활성화 상태** (parser 의 `isEmbedLine` 분기 제거됨). #23 시점에 parser 한 줄 복원 + 박스 UI 추가. EditorBlock.Embed / RawOrigin.EMBED / dissolveSpecial Embed 케이스 / BlockItem Embed 분기 + promotion 로직은 모두 보존됨
 - [x] **#24 v1 코드 제거 + 패키지 정리** — 미사용 파일 12개 삭제 완료. 재활용 파일 5개의 v1 로직 정리 완료 (총 ~580줄 삭감)

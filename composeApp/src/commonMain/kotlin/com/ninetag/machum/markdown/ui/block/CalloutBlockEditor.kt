@@ -1,6 +1,7 @@
 package com.ninetag.machum.markdown.ui.block
 
 import com.ninetag.machum.markdown.service.MarkdownStyleConfig
+import com.ninetag.machum.markdown.state.DocumentSelection
 import com.ninetag.machum.markdown.state.EditorBlock
 import com.ninetag.machum.markdown.ui.BlockNavigation
 import com.ninetag.machum.markdown.ui.MarkdownBlockEditor
@@ -79,14 +80,18 @@ internal fun CalloutBlockEditor(
     navigation: BlockNavigation = BlockNavigation(),
     onRegisterBottomEntryFR: (FocusRequester?) -> Unit = {},
     onBlocksChanged: (List<EditorBlock>) -> Unit = {},
+    /** body 안의 cross-selection 활성용 — body MarkdownBlockEditor 에 전달 (Step B-2c). */
+    documentSelection: androidx.compose.runtime.MutableState<DocumentSelection>? = null,
+    /** 이 Callout 이 속한 외부 컨테이너의 path. body 호출 시 `containerPath + block.id` 로 누적. */
+    containerPath: List<String> = emptyList(),
 ) {
     val decoStyle = styleConfig.calloutDecorationStyle(block.calloutType)
     val shape = RoundedCornerShape(8.dp)
 
     if (block.calloutType.equals("DL", ignoreCase = true)) {
-        DialogueCallout(block, decoStyle, styleConfig, textStyle, cursorBrush, shape, modifier, navigation, focusRequester, onRegisterBottomEntryFR, onBlocksChanged)
+        DialogueCallout(block, decoStyle, styleConfig, textStyle, cursorBrush, shape, modifier, navigation, focusRequester, onRegisterBottomEntryFR, onBlocksChanged, documentSelection, containerPath)
     } else {
-        StandardCallout(block, decoStyle, styleConfig, textStyle, cursorBrush, shape, modifier, navigation, focusRequester, onRegisterBottomEntryFR, onBlocksChanged)
+        StandardCallout(block, decoStyle, styleConfig, textStyle, cursorBrush, shape, modifier, navigation, focusRequester, onRegisterBottomEntryFR, onBlocksChanged, documentSelection, containerPath)
     }
 }
 
@@ -103,6 +108,8 @@ private fun StandardCallout(
     titleFocusRequester: FocusRequester,
     onRegisterBottomEntryFR: (FocusRequester?) -> Unit,
     onBlocksChanged: (List<EditorBlock>) -> Unit,
+    documentSelection: androidx.compose.runtime.MutableState<DocumentSelection>?,
+    containerPath: List<String>,
 ) {
     // body 첫 블록 포커스용
     val bodyFocusRequester = remember { FocusRequester() }
@@ -163,8 +170,7 @@ private fun StandardCallout(
             }
             Key.DirectionDown -> {
                 if (event.isShiftPressed) {
-                    // Shift+↓ from title → Callout 자체만 atomic selection (외부 다른 블록 포함 X).
-                    // SELECTION.md 2.4 옵션 C B 정책 — "박스 탈출"
+                    // SELECTION.md 2.5 — 누적 분기 롤백. 항상 Callout 자체만 atomic
                     navigation.onSelectSelfAsAtomic()
                 } else if (block.bodyBlocks.isNotEmpty()) {
                     focusBodyStart()
@@ -175,7 +181,6 @@ private fun StandardCallout(
             }
             Key.DirectionUp -> {
                 if (event.isShiftPressed) {
-                    // Shift+↑ from title → Callout 자체만 atomic selection (외부 다른 블록 포함 X)
                     navigation.onSelectSelfAsAtomic()
                 } else {
                     navigation.onMoveToPrevious()
@@ -217,7 +222,7 @@ private fun StandardCallout(
                 textStyle = textStyle.merge(TextStyle(fontWeight = FontWeight.Bold)),
                 modifier = Modifier.weight(1f)
                     .focusRequester(titleFocusRequester)
-                    .resetDocumentSelectionOnFocus()
+                    .resetDocumentSelectionOnFocus(block.id)
                     .then(titleKeyHandler),
                 lineLimits = TextFieldLineLimits.SingleLine,
                 cursorBrush = cursorBrush,
@@ -244,6 +249,11 @@ private fun StandardCallout(
                 },
                 onEscapeToNext = navigation.onMoveToNext,
                 enableEnterEscape = true,  // body 안 TextBlock 에서 빈 마지막 줄 + Enter → 탈출 (#20 v2)
+                // Step B-2c: body 안 cross-selection + 경계 박스 탈출
+                documentSelection = documentSelection,
+                containerPath = containerPath + block.id,
+                onEscapeSelectionToPrevious = { navigation.onSelectSelfAsAtomic() },
+                onEscapeSelectionToNext = { navigation.onSelectSelfAsAtomic() },
             )
         }
     }
@@ -262,6 +272,8 @@ private fun DialogueCallout(
     titleFocusRequester: FocusRequester,
     onRegisterBottomEntryFR: (FocusRequester?) -> Unit,
     onBlocksChanged: (List<EditorBlock>) -> Unit,
+    documentSelection: androidx.compose.runtime.MutableState<DocumentSelection>?,
+    containerPath: List<String>,
 ) {
     val bodyFocusRequester = remember { FocusRequester() }
     val bodyLastFocusRequester = remember { FocusRequester() }
@@ -316,14 +328,19 @@ private fun DialogueCallout(
                 true
             }
             Key.DirectionRight -> {
-                if (sel.collapsed && sel.start >= block.titleState.text.length && block.bodyBlocks.isNotEmpty()) {
+                if (event.isShiftPressed) {
+                    // Shift+→ from DL title → Callout 자체만 atomic selection (SELECTION.md 2.4 옵션 C v2).
+                    // DL 은 title 과 body 가 가로 배치라 →가 자연스러운 "박스 탈출" 방향
+                    navigation.onSelectSelfAsAtomic()
+                    true
+                } else if (sel.collapsed && sel.start >= block.titleState.text.length && block.bodyBlocks.isNotEmpty()) {
                     focusBodyStart()
                     true
                 } else false
             }
             Key.DirectionDown -> {
                 if (event.isShiftPressed) {
-                    // Shift+↓ from DL title → Callout 자체만 atomic selection (외부 다른 블록 포함 X)
+                    // SELECTION.md 2.5 — 누적 분기 롤백
                     navigation.onSelectSelfAsAtomic()
                 } else {
                     navigation.onMoveToNext()
@@ -332,7 +349,6 @@ private fun DialogueCallout(
             }
             Key.DirectionUp -> {
                 if (event.isShiftPressed) {
-                    // Shift+↑ from DL title → Callout 자체만 atomic selection (외부 다른 블록 포함 X)
                     navigation.onSelectSelfAsAtomic()
                 } else {
                     navigation.onMoveToPrevious()
@@ -366,7 +382,7 @@ private fun DialogueCallout(
                 .widthIn(max = textStyle.fontSize.value.dp * 5)
                 .padding(end = 4.dp)
                 .focusRequester(titleFocusRequester)
-                .resetDocumentSelectionOnFocus()
+                .resetDocumentSelectionOnFocus(block.id)
                 .then(titleKeyHandler),
             lineLimits = TextFieldLineLimits.MultiLine(maxHeightInLines = 2),
             cursorBrush = cursorBrush,
@@ -393,6 +409,11 @@ private fun DialogueCallout(
                     }
                 },
                 enableEnterEscape = true,  // body 안 TextBlock 에서 빈 마지막 줄 + Enter → 탈출 (#20 v2)
+                // Step B-2c: body 안 cross-selection + 경계 박스 탈출
+                documentSelection = documentSelection,
+                containerPath = containerPath + block.id,
+                onEscapeSelectionToPrevious = { navigation.onSelectSelfAsAtomic() },
+                onEscapeSelectionToNext = { navigation.onSelectSelfAsAtomic() },
             )
         }
     }

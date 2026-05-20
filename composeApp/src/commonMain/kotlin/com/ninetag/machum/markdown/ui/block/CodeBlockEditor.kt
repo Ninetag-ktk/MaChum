@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
@@ -81,14 +82,29 @@ internal fun CodeBlockEditor(
                 if (sel.collapsed) {
                     val text = block.codeState.text.toString()
                     val isFirstLine = text.lastIndexOf('\n', (sel.start - 1).coerceAtLeast(0)) == -1
-                    if (isFirstLine) { navigation.onMoveToPrevious(); true } else false
+                    if (isFirstLine) {
+                        if (event.isShiftPressed) {
+                            // SELECTION.md 2.5 — 누적 분기 롤백. 항상 CodeBlock 자체만 atomic
+                            navigation.onSelectSelfAsAtomic()
+                        } else {
+                            navigation.onMoveToPrevious()
+                        }
+                        true
+                    } else false
                 } else false
             }
             Key.DirectionDown -> {
                 if (sel.collapsed) {
                     val text = block.codeState.text.toString()
                     val isLastLine = text.indexOf('\n', sel.start) == -1
-                    if (isLastLine) { navigation.onMoveToNext(); true } else false
+                    if (isLastLine) {
+                        if (event.isShiftPressed) {
+                            navigation.onSelectSelfAsAtomic()
+                        } else {
+                            navigation.onMoveToNext()
+                        }
+                        true
+                    } else false
                 } else false
             }
             else -> false
@@ -100,7 +116,7 @@ internal fun CodeBlockEditor(
         modifier = modifier
             .fillMaxWidth()
             .focusRequester(focusRequester)
-            .resetDocumentSelectionOnFocus()
+            .resetDocumentSelectionOnFocus(block.id)
             .background(styleConfig.codeBlockBackground, RoundedCornerShape(8.dp))
             .padding(12.dp)
             .then(keyHandler),

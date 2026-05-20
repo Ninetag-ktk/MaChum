@@ -25,7 +25,6 @@ import io.github.vinceglb.filekit.readString
 import io.github.vinceglb.filekit.writeString
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.IO
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,6 +36,9 @@ import kotlinx.serialization.json.Json
 import kotlin.collections.emptyList
 
 class FileManager(private val dataStore: DataStore<Preferences>) {
+
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
     val workflowParser = WorkflowParser()
     companion object {
         private val BOOKMARK_VAULT = byteArrayPreferencesKey("bookmark_vault")
@@ -207,15 +209,15 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * @param project 선택한 프로젝트 폴더
      * @return 해당 프로젝트 폴더의 마지막 마크다운 파일
      */
-    suspend fun pickProject(project: PlatformFile): PlatformFile? = withContext(Dispatchers.IO) {
-        try {
-            setPreferences(getPreferences().copy(projectData = project))
-            setConfig(project)
-            setWorkflow()
-            project
-        } catch (e: Exception) {
-            println(e)
-            null
+    fun pickProject(project: PlatformFile) {
+        scope.launch {
+            try {
+                setPreferences(getPreferences().copy(projectData = project))
+                setConfig(project)
+                setWorkflow()
+            } catch (e: Exception) {
+                println(e)
+            }
         }
     }
 
@@ -223,17 +225,19 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * 워크플로우 선택시 동작
      * @param workflow 워크플로우 파일
      */
-    suspend fun pickWorkflow(workflow: PlatformFile) = withContext(Dispatchers.IO) {
-        try {
-            writeConfig(
-                ProjectConfig(
-                    workflow = workflow.nameWithoutExtension,
-                    workflowLastModified = workflow.getLastModified()
+    fun pickWorkflow(workflow: PlatformFile) {
+        scope.launch {
+            try {
+                writeConfig(
+                    ProjectConfig(
+                        workflow = workflow.nameWithoutExtension,
+                        workflowLastModified = workflow.getLastModified()
+                    )
                 )
-            )
-            _workflow.value = workflowParser.parse(workflow.readString())
-        } catch (e: Exception) {
-            throw e
+                _workflow.value = workflowParser.parse(workflow.readString())
+            } catch (e: Exception) {
+                throw e
+            }
         }
     }
 
@@ -283,14 +287,11 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     private suspend fun readConfig(): ProjectConfig? = withContext(Dispatchers.IO) {
         try {
             val configFile = _bookmarks.value.projectData!!.list().find { it.name == ".machum.json" } ?: return@withContext null
-            println("configFile: $configFile")
             val content = configFile.readString()
-            println("content: $content")
             if (content.isBlank()) return@withContext null
 
             Json.decodeFromString(ProjectConfig.serializer(), content)
         } catch (e: Exception) {
-            println("Config 읽기 실패: $e")
             throw e
         }
     }
@@ -319,7 +320,6 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             val content = Json.encodeToString(ProjectConfig.serializer(), projectConfig)
             configFile.writeString(content)
         } catch (e: Exception) {
-            println("Config 읽기 실패: $e")
             throw e
         }
     }
@@ -375,13 +375,10 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      */
     suspend fun setWorkflow() = withContext(Dispatchers.IO) {
         val config = readConfig()
-        println("configData : $config")
         if (config != null) {
             val workflowFile = getWorkflow(config.workflow) ?: return@withContext
-            println("workflowFile: $workflowFile")
             if (workflowFile.getLastModified() != workflowFile.getLastModified()) _needUpdateWorkflow.value = true
             _workflow.value = workflowParser.parse(workflowFile.readString())
-            println("workflowStatic : $workflow")
         } else {
             if (_workflowList.value.size == 1) {
                 val workflow = _workflowList.value.first()
@@ -422,7 +419,6 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     suspend fun renameWorkflow(file: PlatformFile, name: String): PlatformFile? = withContext(Dispatchers.IO) {
         val workflowDir = _bookmarks.value.vaultData!!.list().find { it.name == ".workflow" } ?: return@withContext null
         renameMarkdown(workflowDir, file, name).also{
-            println("이름 변경 체크: ${it?.name}")
             getWorkflowList()
         }
     }

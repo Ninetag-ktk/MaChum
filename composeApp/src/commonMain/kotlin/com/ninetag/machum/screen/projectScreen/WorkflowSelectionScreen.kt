@@ -13,12 +13,10 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.ninetag.machum.external.FileManager
 import com.ninetag.machum.screen.common.WorkflowListItem
-import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -30,7 +28,6 @@ fun WorkflowSelectionScreen() {
         skipPartiallyExpanded = false,
         confirmValueChange = { it != SheetValue.Hidden }
     )
-    val scope = rememberCoroutineScope()
 
     ModalBottomSheet(
         onDismissRequest = {},
@@ -52,7 +49,7 @@ fun WorkflowSelectionScreen() {
                 items(workflowList) { workflow ->
                     WorkflowListItem(
                         workflow = workflow,
-                        onClick = { scope.launch { fileManager.pickWorkflow(workflow) } },
+                        onClick = { fileManager.pickWorkflow(workflow) },
                     )
                 }
             }

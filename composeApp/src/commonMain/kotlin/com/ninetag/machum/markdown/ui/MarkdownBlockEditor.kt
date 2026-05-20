@@ -131,12 +131,20 @@ internal fun MarkdownBlockEditor(
      * Cross-block selection 상태. 최상위에서 호이스팅한 [DocumentSelection] 을 공유. Phase 1.
      * null 이면 selection 기능 비활성 (재귀 호출에서 부모와 같은 인스턴스를 항상 전달).
      */
-    documentSelection: androidx.compose.runtime.MutableState<com.ninetag.machum.markdown.state.DocumentSelection>? = null,
+    documentSelection: androidx.compose.runtime.MutableState<DocumentSelection>? = null,
     /**
      * 이 컨테이너의 path — 최상위는 empty, Callout body 호출 시 ["calloutId"] 같이 누적.
      * SelectionEndpoint 생성 시 사용. SELECTION.md 참조.
      */
     containerPath: List<String> = emptyList(),
+    /**
+     * 컨테이너 (body) 의 첫 블록에서 Shift+↑ → 외부 컨테이너로 escape.
+     * Callout body 가 호출 시 `{ navigation.onSelectSelfAsAtomic() }` 으로 연결되어 부모 Callout 자체가
+     * atomic 으로 selected 됨. B-2c 의 "박스 탈출" 메커니즘.
+     */
+    onEscapeSelectionToPrevious: () -> Unit = {},
+    /** 컨테이너 (body) 의 마지막 블록에서 Shift+↓ → 외부 컨테이너로 escape. */
+    onEscapeSelectionToNext: () -> Unit = {},
 ) {
     // LazyColumn 스크롤 상태 (화면 밖 블록에 포커스 시 스크롤 필요)
     val lazyListState = rememberLazyListState()
@@ -267,6 +275,19 @@ internal fun MarkdownBlockEditor(
         }
     }
 
+    // Cross-block selection 이 Multi 로 갱신될 때마다 focus 를 selection 의 focus endpoint 블록으로 이동.
+    // Shift+↑/↓ 확장 시 cursor 가 selection 의 끝으로 따라가도록. focus 이동 시 onFocusChanged 에서
+    // resetDocumentSelectionOnFocus 가 발동하지만 endpoint 블록 매칭으로 reset 안 됨 (selection 보존).
+    val multiSelection = documentSelection?.value as? DocumentSelection.Multi
+    if (multiSelection != null && multiSelection.focus.containerPath == containerPath) {
+        val focusTargetId = multiSelection.focus.blockId
+        LaunchedEffect(focusTargetId) {
+            val fr = focusRequesterMap[focusTargetId] ?: return@LaunchedEffect
+            kotlinx.coroutines.delay(20.milliseconds)
+            try { fr.requestFocus() } catch (_: Exception) {}
+        }
+    }
+
     /**
      * dissolve 결과 적용. 새 raw TextBlock 으로 포커스 + 커서 위치 = raw 끝.
      * (CLAUDE_sub.md 섹션 10 dissolve 정책)
@@ -394,6 +415,7 @@ internal fun MarkdownBlockEditor(
                     blocksInContainer = currentBlocks,
                     containerPath = containerPath,
                     documentSelection = documentSelection,
+                    onEscapeToParent = onEscapeSelectionToPrevious,
                 )
             },
             onExtendSelectionToNext = {
@@ -403,6 +425,7 @@ internal fun MarkdownBlockEditor(
                     blocksInContainer = currentBlocks,
                     containerPath = containerPath,
                     documentSelection = documentSelection,
+                    onEscapeToParent = onEscapeSelectionToNext,
                 )
             },
             onSelectSelfAsAtomic = {
@@ -437,6 +460,8 @@ internal fun MarkdownBlockEditor(
             allBlocks = blocks,
             blockIndex = index,
             enableEnterEscape = enableEnterEscape,
+            documentSelection = documentSelection,
+            containerPath = containerPath,
             onRegisterBottomEntryFR = { frOrNull ->
                 if (frOrNull != null) {
                     bottomEntryFRMap[block.id] = frOrNull
@@ -484,6 +509,9 @@ private fun BlockItem(
     allBlocks: List<EditorBlock>,
     blockIndex: Int,
     enableEnterEscape: Boolean = false,
+    /** Callout 분기에서 body 재귀 호출에 전파 — Step B-2c body 안 cross-selection 활성 */
+    documentSelection: androidx.compose.runtime.MutableState<DocumentSelection>? = null,
+    containerPath: List<String> = emptyList(),
     onRegisterBottomEntryFR: (FocusRequester?) -> Unit = {},
 ) {
     // LazyColumn이 아이템 recomposition을 skip해도 클로저가 최신 값을 참조하도록 보장
@@ -522,6 +550,8 @@ private fun BlockItem(
                 newBlocks[idx] = currentCallout.copy(bodyBlocks = newBodyBlocks)
                 onBlocksChanged(newBlocks)
             },
+            documentSelection = documentSelection,
+            containerPath = containerPath,
         )
         is EditorBlock.Code -> CodeBlockEditor(
             block = block,

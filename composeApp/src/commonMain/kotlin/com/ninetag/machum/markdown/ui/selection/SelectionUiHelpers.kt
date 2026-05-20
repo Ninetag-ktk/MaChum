@@ -5,7 +5,7 @@ import com.ninetag.machum.markdown.state.EditorBlock
 import com.ninetag.machum.markdown.state.NormalizedSelection
 import com.ninetag.machum.markdown.state.SelectionEndpoint
 import com.ninetag.machum.markdown.state.extractMarkdown
-import com.ninetag.machum.markdown.state.normalize
+import com.ninetag.machum.markdown.state.isAtomic
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
@@ -141,11 +141,13 @@ fun Modifier.documentSelectionShortcuts(
 /**
  * 현재 블록의 첫 위치에서 위쪽으로 selection 확장 (Shift+↑ 트리거).
  *
- * 정책:
- * - documentSelection 이 None 이면 anchor = 현재 블록의 끝, focus = 이전 블록의 시작 으로 새 Multi 시작
- * - 이미 Multi 면 focus 만 이전 블록의 시작으로 갱신 (anchor 유지)
- * - 이전 블록 없으면 (현재가 첫 블록): 컨테이너 외부로 확장하려는 의미. 외부 컨테이너의 책임이라
- *   본 헬퍼는 아무 동작 안 함 (호출자 = 외부 BlockNavigation 에 위임)
+ * 정책 (SELECTION.md 2.4 옵션 C v2 — Shift 누적 확장은 SELECTION.md 2.5 에 따라 롤백됨):
+ * - 이전 블록이 atomic → 그 atomic 블록 자체만 selection (외부 Text 의 anchor 보존 X)
+ * - 이전 블록이 Text → anchor=현재 블록 끝, focus=이전 블록 시작 (외부 Text ↔ Text 의 native 확장 형태)
+ * - 이전 블록 없음 (currentIndex == 0): 컨테이너 외부 escalate 는 호출자 책임 (B-2c)
+ *
+ * existing.anchor 가 있으면 fallback 으로 보존하지만, baseIndex 는 항상 currentIndex 사용 — 누적 호출 시
+ * focus.blockId 기준 baseIndex 추정은 race condition 으로 잘못된 동작을 유발했어서 롤백됨.
  */
 fun extendSelectionToPrevious(
     currentBlock: EditorBlock,
@@ -153,10 +155,24 @@ fun extendSelectionToPrevious(
     blocksInContainer: List<EditorBlock>,
     containerPath: List<String>,
     documentSelection: MutableState<DocumentSelection>?,
+    /** 컨테이너의 첫 블록 (currentIndex == 0) 에서 추가 Shift+↑ 시 외부 컨테이너로 escape.
+     *  Callout body 의 경우 부모 컨테이너에서 그 Callout 을 atomic 으로 selection 으로 처리하는 데 사용 (B-2c). */
+    onEscapeToParent: () -> Unit = {},
 ) {
     if (documentSelection == null) return
-    if (currentIndex <= 0) return  // 컨테이너 외부 확장은 호출자 책임
+    if (currentIndex <= 0) {
+        if (containerPath.isNotEmpty()) onEscapeToParent()
+        return
+    }
     val previousBlock = blocksInContainer[currentIndex - 1]
+
+    // 이전 블록 atomic → atomic 만 selection
+    if (isAtomic(previousBlock)) {
+        selectBlockAsAtomic(previousBlock, containerPath, documentSelection)
+        return
+    }
+
+    // 외부 Text ↔ Text — anchor 보존 fallback + focus 확장
     val existing = documentSelection.value as? DocumentSelection.Multi
     val newAnchor = existing?.anchor ?: endEndpointOf(currentBlock, containerPath)
     val newFocus = startEndpointOf(previousBlock, containerPath)
@@ -170,10 +186,23 @@ fun extendSelectionToNext(
     blocksInContainer: List<EditorBlock>,
     containerPath: List<String>,
     documentSelection: MutableState<DocumentSelection>?,
+    /** 컨테이너의 마지막 블록 (currentIndex == lastIndex) 에서 추가 Shift+↓ 시 외부 컨테이너로 escape. */
+    onEscapeToParent: () -> Unit = {},
 ) {
     if (documentSelection == null) return
-    if (currentIndex >= blocksInContainer.lastIndex) return
+    if (currentIndex >= blocksInContainer.lastIndex) {
+        if (containerPath.isNotEmpty()) onEscapeToParent()
+        return
+    }
     val nextBlock = blocksInContainer[currentIndex + 1]
+
+    // 다음 블록 atomic → atomic 만 selection
+    if (isAtomic(nextBlock)) {
+        selectBlockAsAtomic(nextBlock, containerPath, documentSelection)
+        return
+    }
+
+    // 외부 Text ↔ Text — anchor 보존 fallback + focus 확장
     val existing = documentSelection.value as? DocumentSelection.Multi
     val newAnchor = existing?.anchor ?: startEndpointOf(currentBlock, containerPath)
     val newFocus = endEndpointOf(nextBlock, containerPath)
@@ -212,15 +241,22 @@ val LocalDocumentSelection = compositionLocalOf<MutableState<DocumentSelection>?
  * BasicTextField 의 modifier 체인에 부착. 이 필드가 focus 를 받는 순간 documentSelection 이 Multi 면
  * None 으로 자동 해제. 사용자가 selection 상태에서 다른 블록 클릭 시 selection 시각이 자연스럽게 풀림.
  *
+ * **예외**: 이 블록이 selection 의 anchor 또는 focus endpoint 이면 reset 안 함. Shift+↑/↓ 확장 직후
+ * cursor 이동 (focus 가 selection 의 focus 블록으로 이동) 시 selection 이 사라지지 않도록 보존.
+ *
  * Ctrl+A 직후엔 focus 가 변하지 않으므로 발동 안 함. Esc / 방향키와 별개로 동작.
+ *
+ * @param blockId 이 BasicTextField 가 속한 블록의 id
  */
 @Composable
-fun Modifier.resetDocumentSelectionOnFocus(): Modifier {
+fun Modifier.resetDocumentSelectionOnFocus(blockId: String): Modifier {
     val selection = LocalDocumentSelection.current ?: return this
     return this.onFocusChanged { focusState ->
-        if (focusState.isFocused && selection.value is DocumentSelection.Multi) {
-            selection.value = DocumentSelection.None
-        }
+        if (!focusState.isFocused) return@onFocusChanged
+        val sel = selection.value as? DocumentSelection.Multi ?: return@onFocusChanged
+        // Shift+↑/↓ 확장 후 endpoint 블록으로 focus 가 이동한 케이스 — selection 보존
+        if (sel.anchor.blockId == blockId || sel.focus.blockId == blockId) return@onFocusChanged
+        selection.value = DocumentSelection.None
     }
 }
 

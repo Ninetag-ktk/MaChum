@@ -130,8 +130,31 @@ B 정책 (Callout 안에서의 박스 탈출) 은 `onSelectSelfAsAtomic` 콜백 
 - `Multi(anchor=startEndpointOf(currentBlock), focus=endEndpointOf(currentBlock))`
 
 A 정책 + B 정책의 외부 → atomic 진입 케이스 처리:
-- `extendSelectionToPrevious/Next` 헬퍼 안에서 **다음/이전 블록이 atomic 이면** `selectBlockAsAtomic(nextBlock, ...)` 으로 분기. 즉 외부 Text 의 anchor 를 보존하지 않고 atomic 블록 자체만 selection 으로 설정
-- 외부 TextBlock 끼리의 자연 확장 (A 정책) 만 기존 동작 유지
+- `extendSelectionToPrevious/Next` 헬퍼 안에서 **다음/이전 블록이 atomic** 이면 `selectBlockAsAtomic(thatBlock, ...)` 으로 분기. 외부 Text 의 anchor 를 보존하지 않고 atomic 블록 자체만 selection
+- 외부 TextBlock 끼리는 anchor 보존 native 확장
+
+**Shift+→ 도 동일 정책 (DL title 한정)**:
+- Dialogue Callout 의 title 에서 `Shift+→` → 외부 컨테이너에서 Callout 자체만 atomic selection (`onSelectSelfAsAtomic`). DL 은 title 과 body 가 가로 배치라 →가 자연스러운 "박스 탈출" 방향
+
+### 2.5 Shift 누적 확장 시도 → 롤백 (시도 기록)
+
+이전에 "Shift+↑/↓ 를 여러 번 누르면 selection 누적 확장" 정책을 시도했었음:
+- `extendSelectionToPrevious/Next` 헬퍼가 누적 호출 시 `existing.focus.blockId` 기준으로 baseIndex 재계산
+- 첫 호출에서만 atomic 분기, 누적 호출이면 anchor 보존 + focus 만 갱신
+- cursor 도 selection 의 focus endpoint 블록으로 이동 (`LaunchedEffect(focusTargetId)`)
+
+**결과: 작동 안 함**. focus 가 endpoint 블록으로 이동한 직후의 동작이 일관되지 않았고, Callout/CodeBlock 안에서 Shift+↑/↓ 가 의도와 다르게 작동 (atomic 만 재선택 / cursor 이동만 + selection 해제). 사용자 검증에서 회귀로 확인되어 다음을 **롤백**:
+- 헬퍼의 baseIndex 가 currentIndex 만 사용
+- 누적 분기 제거 — 항상 첫 호출 정책 (atomic 진입이면 atomic 만, 외부 Text 끼리면 anchor=currentBlock + focus=nextBlock)
+- `CalloutBlockEditor` title 의 Shift+↑/↓ 가 무조건 `onSelectSelfAsAtomic` 호출 (첫/누적 분기 제거)
+- `CodeBlockEditor` 의 Shift+↑/↓ 가 무조건 `onSelectSelfAsAtomic` 호출
+
+**보존된 부분**:
+- `resetDocumentSelectionOnFocus(blockId)` 의 endpoint 비교 분기는 유지 — selection 의 anchor/focus 블록 매칭 시 reset 안 함
+- `LaunchedEffect(focusTargetId)` 의 cursor 이동은 유지 — Shift 동작 시 cursor 가 selection 의 focus 블록으로 이동
+- 외부 Text ↔ Text 끼리의 anchor 보존 native 확장 (헬퍼 안의 `existing?.anchor ?:` fallback 형태)
+
+향후 누적 확장 재시도 시 고려할 점: focus 이동과 keystroke 발생 위치의 race condition, 누적 시 currentIndex vs focus.blockId 의 인덱스 일관성 보장 필요
 
 ### 2.4 endpoint 비교 — start / end 결정
 
@@ -191,14 +214,17 @@ fun compareEndpoint(a: SelectionEndpoint, b: SelectionEndpoint, blocks: List<Edi
 3. `Shift + Ctrl/Alt + ←/→` — 단어 단위 (플랫폼 modifier 감지)
 4. `Shift + PageUp/PageDown` — 화면 단위
 
-### Phase 5 — Table / CodeBlock 정책 확정 (사용자 추가 결정 후)
+### Phase 5 — Table 셀 단위 누적 selection (엑셀 형식 채택)
 
-후보 정책 (사용자와 추후 논의):
-- **A**: Phase 1 atomic 유지 (가장 단순)
-- **B**: Table 셀 단위 cross-selection (셀 ~ 셀, 행 단위 확장)
-- **C**: CodeBlock 안 텍스트 부분 선택 가능
+- **Table**: 옵션 B 채택 — 엑셀 형식 셀 단위 사각형 selection. 섹션 7.1 참조
+- **CodeBlock**: 옵션 A 유지 (atomic). 섹션 7.2 참조
 
-채택안에 따라 `SelectionEndpoint` 에 `cell: TableCell?` / `inCodeBlock: Boolean` 같은 필드를 확장하여 도입.
+핵심 구현:
+1. `SelectionEndpoint` 에 `cell: TableCell?` 필드 추가 (data class TableCell(row, col))
+2. `TableBlockEditor` 각 셀의 onPreviewKeyEvent 에 `Shift+→ / ← / ↑ / ↓` 분기 — endpoint.cell 갱신
+3. 시각화: documentSelection.focus.cell 과 anchor.cell 의 사각형 영역에 selectionAccent 배경
+4. normalize/extractMarkdown 에 cell-aware 분기 (사각형 영역 추출, `\|` join)
+5. Table 경계 도달 + 추가 Shift → 외부 컨테이너의 onSelectSelfAsAtomic (Table 자체 atomic 승격)
 
 ---
 
@@ -266,24 +292,54 @@ fun extractMarkdown(
 
 ---
 
-## 7. 후속 결정 대상
+## 7. 후속 결정 — Phase 5 정책
 
-### 7.1 Table cross-selection 의 단위
+### 7.1 Table cross-selection — 엑셀 형식 셀 단위 사각형 selection (채택)
 
-| 옵션 | 설명 | 트레이드오프 |
-|---|---|---|
-| A. atomic 유지 | Phase 1 처럼 통째 | 단순. 표 안 일부 셀 복사 불가 |
-| B. 셀 단위 | 셀 ~ 셀 사각형 영역 | 자연스러움. 모델/시각화 복잡도 ↑ |
-| C. 행 단위 | 행 1개 또는 여러 행 | 중간 복잡도. 셀 수준 정밀도는 없음 |
+옵션 B (셀 단위 사각형 영역) 를 채택. 엑셀 / Google Sheets 의 표준 동작과 동일:
 
-### 7.2 CodeBlock cross-selection 의 단위
+| 시나리오 | 동작 |
+|---|---|
+| 셀 A1 에 cursor → `Shift+→` | A1, B1 두 셀 selected |
+| 그 상태에서 `Shift+→` 누적 | A1, B1, C1 까지 selected (누적 사각형 확장) |
+| 그 상태에서 `Shift+↓` | A1, B1, C1, A2, B2, C2 사각형 selected |
+| 셀 단위 cursor 이동 (anchor 보존, focus 가 사각형의 한 모서리로 이동) | 사각형의 반대 모서리 = anchor, 현재 cursor = focus |
+| `Esc` / focus 이동 / 방향키 (Shift 없이) | None 으로 자동 해제 (다른 selection 과 동일 정책) |
+| `Ctrl+C` | 사각형 안 셀들의 markdown 추출 — 행은 `\|`, 행간은 `\n` 으로 join (Table.toMarkdown() 의 부분 추출) |
+
+**모델 확장**:
+
+```kotlin
+data class SelectionEndpoint(
+    val containerPath: List<String>,
+    val blockId: String,
+    val offset: Int,
+    /** Table 셀을 가리킬 때만 사용. blockId 가 Table 인 경우의 셀 좌표.
+     *  null 이면 atomic 전체 또는 Text 의 offset 기반. Phase 5 에서 도입. */
+    val cell: TableCell? = null,
+)
+
+data class TableCell(val row: Int, val col: Int)
+```
+
+normalize 시 anchor.cell 과 focus.cell 사이의 사각형 영역으로 정렬 (start = min(row, col), end = max(row, col)).
+
+시각화: 사각형 안의 모든 셀에 `selectionAccent` 배경. atomic 통째 selection 과 다르게 셀별로 시각.
+
+**구현 방향**:
+- `TableBlockEditor` 의 각 셀 BasicTextField 의 `Modifier.onPreviewKeyEvent` 에 `Shift+→ / ← / ↑ / ↓` 분기 추가
+- 셀에서 Shift+화살표 → BlockNavigation 새 콜백 (예: `onTableExtendSelectionCell(direction)`) → 외부 documentSelection 의 endpoint.cell 갱신
+- 사각형이 Table 경계 (`row in 0 until rowCount && col in 0 until colCount`) 안에서만 확장. 경계 도달 시 추가 Shift 는 무동작 (또는 Table 외부로 escalate)
+- Table 외부 escalate: Step B-2c 의 `onEscapeSelection*` 콜백과 동일 패턴 — 사각형이 Table 전체 (모든 셀) 가 되면 그 시점에 추가 Shift+↑/↓ 는 외부 컨테이너의 `onSelectSelfAsAtomic` 발동 (Table 자체 atomic 으로 승격)
+
+### 7.2 CodeBlock cross-selection — 일단 atomic 유지
 
 | 옵션 | 설명 |
 |---|---|
-| A. atomic 유지 | 통째로만 선택 |
-| B. 텍스트 부분 선택 | code 텍스트 안에서 offset 기반 선택 가능 |
+| **A. atomic 유지 (채택)** | 통째로만 선택. CodeBlock 안 텍스트 부분 선택 불가 |
+| B. 텍스트 부분 선택 | code 텍스트 안에서 offset 기반 선택. native BasicTextField 가 이미 부분 selection 지원하므로 cross-block 으로 확장만 별도 처리 필요 |
 
-Phase 5 진입 시 사용자와 논의하여 채택안 결정 후 `SelectionEndpoint` 확장.
+CodeBlock 안의 텍스트 부분 선택은 BasicTextField 의 native selection 으로 이미 가능 (Shift+←→ / drag). cross-block 확장 (코드 안에서 외부로 가는 selection) 은 Phase 5 시점에 사용자 추가 결정 시 도입.
 
 ---
 
@@ -308,7 +364,8 @@ Phase 1 을 두 단계로 나누어 진행:
 - `Ctrl+C` (또는 `Cmd+C`): `documentSelection` 이 `Multi` 일 때 `extractMarkdown(blocks, selection)` 호출 → `LocalClipboardManager.setText` 로 raw markdown 전체 복사. 단일 블록 selection (None) 일 때는 native BasicTextField 의 Ctrl+C 그대로 사용
 - `Esc`: `Multi` 상태일 때만 `None` 으로 리셋 (단일 블록 selection 에서는 native 동작)
 - **방향키 / Home / End / PageUp / PageDown**: `Multi` 상태일 때 `None` 으로 자동 해제. cursor 는 마지막 focus 블록의 native 위치 유지 (정밀 이동은 후속 단계). `false` 반환으로 BasicTextField 의 native cursor 이동 동작도 그대로 진행
-- **focus 이동 자동 해제**: Multi 상태에서 어떤 블록이 새로 focus 를 받으면 (사용자 클릭 등) `None` 으로 자동 해제. CompositionLocal 로 `documentSelection` 을 자식 컴포넌트에 제공하고, Modifier helper (`Modifier.resetDocumentSelectionOnFocus()`) 가 각 BasicTextField 의 `onFocusChanged` 에 hook 부착. cursor 가 selection 영역과 무관한 블록으로 이동하면 시각도 자연스럽게 해제
+- **focus 이동 자동 해제**: Multi 상태에서 어떤 블록이 새로 focus 를 받으면 (사용자 클릭 등) `None` 으로 자동 해제. CompositionLocal 로 `documentSelection` 을 자식 컴포넌트에 제공하고, Modifier helper (`Modifier.resetDocumentSelectionOnFocus(blockId)`) 가 각 BasicTextField 의 `onFocusChanged` 에 hook 부착. cursor 가 selection 영역과 무관한 블록으로 이동하면 시각도 자연스럽게 해제. **단 selection 의 anchor/focus endpoint blockId 와 일치하는 블록이면 reset 안 함** — Shift+↑/↓ 확장 시 cursor 가 endpoint 블록으로 이동해도 selection 유지
+- **Shift+↑/↓ 시 cursor 이동**: Shift+↑/↓ 로 selection 확장될 때마다 키보드 cursor 도 selection 의 focus endpoint 블록으로 이동. `MarkdownBlockEditor` 의 `LaunchedEffect(documentSelection?.value)` 가 `Multi` 상태 감지 → `focusRequesterMap[focus.blockId]?.requestFocus()` 호출. focus 이동 시 위의 reset helper 가 endpoint 매칭으로 reset 안 함 → selection 유지된 채 cursor 만 이동
 - 시각화: 정규화된 selection 범위의 모든 블록에 `selectionAccent` 배경. atomic 블록 (Callout/Code/Table/Embed/HR) 은 통째로 칠해지고 Text 도 통째 (Step A 에서는 endpoint 부분 선택 미구현 — Step B 또는 후속 단계)
 - 외부에서 새 `value` 가 들어오면 selection 도 None 으로 리셋
 - 색 통합: native BasicTextField selection 색과 documentSelection 시각화 색이 동일 (`CompositionLocalProvider(LocalTextSelectionColors provides unifiedSelectionColors)`)
@@ -347,32 +404,22 @@ Step B 를 세 sub-step 으로 분할:
 - `BlockNavigation.onSelectSelfAsAtomic` 추가, `MarkdownBlockEditor.BlockWithNav` 안에서 `selectBlockAsAtomic` 헬퍼로 구현
 - `CalloutBlockEditor` Standard / Dialogue title 의 Shift+↑/↓ 분기가 `onSelectSelfAsAtomic` 호출로 변경. Callout 자체만 atomic selection
 
-**Step B-2c (미진행) — body 안 cross-selection + body 경계 박스 탈출**
+**Step B-2c (완료) — body 안 cross-selection + body 경계 박스 탈출**
 
-다음 세션 작업 인계 — 핵심 파일과 변경 지점:
+변경 사항:
+- `MarkdownBlockEditor` 시그니처에 `onEscapeSelectionToPrevious/Next: () -> Unit = {}` 파라미터 추가. BlockNavigation 의 onExtendSelection* 콜백 안에서 헬퍼에 `onEscapeToParent` 로 전달
+- `BlockItem` 시그니처에 `documentSelection` + `containerPath` 추가, Callout 분기에서 CalloutBlockEditor 에 전달
+- `CalloutBlockEditor` Standard / Dialogue 시그니처에 `documentSelection` + `containerPath` 추가. body MarkdownBlockEditor 호출에:
+  - `documentSelection = documentSelection`
+  - `containerPath = containerPath + block.id`
+  - `onEscapeSelectionToPrevious/Next = { navigation.onSelectSelfAsAtomic() }`
+- `SelectionUiHelpers.kt` 의 extendSelectionToPrevious/Next 헬퍼에 `onEscapeToParent: () -> Unit = {}` 파라미터 추가. `currentIndex == 0` (또는 lastIndex) + `containerPath.isNotEmpty()` 면 onEscapeToParent 호출 → 부모 컨테이너의 onSelectSelfAsAtomic 으로 자기 Callout 을 atomic 선택
 
-1. **`CalloutBlockEditor.kt`** (Standard 와 Dialogue 모두)
-   - 시그니처에 `documentSelection: MutableState<DocumentSelection>?` 파라미터 추가
-   - body `MarkdownBlockEditor` 호출에 `documentSelection = documentSelection` + `containerPath = listOf(block.id)` 전달
-   - `BlockItem` 의 Callout 분기에서 documentSelection 전달도 같이 (`MarkdownBlockEditor.kt`)
-   - `MarkdownBlockEditor` 의 BlockItem 시그니처에 documentSelection 추가, BlockWithNav 안 BlockItem 호출에 전달
-
-2. **`MarkdownBlockEditor.kt`** — body 호출 시 escape 콜백 연결
-   - 새 파라미터 `onEscapeSelectionToPrevious: () -> Unit` / `onEscapeSelectionToNext: () -> Unit` 추가 (재귀 호출 시 외부의 onSelectSelfAsAtomic 으로 연결)
-   - `BlockNavigation` 의 `onExtendSelectionToPrevious/Next` 안에서 `currentIndex == 0` (또는 lastIndex) 이고 `containerPath.isNotEmpty()` 이면 `onEscapeSelection*` 호출로 외부 escalate
-
-3. **`SelectionUiHelpers.kt`** — extendSelection 헬퍼 시그니처 확장
-   - `onEscapeToParent: (() -> Unit)? = null` 파라미터 추가
-   - `currentIndex == 0 && documentSelection != null && containerPath.isNotEmpty()` 이면 (혹은 lastIndex) → onEscapeToParent 호출
-   - 헬퍼 안에서 호출 시점: body 첫 블록 첫 줄에서 Shift+↑ 가 들어왔을 때
-
-4. **`TextBlockEditor.kt`** — 변경 없음 (이미 첫/마지막 줄에서 onExtendSelection 호출 중)
-
-**예상 검증 시나리오 (B-2c 완료 후)**:
-- Callout body 의 첫 블록 첫 줄에 cursor → Shift+↑ → Callout 자체만 atomic selection (외부 위쪽 블록 포함 X)
-- Callout body 의 마지막 블록 마지막 줄에 cursor → Shift+↓ → Callout 자체만 atomic selection (외부 아래쪽 블록 포함 X)
-- body 안 중간 위치 cursor → Shift+↑/↓ → body 안 cross-selection (외부 atomic 승격 안 함)
-- body 안에서 만든 cross-selection 도 시각화 (현재는 시각화 안 됨)
+**검증 시나리오**:
+- Callout body 의 첫 블록 첫 줄 cursor → Shift+↑ → Callout 자체만 atomic selection (외부 위 블록 포함 X) ✓
+- Callout body 의 마지막 블록 마지막 줄 cursor → Shift+↓ → Callout 자체만 atomic ✓
+- body 안 중간 블록의 Shift+↑/↓ → body 안 cross-selection 활성 (containerPath = [callout.id])
+- 중첩 Callout 도 재귀적 path 누적으로 자연 지원
 
 ### Step A 검증 시나리오
 
@@ -388,93 +435,64 @@ Step B 를 세 sub-step 으로 분할:
 
 ### 9.1 현재 상태 한 줄 요약
 
-Phase 1 Step A + Step B-1 + Step B-2b (title Shift) 완료. **Step B-2a 재작업** (외부 → atomic 진입 시 atomic 만 selection) + **Step B-2c** (body 안 cross-selection + body 경계 박스 탈출) 두 작업이 남음.
+**Phase 1 완료** (Step A + B-1 + B-2a + B-2b + B-2c + DL Shift+→). 사용자 검증 대기 중. 다음 작업은 Phase 2 (마우스 드래그 selection) 또는 Phase 3 (잘라내기/붙여넣기) 중 선택.
 
-### 9.2 검증된 동작
+### 9.2 검증된 동작 (Phase 1 전체)
 
-- `Ctrl+A`/`Cmd+A` → 최상위 전체 선택. `Ctrl+C` → 클립보드 복사. `Esc`/방향키/Home/End/PageUp/Down → 자동 해제. focus 이동 (다른 블록 클릭) → 자동 해제
-- Callout title 에서 Shift+↑/↓ → Callout 자체만 atomic
-- 외부 Text ↔ Text 의 Shift+↑/↓ → 자연스러운 확장
-- 시각화 색 = native BasicTextField selection 색 (`LocalTextSelectionColors` 통합)
+| 기능 | 동작 |
+|---|---|
+| `Ctrl+A` / `Cmd+A` | 최상위 전체 블록 selection |
+| `Ctrl+C` / `Cmd+C` | selection 범위의 markdown 을 clipboard 로 복사 |
+| `Esc` / 방향키 / Home / End / PageUp/Down | Multi 상태에서 None 으로 자동 해제 |
+| focus 이동 (다른 블록 클릭) | 자동 해제 — 단 endpoint blockId 매칭 시 보존 (Shift 확장 후 cursor 이동 대응) |
+| 외부 Text 의 첫/마지막 줄에서 Shift+↑/↓ | 외부 Text 끼리는 native 확장, atomic 블록 진입이면 atomic 만 selected |
+| Callout title 에서 Shift+↑/↓ | Callout 자체만 atomic (외부 블록 포함 X) |
+| DL Callout title 에서 Shift+→ | DL Callout 자체만 atomic |
+| CodeBlock 첫/마지막 줄에서 Shift+↑/↓ | CodeBlock 자체만 atomic |
+| Callout body 첫 블록 첫 줄에서 Shift+↑ | 부모 Callout 자체만 atomic (외부 위 블록 포함 X) |
+| Callout body 마지막 블록 마지막 줄에서 Shift+↓ | 부모 Callout 자체만 atomic |
+| Callout body 안 중간 블록의 Shift+↑/↓ | body 안 cross-selection (containerPath=[callout.id]) |
+| 중첩 Callout | 재귀적 path 누적으로 자연 지원 |
+| 시각화 색 | native BasicTextField selection 색과 통합 (`LocalTextSelectionColors` 동기화) |
+| Shift+↑/↓ 후 cursor 이동 | selection 의 focus 블록으로 자동 focus 이동 (selection 보존) |
 
-### 9.3 미해결 이슈 2건 (사용자 확인)
+### 9.3 Phase 1 의 미구현 — Phase 3 으로 이관
 
-1. **외부 TextBlock 위쪽에서 Shift+↓ → Callout 진입 시, 외부 TextBlock 도 selection 에 포함됨**
-   - 원인: `SelectionUiHelpers.kt` 의 `extendSelectionToNext` / `extendSelectionToPrevious` 헬퍼가 다음/이전 블록의 atomic 여부를 검사 안 함. 무조건 `anchor = currentBlock` 유지 + `focus = nextBlock` 설정
-   - 의도: 다음/이전 블록이 atomic 이면 `selectBlockAsAtomic` 으로 분기, atomic 블록 자체만 selection
-   - 해결: Step B-2a 재작업 (아래 9.4 참조)
+- **selection + 텍스트 입력 → replace**: 현재 selection 시각만 있고 native 입력이 endpoint 블록에 그대로 들어감 (selection 보존). 자연스러운 동작은 selection 범위 삭제 + 입력 텍스트 삽입. Phase 3 의 `deleteSelection` / `replaceSelection` 과 통합 진행
+- **Shift+↑/↓ 누적 확장**: 한 번 더 Shift 눌러도 selection 이 더 확장되지 않음. focus 기준 baseIndex 재계산 시도가 race condition 으로 잘못 작동하여 롤백됨 (섹션 2.5). 향후 정밀 구현 시 focus 이동과 keystroke race 조심
 
-2. **Callout body 에서 Shift+↑ 로 title (또는 Callout 자체) 을 선택하지 못함**
-   - 원인: Callout body 의 `MarkdownBlockEditor` 호출에 `documentSelection` 미전달. body 안의 모든 selection 기능이 비활성
-   - 해결: Step B-2c (아래 9.4 참조)
+### 9.4 다음 작업 선택지
 
-### 9.4 작업 우선순위 + 변경 지점
+**Phase 2 — 마우스 드래그 selection** (큰 작업)
+- `pointerInput { detectDragGestures }` 를 최상위에 부착
+- 각 `BlockItem` 의 절대 좌표 + `TextLayoutResult` 캐시 (`onGloballyPositioned`)
+- 드래그 좌표 → 해당 블록의 `getOffsetForPosition` → endpoint 갱신
+- LazyColumn 가장자리 도달 시 auto-scroll
+- 단일 블록 내부 드래그는 native BasicTextField 동작 그대로 (블록 경계 넘을 때만 documentSelection 으로 승격)
 
-**우선 1순위 — Step B-2a 재작업** (작업량 작음, ~20줄)
+**Phase 3 — 잘라내기 / 붙여넣기 + replace** (큰 작업)
+- `BlockOperations.deleteSelection(blocks, selection): List<EditorBlock>` — endpoint 블록 분할 + 중간 블록 제거 + 인접 일반 텍스트 병합
+- `Ctrl+X` = `Ctrl+C` + `deleteSelection`
+- `Ctrl+V`: clipboard text → `MarkdownBlockParser.parse` → 새 블록 리스트. selection 있으면 `deleteSelection` 후 삽입
+- selection 있는 상태로 텍스트 입력 → `replaceSelection(text)` (9.3 의 미구현 사항도 같이 해결)
 
-수정 파일: `composeApp/.../markdown/ui/selection/SelectionUiHelpers.kt`
+**Phase 4 — 글자/단어/줄/페이지 단위 Shift+화살표** (중간)
 
-```kotlin
-fun extendSelectionToNext(currentBlock, currentIndex, blocksInContainer, containerPath, documentSelection) {
-    if (documentSelection == null) return
-    if (currentIndex >= blocksInContainer.lastIndex) return
-    val nextBlock = blocksInContainer[currentIndex + 1]
-
-    // 추가: 다음 블록이 atomic 이면 atomic 블록 자체만 selection
-    if (isAtomic(nextBlock)) {
-        selectBlockAsAtomic(nextBlock, containerPath, documentSelection)
-        return
-    }
-
-    // 기존 — 외부 Text ↔ Text 의 자연 확장
-    val existing = documentSelection.value as? DocumentSelection.Multi
-    val newAnchor = existing?.anchor ?: startEndpointOf(currentBlock, containerPath)
-    val newFocus = endEndpointOf(nextBlock, containerPath)
-    documentSelection.value = DocumentSelection.Multi(newAnchor, newFocus)
-}
-```
-
-`extendSelectionToPrevious` 도 동일하게 `previousBlock` 의 atomic 검사 추가.
-
-검증: 외부 TextBlock 마지막 줄에서 Shift+↓ → 다음이 Callout 이면 Callout 만, TextBlock 이면 두 블록 모두 selected.
-
-**우선 2순위 — Step B-2c body 활성화** (작업량 중간, ~60-100줄)
-
-수정 파일들과 순서:
-
-(1) `MarkdownBlockEditor.kt`
-- `MarkdownBlockEditor` 시그니처에 `onEscapeSelectionToPrevious: () -> Unit = {}` + `onEscapeSelectionToNext: () -> Unit = {}` 추가
-- `BlockWithNav` 안의 `onExtendSelectionToPrevious` / `onExtendSelectionToNext` 콜백 안에서, 헬퍼 결과 후 `currentIndex == 0` (lastIndex) 이고 `containerPath.isNotEmpty()` 이면 `onEscapeSelectionToPrevious()` / `onEscapeSelectionToNext()` 호출. **단 헬퍼가 이미 atomic 분기로 처리한 경우는 escape 호출 안 함** — 헬퍼가 boolean 반환하도록 시그니처 변경 검토
-- `BlockItem` 시그니처에 `documentSelection: MutableState<DocumentSelection>?` 추가, Callout 분기에서 `CalloutBlockEditor` 호출에 전달
-
-(2) `CalloutBlockEditor.kt` Standard 와 Dialogue 모두
-- 시그니처에 `documentSelection: MutableState<DocumentSelection>? = null` 파라미터 추가
-- body `MarkdownBlockEditor` 호출에 다음 추가:
-  - `documentSelection = documentSelection`
-  - `containerPath = listOf(block.id)`  // 단 단순 표현 — block.id 는 외부 path 와 결합 필요할 수 있음
-  - `onEscapeSelectionToPrevious = { navigation.onSelectSelfAsAtomic() }`
-  - `onEscapeSelectionToNext = { navigation.onSelectSelfAsAtomic() }`
-
-(3) `BlockItem` 의 Callout 분기에서 `documentSelection` 전달 추가
-
-**주의**: containerPath 의 정확한 누적 — Callout body 가 재귀 MarkdownBlockEditor 를 호출할 때 path 는 `parentContainerPath + block.id` 형식. `MarkdownBlockEditor` 의 `containerPath` 파라미터가 이미 외부 경로를 받고 있으니, body 호출 시 `containerPath = containerPath + block.id`.
-
-(4) 검증 시나리오:
-- Callout body 첫 블록 첫 줄 cursor + Shift+↑ → Callout 만 atomic selection (외부 위쪽 블록 포함 X)
-- Callout body 마지막 블록 마지막 줄 cursor + Shift+↓ → Callout 만 atomic selection (외부 아래쪽 블록 포함 X)
-- body 안 중간 블록 사이 Shift+↑/↓ → body 안 cross-selection 시각화
+**Phase 5 — Table 셀 단위 누적 selection (엑셀 형식)** + CodeBlock atomic 유지 (사용자 결정 완료, 섹션 7.1 참조)
 
 ### 9.5 관련 파일 빠른 참조
 
 | 역할 | 파일 |
 |---|---|
 | Selection 모델 + 비즈니스 로직 | `markdown/state/DocumentSelection.kt` |
-| UI 헬퍼 (단축키 / 시각화 / 확장 / focus reset) | `markdown/ui/selection/SelectionUiHelpers.kt` |
-| 최상위 진입 + state 호이스팅 + CompositionLocal 제공 | `markdown/ui/MarkdownBlockTextField.kt` |
-| 블록 dispatcher + BlockNavigation + 시각화 | `markdown/ui/MarkdownBlockEditor.kt` |
-| Callout title 의 Shift+↑/↓ 핸들러 + body 재귀 호출 (B-2c 변경 대상) | `markdown/ui/block/CalloutBlockEditor.kt` |
-| TextBlock 의 Shift+↑/↓ 핸들러 | `markdown/ui/TextBlockEditor.kt` |
-| 스타일 (selectionAccent) | `markdown/service/MarkdownStyleConfig.kt` |
+| UI 헬퍼 (단축키 / 시각화 / 확장 + escape / focus reset + endpoint 비교) | `markdown/ui/selection/SelectionUiHelpers.kt` |
+| 최상위 진입 + state 호이스팅 + CompositionLocal 제공 + native selection 색 통합 | `markdown/ui/MarkdownBlockTextField.kt` |
+| 블록 dispatcher + BlockNavigation (onExtendSelection*/onSelectSelfAsAtomic/onEscapeSelection*) + 시각화 + cursor 이동 LaunchedEffect | `markdown/ui/MarkdownBlockEditor.kt` |
+| Callout title 의 Shift 핸들러 + body 재귀 호출 (documentSelection/containerPath 전파) + DL Shift+→ | `markdown/ui/block/CalloutBlockEditor.kt` |
+| TextBlock 의 Shift+↑/↓ 핸들러 + 외부 → atomic 진입 분기 | `markdown/ui/TextBlockEditor.kt` |
+| CodeBlock 의 Shift+↑/↓ 핸들러 | `markdown/ui/block/CodeBlockEditor.kt` |
+| 모든 BasicTextField 의 `Modifier.resetDocumentSelectionOnFocus(blockId)` 부착 | TextBlock / Callout title (Std+DL) / Code / Table 셀들 |
+| 스타일 (selectionAccent, M3 native default 와 동기화) | `markdown/service/MarkdownStyleConfig.kt` |
 
 ### 9.6 빌드 / 검증 명령
 
@@ -490,3 +508,8 @@ fun extendSelectionToNext(currentBlock, currentIndex, blocksInContainer, contain
 - **2026-05-05**: 최초 작성. Phase 1 진입 전 영구 설계 문서로 격상. plan 파일 (`.claude/plans/2-inherited-lecun.md`) 의 1~2 절을 본 문서로 옮김.
 - **2026-05-05**: Phase 1 Step A 구현 완료. 섹션 8 추가.
 - **2026-05-05**: 옵션 C v2 정책으로 정정 — 외부 → atomic 진입 시에도 atomic 블록만 selection (외부 Text 포함 X). 섹션 2.4 갱신. Step B-2a 가 재작업 필요로 표시됨. 섹션 9 "다음 세션 시작 가이드" 신규 추가.
+- **2026-05-05**: Step B-2a 재작업 완료 (헬퍼의 atomic 분기). focus 이동 자동 해제 (`Modifier.resetDocumentSelectionOnFocus`) + native selection 색 통합 (`LocalTextSelectionColors` 동기화) 추가.
+- **2026-05-05**: Shift+↑/↓ 누적 확장 시도 (헬퍼의 baseIndex 재계산 + 누적 분기 + cursor 이동 LaunchedEffect) → race condition 으로 잘못 작동 → **롤백** (섹션 2.5 시도 기록). 단 cursor 이동 LaunchedEffect 와 endpoint 비교 reset 보존.
+- **2026-05-05**: DL Callout title 의 Shift+→ → Callout 자체만 atomic 추가 (섹션 2.4).
+- **2026-05-05**: Step B-2c 완료 (body 안 cross-selection + 경계 박스 탈출). `BlockNavigation.onSelectSelfAsAtomic` 콜백 + 헬퍼의 `onEscapeToParent` 콜백 + `CalloutBlockEditor` 의 `documentSelection`/`containerPath` 파라미터 + body 호출에서 `containerPath + block.id` 누적 + `onEscapeSelectionToPrevious/Next = { navigation.onSelectSelfAsAtomic() }` 연결. 중첩 Callout 도 재귀적 path 누적으로 자연 지원. **Phase 1 전체 완료** — 검증 대기 중.
+- **2026-05-05**: Phase 5 정책 사용자 결정 — Table 은 엑셀 형식 셀 단위 누적 사각형 selection 채택 (옵션 B). CodeBlock 은 atomic 유지 (옵션 A). 섹션 7.1 (구현 가이드 포함) / 섹션 3 의 Phase 5 갱신.

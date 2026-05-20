@@ -211,7 +211,7 @@ internal fun TableBlockEditor(
                                 .weight(1f)
                                 .then(cellKeyHandler(0, col, cellState))
                                 .focusRequester(focusGrid[0][col])
-                                .resetDocumentSelectionOnFocus()
+                                .resetDocumentSelectionOnFocus(block.id)
                                 .padding(horizontal = 6.dp, vertical = 4.dp),
                             textStyle = textStyle.merge(TextStyle(fontWeight = FontWeight.Bold)),
                             cursorBrush = cursorBrush,
@@ -242,7 +242,7 @@ internal fun TableBlockEditor(
                                     .weight(1f)
                                     .then(cellKeyHandler(gridRow, col, cellState))
                                     .focusRequester(focusGrid[gridRow][col])
-                                    .resetDocumentSelectionOnFocus()
+                                    .resetDocumentSelectionOnFocus(block.id)
                                     .padding(horizontal = 6.dp, vertical = 4.dp),
                                 textStyle = textStyle,
                                 cursorBrush = cursorBrush,
