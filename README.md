@@ -12,6 +12,9 @@ MaChum은 Obsidian vault와 함께 사용하는 Compose Multiplatform 마크다�
 
 ## 실행과 검증
 
+Desktop JVM 빌드와 실행은 Java 21 toolchain을 사용합니다. IDE의 Gradle JDK와 관계없이
+Desktop·공통 JVM class target은 Java 21로 고정됩니다.
+
 ```bash
 # Desktop 실행
 ./gradlew :desktopApp:run

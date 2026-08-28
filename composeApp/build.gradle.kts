@@ -10,6 +10,8 @@ plugins {
 }
 
 kotlin {
+    jvmToolchain(21)
+
     android {
         namespace = "com.ninetag.MaChum"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
@@ -26,7 +28,11 @@ kotlin {
         }
     }
 
-    jvm()
+    jvm {
+        compilerOptions {
+            jvmTarget = JvmTarget.JVM_21
+        }
+    }
 
     sourceSets {
         all {

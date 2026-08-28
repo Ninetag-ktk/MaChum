@@ -179,8 +179,6 @@ fun TestScreen(
             Text(text = "$lastModifier")
         }
         Text(text = "$workflowList")
-        workflow?.let{
-            Text(text = "$it")
-        }
+        Text(text = "$workflow")
     }
 }
