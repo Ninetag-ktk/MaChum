@@ -206,18 +206,15 @@ PlatformFile
   → List<EditorBlock>
   → 사용자 편집
   → blocks.toMarkdown()
-  → EditorPage pendingMarkdown
   → MainViewModel.updateBody()
+  → DebouncedSaveCoordinator (file key별 500ms)
   → NoteFile.withBody()
   → FileManager.writeMarkdown()
 ```
 
-현재 debounce는 두 단계다.
-
-- `EditorPage`: 500ms
-- `MainViewModel`: 500ms
-
-실효 저장 지연은 약 1초이며, 장기적으로 debounce의 소유자를 ViewModel 한 곳으로 모으는 것이 권장된다.
+저장 debounce의 소유자는 ViewModel 계층의 `DebouncedSaveCoordinator`다. 실효 저장 지연은 500ms이며,
+같은 파일의 새 요청만 이전 요청을 취소한다. 다른 파일의 pending save는 서로 취소하지 않는다.
+외부 mtime 변경·삭제·rename 시에는 해당 파일의 stale pending save를 취소한다.
 
 ---
 
@@ -310,5 +307,6 @@ workflow 기반 템플릿과 배정 플로우는 제품 네비게이션에서 �
 ./gradlew test
 ```
 
-현재 자동 테스트는 `NoteFile`과 `ProjectConfig`에 집중되어 있다. 블록 파서, BlockOperations, selection, Table 키보드 상호작용은 테스트 확장이 필요하다.
-
+현재 자동 테스트는 `NoteFile`, `ProjectConfig`, 블록 파서·직렬화, `BlockOperations`,
+`DocumentSelection`, key별 저장 debounce와 Table 비정형 행 정규화를 검증한다.
+실제 키보드·마우스·창 포커스·Android SAF 상호작용은 [P0 수동 테스트](p0-manual-test.md)를 따른다.

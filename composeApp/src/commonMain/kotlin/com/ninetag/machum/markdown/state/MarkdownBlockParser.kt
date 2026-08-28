@@ -241,10 +241,23 @@ object MarkdownBlockParser {
         // 구분자 줄(|---|---| 등) 건너뛰기
         val dataStartIndex = if (lines.size > 1 && lines[1].contains("---")) 2 else 1
         val rows = lines.drop(dataStartIndex).map { parseCells(it) }
+        val separatorColumnCount = lines.getOrNull(1)
+            ?.takeIf { it.contains("---") }
+            ?.let(::parseCells)
+            ?.size
+            ?: 0
+        val columnCount = maxOf(
+            headers.size,
+            separatorColumnCount,
+            rows.maxOfOrNull { it.size } ?: 0,
+        ).coerceAtLeast(1)
+
+        fun normalize(cells: List<String>): List<String> =
+            cells + List(columnCount - cells.size) { "" }
 
         return EditorBlock.Table(
-            headerStates = headers.map { TextFieldState(it) },
-            rowStates = rows.map { row -> row.map { TextFieldState(it) } },
+            headerStates = normalize(headers).map { TextFieldState(it) },
+            rowStates = rows.map { row -> normalize(row).map { TextFieldState(it) } },
         )
     }
 

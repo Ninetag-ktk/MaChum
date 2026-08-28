@@ -453,7 +453,7 @@ cursor-only paste는 native TextField 동작을 유지한다. 입력 대체는 I
 
 | 영역 | 상태 |
 |---|---|
-| 블록 모델·parse·serialize | 구현·검증 확대 필요 |
+| 블록 모델·parse·serialize | 핵심 자동 검증 완료 |
 | Text/Callout/Code/Table 렌더링 | 구현됨 |
 | 블록 간 기본 이동 | 구현됨 |
 | soft wrap ↑/↓ | 부분 구현 |
@@ -526,6 +526,8 @@ cursor-only paste는 native TextField 동작을 유지한다. 입력 대체는 I
 5. 아래 블록에서 ↑ 진입
 6. 열 수가 다른 외부 Markdown 로드
 
+플랫폼별 실행 순서와 합격 기준은 [P0 수동 테스트](p0-manual-test.md)에서 관리한다.
+
 ---
 
 ## 14. 다음 작업 권장 순서
@@ -540,4 +542,3 @@ cursor-only paste는 native TextField 동작을 유지한다. 입력 대체는 I
 8. 마우스 drag
 9. Table 셀 selection
 10. Embed와 M3 시각 정리
-

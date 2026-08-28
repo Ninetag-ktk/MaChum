@@ -90,12 +90,16 @@ data class NormalizedSelection(
 fun DocumentSelection.Multi.normalize(blocks: List<EditorBlock>): NormalizedSelection? {
     val anchorPromoted = promoteToCommonPath(anchor, focus.containerPath, blocks) ?: return null
     val focusPromoted = promoteToCommonPath(focus, anchor.containerPath, blocks) ?: return null
+    if (!endpointExists(anchorPromoted, blocks) || !endpointExists(focusPromoted, blocks)) return null
 
     return when (compareEndpoint(anchorPromoted, focusPromoted, blocks)) {
         in Int.MIN_VALUE..0 -> NormalizedSelection(anchorPromoted, focusPromoted)
         else -> NormalizedSelection(focusPromoted, anchorPromoted)
     }
 }
+
+private fun endpointExists(endpoint: SelectionEndpoint, blocks: List<EditorBlock>): Boolean =
+    resolveContainerBlocks(blocks, endpoint.containerPath)?.any { it.id == endpoint.blockId } == true
 
 /**
  * endpoint 를 다른 path 와 공통이 되는 깊이까지 atomic 으로 승격한다.
@@ -105,7 +109,7 @@ private fun promoteToCommonPath(
     endpoint: SelectionEndpoint,
     otherPath: List<String>,
     blocks: List<EditorBlock>,
-): SelectionEndpoint? {
+): SelectionEndpoint {
     val myPath = endpoint.containerPath
     val commonLen = commonPrefixLength(myPath, otherPath)
 
