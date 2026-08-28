@@ -12,17 +12,18 @@ kotlin {
             jvmTarget.set(JvmTarget.JVM_11)
         }
     }
+}
+dependencies {
+    implementation(project(":composeApp"))
 
-    dependencies {
-        implementation(projects.composeApp)
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.compose.uiToolingPreview)
+    implementation(libs.koin.core)
+    implementation(libs.koin.android)
 
-        implementation(libs.androidx.activity.compose)
-        implementation(libs.compose.uiToolingPreview)
-        implementation(libs.koin.core)
-        implementation(libs.koin.android)
+    implementation(libs.fileKit)
 
-        implementation(libs.fileKit)
-    }
+    debugImplementation(libs.compose.uiTooling)
 }
 
 android {
@@ -32,6 +33,7 @@ android {
     defaultConfig {
         applicationId = "com.ninetag.machum"
         minSdk = libs.versions.android.minSdk.get().toInt()
+        //noinspection OldTargetApi
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = 1
         versionName = "1.0"
@@ -42,12 +44,19 @@ android {
         }
     }
     buildTypes {
-        getByName("release") {
+        release {
             isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+    }
+    buildFeatures {
+        compose = true
     }
 }

@@ -8,10 +8,11 @@ plugins {
 
 kotlin {
     dependencies {
-        implementation(projects.composeApp)
+        implementation(project(":composeApp"))
 
         implementation(compose.desktop.currentOs)
         implementation(libs.kotlinx.coroutinesSwing)
+        implementation(libs.compose.uiToolingPreview)
         implementation(libs.koin.core)
         implementation(libs.koin.compose)
 

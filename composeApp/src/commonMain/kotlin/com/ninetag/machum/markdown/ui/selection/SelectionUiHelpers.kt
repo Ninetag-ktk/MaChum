@@ -1,26 +1,33 @@
 package com.ninetag.machum.markdown.ui.selection
 
+import com.ninetag.machum.external.clipEntryOf
 import com.ninetag.machum.markdown.state.DocumentSelection
 import com.ninetag.machum.markdown.state.EditorBlock
 import com.ninetag.machum.markdown.state.NormalizedSelection
 import com.ninetag.machum.markdown.state.SelectionEndpoint
 import com.ninetag.machum.markdown.state.extractMarkdown
 import com.ninetag.machum.markdown.state.isAtomic
+import com.ninetag.machum.markdown.state.nextFocusEndpoint
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboard
+import kotlinx.coroutines.launch
 
 /**
  * Cross-block selection 의 UI 측 헬퍼들.
@@ -80,7 +87,8 @@ fun Modifier.documentSelectionShortcuts(
     rootBlocks: List<EditorBlock>,
     documentSelection: MutableState<DocumentSelection>,
 ): Modifier {
-    val clipboard = LocalClipboardManager.current
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
     return this.onPreviewKeyEvent { event ->
         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
         val ctrlOrCmd = event.isCtrlPressed || event.isMetaPressed
@@ -107,7 +115,7 @@ fun Modifier.documentSelectionShortcuts(
                 if (sel is DocumentSelection.Multi) {
                     val markdown = extractMarkdown(rootBlocks, sel)
                     if (markdown.isNotEmpty()) {
-                        clipboard.setText(AnnotatedString(markdown))
+                        scope.launch { clipboard.setClipEntry(clipEntryOf(markdown)) }
                     }
                     true
                 } else false
@@ -117,6 +125,18 @@ fun Modifier.documentSelectionShortcuts(
                     documentSelection.value = DocumentSelection.None
                     true
                 } else false
+            }
+            // Shift+↑/↓ 누적 확장 (Scope A) — Multi 가 이미 존재할 때만 최상위가 소유.
+            // None 이면 false 반환 → 블록 핸들러가 개시 (첫 Shift+화살표). preview 라 블록보다 먼저
+            // 발동하므로 focus 위치와 무관하게 단일 소유 → 이전 누적 시도의 race 제거 (SELECTION.md 2.5).
+            (event.key == Key.DirectionUp || event.key == Key.DirectionDown) && event.isShiftPressed -> {
+                val sel = documentSelection.value as? DocumentSelection.Multi
+                    ?: return@onPreviewKeyEvent false  // 개시는 블록 핸들러 담당
+                val down = event.key == Key.DirectionDown
+                val newFocus = nextFocusEndpoint(rootBlocks, sel.focus, down)
+                    ?: return@onPreviewKeyEvent true  // 컨테이너 경계 — 확장 불가, selection 보존
+                documentSelection.value = DocumentSelection.Multi(sel.anchor, newFocus)
+                true
             }
             event.key == Key.DirectionUp ||
             event.key == Key.DirectionDown ||
@@ -248,6 +268,35 @@ val LocalDocumentSelection = compositionLocalOf<MutableState<DocumentSelection>?
  *
  * @param blockId 이 BasicTextField 가 속한 블록의 id
  */
+/**
+ * 최상위 wrapper 에 부착. 사용자가 에디터 안 어디든 마우스로 누르는 순간 Multi selection 을 None 으로 해제.
+ *
+ * `onFocusChanged` 기반 [resetDocumentSelectionOnFocus] 의 사각지대를 메운다:
+ * - **Ctrl+A 는 포커스를 옮기지 않음** → 이미 포커스를 가진 블록을 다시 클릭하면 onFocusChanged 가 안 떠서
+ *   해제되지 않는다.
+ * - **endpoint 블록 클릭**은 resetDocumentSelectionOnFocus 가 보존 예외로 두므로 해제되지 않는다.
+ *
+ * 마우스 press 는 언제나 "여기에 커서를 두겠다" 는 사용자 의도이므로 무조건 해제. Initial pass 에서
+ * 관찰만 하고 consume 하지 않아 BasicTextField 의 커서 배치 동작은 그대로 진행한다. 키보드 Shift 확장은
+ * FocusRequester 경로라 이 핸들러와 무관 (press 이벤트가 발생하지 않으므로 selection 보존).
+ *
+ * @param documentSelection 호이스팅된 selection state
+ */
+fun Modifier.resetDocumentSelectionOnPointerPress(
+    documentSelection: MutableState<DocumentSelection>,
+): Modifier = this.pointerInput(documentSelection) {
+    awaitPointerEventScope {
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            if (event.type == PointerEventType.Press &&
+                documentSelection.value is DocumentSelection.Multi
+            ) {
+                documentSelection.value = DocumentSelection.None
+            }
+        }
+    }
+}
+
 @Composable
 fun Modifier.resetDocumentSelectionOnFocus(blockId: String): Modifier {
     val selection = LocalDocumentSelection.current ?: return this

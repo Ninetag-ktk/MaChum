@@ -227,6 +227,45 @@ private fun partialMarkdown(block: EditorBlock, startOffset: Int, endOffset: Int
 }
 
 /**
+ * 누적 cross-block selection (Scope A) 의 핵심 traversal.
+ *
+ * 현재 focus endpoint 에서 방향(up/down)으로 한 칸 이동한 새 focus endpoint 를 계산한다.
+ * **focus 가 속한 컨테이너(focus.containerPath) 안에서만** 이동하며, 그 컨테이너의 경계에
+ * 도달하면 null 을 반환한다 (컨테이너 횡단 누적은 Scope B — 미구현).
+ *
+ * 이웃 블록은 항상 블록 단위(통째)로 들어온다. atomic 블록은 통째, Text 블록도 누적 단계에선
+ * start/end 전체로 취급한다 — 부분 offset 은 anchor 쪽에서만 의미가 있고 [extractMarkdown] 이 처리.
+ *
+ * @param down true 면 아래(다음 블록), false 면 위(이전 블록)
+ * @return 새 focus endpoint, 또는 컨테이너 경계라 더 확장 불가하면 null
+ */
+fun nextFocusEndpoint(
+    blocks: List<EditorBlock>,
+    focus: SelectionEndpoint,
+    down: Boolean,
+): SelectionEndpoint? {
+    val containerBlocks = resolveContainerBlocks(blocks, focus.containerPath) ?: return null
+    val idx = containerBlocks.indexOfFirst { it.id == focus.blockId }
+    if (idx < 0) return null
+    val targetIdx = if (down) idx + 1 else idx - 1
+    if (targetIdx !in containerBlocks.indices) return null
+    val target = containerBlocks[targetIdx]
+    val offset = if (down) {
+        when (target) {
+            is EditorBlock.Text -> target.textFieldState.text.length
+            else -> SelectionEndpoint.ATOMIC_END
+        }
+    } else {
+        SelectionEndpoint.ATOMIC_START
+    }
+    return SelectionEndpoint(
+        containerPath = focus.containerPath,
+        blockId = target.id,
+        offset = offset,
+    )
+}
+
+/**
  * containerPath 를 따라 내려가서 해당 컨테이너의 blocks 리스트를 반환.
  * path 가 empty 면 최상위 blocks 그대로. 중간에 잘못된 id 면 null.
  */

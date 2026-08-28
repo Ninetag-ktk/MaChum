@@ -41,7 +41,13 @@
       "Bash(awk *)",
       "WebSearch",
       "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\lurel\\\\Desktop\\\\MaChum\" -Recurse -Directory)",
-      "Bash(Select-Object -ExpandProperty FullName)"
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(./gradlew :composeApp:compileKotlinJvm -q)",
+      "Bash(javap -public -classpath \"/c/Users/lurel/.gradle/caches/modules-2/files-2.1/org.jetbrains.compose.ui/ui-desktop/1.11.1/24c40c0d60c77a6fb34f930f13bfa4a3ff62c0f/ui-desktop-1.11.1.jar\" \"androidx.compose.ui.platform.ClipEntry\")",
+      "Bash(javap -p -c -classpath \"/c/Users/lurel/.gradle/caches/modules-2/files-2.1/org.jetbrains.compose.ui/ui-desktop/1.11.1/24c40c0d60c77a6fb34f930f13bfa4a3ff62c0f/ui-desktop-1.11.1.jar\" \"androidx.compose.ui.platform.PlatformClipboard_desktopKt\")",
+      "WebFetch(domain:www.jetbrains.com)",
+      "Bash(./gradlew :composeApp:jvmTest --tests \"com.ninetag.machum.external.NoteFileTest\" --console=plain)",
+      "Bash(./gradlew :composeApp:jvmTest --console=plain)"
     ]
   }
 }

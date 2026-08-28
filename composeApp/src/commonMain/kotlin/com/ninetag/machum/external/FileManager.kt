@@ -40,6 +40,14 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     val workflowParser = WorkflowParser()
+
+    // .machum.json 직렬화: 구 스키마(workflow 필드 등) 무시 + 사람이 읽기 좋게 + 기본값도 기록
+    private val configJson = Json {
+        ignoreUnknownKeys = true
+        prettyPrint = true
+        encodeDefaults = true
+    }
+
     companion object {
         private val BOOKMARK_VAULT = byteArrayPreferencesKey("bookmark_vault")
         private val BOOKMARK_PROJECT = byteArrayPreferencesKey("bookmark_project")
@@ -121,8 +129,6 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
         val bookmark = Bookmarks(vaultData = vault)
         _bookmarks.value = bookmark
-        getWorkflowList()
-        if (_workflowList.value.isEmpty()) setPreferences(bookmark)
         return vault
     }
 
@@ -130,7 +136,6 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         val project = getPreferences().projectData ?: return null
         _bookmarks.value = getPreferences()
         setConfig(project) ?: return null
-        setWorkflow()
         return project
     }
 
@@ -214,7 +219,6 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             try {
                 setPreferences(getPreferences().copy(projectData = project))
                 setConfig(project)
-                setWorkflow()
             } catch (e: Exception) {
                 println(e)
             }
@@ -225,15 +229,10 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * 워크플로우 선택시 동작
      * @param workflow 워크플로우 파일
      */
+    // workflow 은퇴(dormant). 라이브 흐름 미사용 — WorkflowSelectionScreen(은퇴 화면)만 참조.
     fun pickWorkflow(workflow: PlatformFile) {
         scope.launch {
             try {
-                writeConfig(
-                    ProjectConfig(
-                        workflow = workflow.nameWithoutExtension,
-                        workflowLastModified = workflow.getLastModified()
-                    )
-                )
                 _workflow.value = workflowParser.parse(workflow.readString())
             } catch (e: Exception) {
                 throw e
@@ -290,16 +289,28 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             val content = configFile.readString()
             if (content.isBlank()) return@withContext null
 
-            Json.decodeFromString(ProjectConfig.serializer(), content)
+            configJson.decodeFromString(ProjectConfig.serializer(), content)
         } catch (e: Exception) {
             throw e
+        }
+    }
+
+    /**
+     * 파일의 마지막 수정 시각 (epoch millis). 조회 실패 시 null.
+     * 외부(옵시디언 등) 변경 감지에 사용.
+     */
+    suspend fun lastModified(file: PlatformFile): Long? = withContext(Dispatchers.IO) {
+        try {
+            file.getLastModified()
+        } catch (e: Exception) {
+            null
         }
     }
 
     suspend fun readMarkdown(file: PlatformFile): NoteFile = withContext(Dispatchers.IO) {
         val raw = NoteFile.parse(file.readString())
         val withId = raw.ensureId()
-        if (raw.getId() == null) {
+        if (raw.id == null) {
             file.writeString(withId.inject())
         }
         withId
@@ -317,7 +328,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     suspend fun writeConfig(projectConfig: ProjectConfig) = withContext(Dispatchers.IO) {
         try {
             val configFile = _bookmarks.value.projectData!!.list().find { it.name == ".machum.json" } ?: return@withContext null
-            val content = Json.encodeToString(ProjectConfig.serializer(), projectConfig)
+            val content = configJson.encodeToString(ProjectConfig.serializer(), projectConfig)
             configFile.writeString(content)
         } catch (e: Exception) {
             throw e
@@ -364,32 +375,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         createFolder(_bookmarks.value.vaultData!!, name)?.let{
             setPreferences(getPreferences().copy(projectData = it))
             setConfig(it)
-            setWorkflow()
             it
-        }
-    }
-
-    /**
-     * 프로젝트 config 파일에 workflow 정보 입력
-     * 마지막 수정 시간이 다른 경우 플래그를 통해 상태 갱신 요청
-     */
-    suspend fun setWorkflow() = withContext(Dispatchers.IO) {
-        val config = readConfig()
-        if (config != null) {
-            val workflowFile = getWorkflow(config.workflow) ?: return@withContext
-            if (workflowFile.getLastModified() != workflowFile.getLastModified()) _needUpdateWorkflow.value = true
-            _workflow.value = workflowParser.parse(workflowFile.readString())
-        } else {
-            if (_workflowList.value.size == 1) {
-                val workflow = _workflowList.value.first()
-                writeConfig(
-                    ProjectConfig(
-                        workflow = workflow.nameWithoutExtension,
-                        workflowLastModified = workflow.getLastModified()
-                    )
-                )
-                _workflow.value = workflowParser.parse(workflow.readString())
-            }
         }
     }
 
@@ -400,8 +386,9 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                     setPreferences(getPreferences().copy(fileData = it)).fileData
                 }
                 ?:run{
-                    val firstStep = _workflow.value.first()
-                    val name = "${firstStep.numbering}. ${firstStep.title}"
+                    // 빈 프로젝트: 원고 첫 파일 생성 (넘버링 0부터, docs/folder-zone-model.md §6.1).
+                    // 폴더-존 파일생성 UX 로 추후 정교화 예정 (임시 기본 제목).
+                    val name = "0. 제목"
                     createFile(project, name)
                         ?.let { setPreferences(getPreferences().copy(fileData = it)).fileData }
                         ?:throw Exception()

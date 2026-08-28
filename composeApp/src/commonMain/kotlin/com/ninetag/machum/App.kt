@@ -12,9 +12,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import com.ninetag.machum.external.FileManager
 import com.ninetag.machum.screen.MainScreen
 import com.ninetag.machum.screen.projectScreen.ProjectSelectionScreen
-import com.ninetag.machum.screen.projectScreen.WorkflowSelectionScreen
 import com.ninetag.machum.screen.vaultScreen.VaultSelectionScreen
-import com.ninetag.machum.screen.workflowSceen.WorkflowScreen
 import com.ninetag.machum.theme.AppTheme
 import kotlinx.coroutines.launch
 
@@ -25,11 +23,8 @@ import org.koin.compose.koinInject
 fun App() {
     val fileManager = koinInject<FileManager>()
     val bookmark by fileManager.bookmarks.collectAsState()
-    val workflowList by fileManager.workflowList.collectAsState()
-    val workflow by fileManager.workflow.collectAsState()
 
     var showVaultPicker by remember { mutableStateOf(false) }
-    var showWorkflowManagement by remember { mutableStateOf(false) }
 
     AppTheme {
         Box(Modifier.fillMaxSize()) {
@@ -41,9 +36,7 @@ fun App() {
             ) {
                 when {
                     bookmark.vaultData == null || showVaultPicker -> { VaultSelectionScreen(reset = { showVaultPicker = false }) }
-                    workflowList.isEmpty() || showWorkflowManagement -> { WorkflowScreen(show = showWorkflowManagement, onDismiss = { showWorkflowManagement = false }) }
                     bookmark.projectData == null -> { ProjectSelectionScreen() }
-                    workflow.isEmpty() -> { WorkflowSelectionScreen() }
                     bookmark.fileData == null -> { LaunchedEffect(bookmark.projectData) { fileManager.setFile(bookmark.projectData!!) } }
                     else -> { MainScreen() }
                 }

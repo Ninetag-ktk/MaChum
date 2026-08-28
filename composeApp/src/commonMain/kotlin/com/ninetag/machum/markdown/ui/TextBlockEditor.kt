@@ -204,36 +204,34 @@ internal fun TextBlockEditor(
                 } else false
             }
             Key.DirectionUp -> {
-                if (sel.collapsed) {
-                    val text = block.textFieldState.text.toString()
-                    // sel.start == 0이면 무조건 첫 줄 (leading \n이 있어도)
-                    val isFirstLine = sel.start == 0 || text.lastIndexOf('\n', sel.start - 1) == -1
-                    if (isFirstLine) {
-                        if (event.isShiftPressed) {
-                            // Shift+↑: 블록 단위 selection 확장 (Phase 1 Step B)
-                            navigation.onExtendSelectionToPrevious()
-                        } else {
-                            val cursorX = textLayoutResult?.getHorizontalPosition(sel.start, usePrimaryDirection = true) ?: 0f
-                            navigation.onMoveToPreviousWithX(cursorX)
-                        }
-                        true
-                    } else false
+                // 시각(visual) 줄 기준으로 판정한다. soft-wrap 된 문단에서도 "첫 시각 줄"에서만
+                // 블록을 탈출하고, 그 외 시각 줄 사이 이동은 BasicTextField 의 네이티브 처리에 맡긴다.
+                // (기존 '\n' 기준은 줄바꿈 없이 감긴 긴 문단에서 커서 위치와 무관하게 항상 블록을
+                //  탈출하는 버그가 있었음 — CLAUDE_sub.md #19. textLayoutResult 로 시각 줄을 판정해 해결.)
+                val layout = textLayoutResult
+                if (sel.collapsed && layout != null && layout.getLineForOffset(sel.start) == 0) {
+                    if (event.isShiftPressed) {
+                        // Shift+↑: 블록 단위 selection 확장 (Phase 1 Step B)
+                        navigation.onExtendSelectionToPrevious()
+                    } else {
+                        val cursorX = layout.getHorizontalPosition(sel.start, usePrimaryDirection = true)
+                        navigation.onMoveToPreviousWithX(cursorX)
+                    }
+                    true
                 } else false
             }
             Key.DirectionDown -> {
-                if (sel.collapsed) {
-                    val text = block.textFieldState.text.toString()
-                    val isLastLine = text.indexOf('\n', sel.start) == -1
-                    if (isLastLine) {
-                        if (event.isShiftPressed) {
-                            // Shift+↓: 블록 단위 selection 확장 (Phase 1 Step B)
-                            navigation.onExtendSelectionToNext()
-                        } else {
-                            val cursorX = textLayoutResult?.getHorizontalPosition(sel.start, usePrimaryDirection = true) ?: 0f
-                            navigation.onMoveToNextWithX(cursorX)
-                        }
-                        true
-                    } else false
+                // 시각 줄 기준: "마지막 시각 줄"에서만 다음 블록으로 탈출. 그 외 시각 줄 사이 이동은 네이티브.
+                val layout = textLayoutResult
+                if (sel.collapsed && layout != null && layout.getLineForOffset(sel.start) == layout.lineCount - 1) {
+                    if (event.isShiftPressed) {
+                        // Shift+↓: 블록 단위 selection 확장 (Phase 1 Step B)
+                        navigation.onExtendSelectionToNext()
+                    } else {
+                        val cursorX = layout.getHorizontalPosition(sel.start, usePrimaryDirection = true)
+                        navigation.onMoveToNextWithX(cursorX)
+                    }
+                    true
                 } else false
             }
             Key.DirectionLeft -> {

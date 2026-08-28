@@ -7,6 +7,7 @@ import com.ninetag.machum.markdown.state.toMarkdown
 import com.ninetag.machum.markdown.state.MarkdownBlockParser
 import com.ninetag.machum.markdown.ui.selection.LocalDocumentSelection
 import com.ninetag.machum.markdown.ui.selection.documentSelectionShortcuts
+import com.ninetag.machum.markdown.ui.selection.resetDocumentSelectionOnPointerPress
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.text.selection.LocalTextSelectionColors
@@ -102,7 +103,7 @@ fun MarkdownBlockTextField(
         LocalTextSelectionColors provides unifiedSelectionColors,
         LocalDocumentSelection provides documentSelection,
     ) {
-        Box(modifier = shortcutHandler) {
+        Box(modifier = shortcutHandler.resetDocumentSelectionOnPointerPress(documentSelection)) {
             MarkdownBlockEditor(
                 blocks = blocks,
                 onBlocksChanged = { newBlocks -> blocks = newBlocks },

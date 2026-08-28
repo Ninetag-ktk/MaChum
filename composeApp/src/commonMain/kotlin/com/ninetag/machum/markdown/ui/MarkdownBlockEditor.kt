@@ -282,8 +282,32 @@ internal fun MarkdownBlockEditor(
     if (multiSelection != null && multiSelection.focus.containerPath == containerPath) {
         val focusTargetId = multiSelection.focus.blockId
         LaunchedEffect(focusTargetId) {
+            // 화면 밖 focus endpoint 를 뷰포트로 스크롤 → 노드 compose → FocusRequester 초기화 →
+            // requestFocus 성공. root LazyColumn 한정 (nested Callout body 는 Column 이라 recycle 없음).
+            // 누적 확장은 한 칸씩 빠르게 이어지므로, 고정 nudge + 대기 대신 **필요한 delta 만 한 번에**
+            // 스크롤해 지연을 없앤다.
+            if (!isNested) {
+                val targetIndex = blocks.indexOfFirst { it.id == focusTargetId }
+                if (targetIndex >= 0) {
+                    val info = lazyListState.layoutInfo
+                    val item = info.visibleItemsInfo.firstOrNull { it.index == targetIndex }
+                    if (item == null) {
+                        // 화면에 아예 없음 (멀리 점프) → 바로 해당 아이템으로
+                        lazyListState.animateScrollToItem(targetIndex)
+                    } else {
+                        // 부분만 보임 → 가장자리로 끌어오는 만큼만 (한 번에)
+                        val delta = when {
+                            item.offset < info.viewportStartOffset ->
+                                (item.offset - info.viewportStartOffset).toFloat()
+                            item.offset + item.size > info.viewportEndOffset ->
+                                (item.offset + item.size - info.viewportEndOffset).toFloat()
+                            else -> 0f
+                        }
+                        if (delta != 0f) lazyListState.animateScrollBy(delta)
+                    }
+                }
+            }
             val fr = focusRequesterMap[focusTargetId] ?: return@LaunchedEffect
-            kotlinx.coroutines.delay(20.milliseconds)
             try { fr.requestFocus() } catch (_: Exception) {}
         }
     }

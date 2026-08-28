@@ -156,6 +156,25 @@ A 정책 + B 정책의 외부 → atomic 진입 케이스 처리:
 
 향후 누적 확장 재시도 시 고려할 점: focus 이동과 keystroke 발생 위치의 race condition, 누적 시 currentIndex vs focus.blockId 의 인덱스 일관성 보장 필요
 
+#### 2.5.1 Scope A 재구현 — 최상위 단일 소유 (구현 완료)
+
+위 롤백의 근본 원인은 **누적 확장을 각 블록의 `onPreviewKeyEvent` 에서 처리**한 점이었다. 그러면 다음 keystroke 가 어느 블록에 도착하느냐가 focus 이동 타이밍에 의존해 race 가 발생한다.
+
+**재설계 핵심: 누적 확장의 소유권을 최상위 핸들러로 이전.**
+
+- `documentSelectionShortcuts` 의 `onPreviewKeyEvent` 는 preview (top-down) 라 **블록 핸들러보다 먼저** 발동한다. 따라서 Multi 가 이미 존재하면 최상위가 Shift+↑/↓ 를 가로채 직접 처리하고 consume → 블록 핸들러는 보지 못함 → focus 위치와 무관한 단일 소유.
+- focus 이동 (`LaunchedEffect(focusTargetId)`) 은 **순수 cosmetic** 으로 강등 — selection 로직이 더 이상 focus 위치에 의존하지 않으므로 race 가 구조적으로 사라짐.
+- 개시 (None → 첫 Multi 생성) 는 여전히 블록 핸들러 담당. 최상위는 `Multi` 일 때만 가로채고 `None` 이면 `false` 반환.
+
+**Scope A 정책 (구현된 범위):**
+
+- 누적 확장은 **focus 가 속한 컨테이너 안에서만** (`focus.containerPath`). 이웃 블록은 블록 단위(통째)로 들어옴. atomic 블록도 통째.
+- anchor 고정, focus 만 `nextFocusEndpoint(blocks, focus, down)` 으로 한 칸씩 이동. 컨테이너 경계 도달 시 null → 더 확장 안 함 (selection 보존).
+- 모델/추출/시각화 (`normalize` / `extractMarkdown` / `isBlockInSelection` / 색 통합) 는 **같은 컨테이너 내 다중 블록 범위**를 이미 지원하므로 신규 작업 없이 재활용.
+- **스크롤 따라가기**: cursor-following `LaunchedEffect(focusTargetId)` 에 스크롤-into-view 추가. 누적 확장은 한 칸씩 빠르게 이어지므로 **적응형 단발 스크롤** — 대상이 부분만 보이면 가장자리로 끌어올 `delta` 만 계산해 `animateScrollBy(delta)` 한 번, 화면에 아예 없으면(멀리 점프) `animateScrollToItem`. 네비게이션 경로의 고정 80px nudge + 50ms 대기 + 재점프 2단계는 블록이 크면 둔하게 느껴져서 채택 안 함. **스크롤 먼저 → 노드 compose → `requestFocus`** 순서라 off-screen recycle 된 블록도 focus 성공 (중간 대기 없음). nested(Callout body)는 `Column` 이라 recycle 없음 → `!isNested` no-op. (anchor 쪽은 화면 유지 안 함 — focus edge 만 추적.)
+
+**Scope B (미구현, 후속 판단):** Callout body 안에서 누적하다 **경계를 넘어 외부로 이어지는** cross-container 누적. 재귀 traversal + `extractMarkdown` 의 cross-container 추출 (현재 `resolveContainerBlocks(start.containerPath)` 단일 컨테이너만 iterate) + 부분 컨테이너 시각화 (`isBlockInSelection` 은 start/end path 가 동일 컨테이너일 때만 매칭) 가 모두 필요해 큰 작업. Callout 은 외부에서 atomic 으로 통째 선택되므로 효용 대비 비용이 커 보류.
+
 ### 2.4 endpoint 비교 — start / end 결정
 
 ```
@@ -247,12 +266,18 @@ fun compareEndpoint(a: SelectionEndpoint, b: SelectionEndpoint, blocks: List<Edi
 
 ## 5. Clipboard 통합
 
-Compose Multiplatform 의 `LocalClipboardManager` 사용 (commonMain). `androidApp` / `desktopApp` 모두 native clipboard 로 자동 위임. 별도 expect/actual 불필요.
+Compose Multiplatform 의 신 `LocalClipboard` (`Clipboard`) API 사용 (commonMain). 구 `LocalClipboardManager` 는 deprecated 라 마이그레이션 완료.
+
+신 API 는 `suspend fun setClipEntry(ClipEntry?)` 만 노출하고 (`setText(AnnotatedString)` 같은 공통 텍스트 편의 메서드 없음), `ClipEntry` 는 플랫폼별 `expect class` 라 텍스트로 만드는 공통 생성자가 없다. Compose 내부의 `AnnotatedString.toClipEntry()` 헬퍼는 `internal` 이라 접근 불가하므로 직접 expect/actual (`external/ClipEntryFactory.kt` 의 `clipEntryOf(text)`) 를 둔다. Android=`ClipData.newPlainText`, Desktop=AWT `StringSelection`.
 
 ```kotlin
-val clipboard = LocalClipboardManager.current
-clipboard.setText(AnnotatedString(extractMarkdown(blocks, selection)))
+val clipboard = LocalClipboard.current
+val scope = rememberCoroutineScope()   // setClipEntry 가 suspend
+// ...
+scope.launch { clipboard.setClipEntry(clipEntryOf(extractMarkdown(blocks, selection))) }
 ```
+
+> 참고: 신 API 가 `suspend` 인 것은 Web(Wasm/JS) 타겟의 비동기·권한 기반 clipboard 를 공통 인터페이스로 흡수하기 위함. 이 프로젝트는 Android/Desktop 만 타겟이라 `scope.launch` 로 fire-and-forget.
 
 `extractMarkdown` 시그니처:
 
@@ -435,7 +460,7 @@ Step B 를 세 sub-step 으로 분할:
 
 ### 9.1 현재 상태 한 줄 요약
 
-**Phase 1 완료** (Step A + B-1 + B-2a + B-2b + B-2c + DL Shift+→). 사용자 검증 대기 중. 다음 작업은 Phase 2 (마우스 드래그 selection) 또는 Phase 3 (잘라내기/붙여넣기) 중 선택.
+**Phase 1 완료 + Scope A 누적 확장 완료.** Phase 1 (Step A + B-1 + B-2a + B-2b + B-2c + DL Shift+→) 사용자 검증 통과. 누적 cross-block selection 의 Scope A (최상위 단일 소유, 같은 컨테이너 내 연타 확장) 구현 완료 — 검증 대기. 다음 작업은 Phase 3 (잘라내기/붙여넣기 + replace, 섹션 11 분석) 또는 Phase 2 (마우스 드래그) 중 선택.
 
 ### 9.2 검증된 동작 (Phase 1 전체)
 
@@ -445,6 +470,7 @@ Step B 를 세 sub-step 으로 분할:
 | `Ctrl+C` / `Cmd+C` | selection 범위의 markdown 을 clipboard 로 복사 |
 | `Esc` / 방향키 / Home / End / PageUp/Down | Multi 상태에서 None 으로 자동 해제 |
 | focus 이동 (다른 블록 클릭) | 자동 해제 — 단 endpoint blockId 매칭 시 보존 (Shift 확장 후 cursor 이동 대응) |
+| 마우스 press (에디터 내부 어디든) | 무조건 자동 해제 — Ctrl+A 후 같은 블록 재클릭 / endpoint 블록 클릭의 사각지대 보완 (`resetDocumentSelectionOnPointerPress`) |
 | 외부 Text 의 첫/마지막 줄에서 Shift+↑/↓ | 외부 Text 끼리는 native 확장, atomic 블록 진입이면 atomic 만 selected |
 | Callout title 에서 Shift+↑/↓ | Callout 자체만 atomic (외부 블록 포함 X) |
 | DL Callout title 에서 Shift+→ | DL Callout 자체만 atomic |
@@ -455,11 +481,13 @@ Step B 를 세 sub-step 으로 분할:
 | 중첩 Callout | 재귀적 path 누적으로 자연 지원 |
 | 시각화 색 | native BasicTextField selection 색과 통합 (`LocalTextSelectionColors` 동기화) |
 | Shift+↑/↓ 후 cursor 이동 | selection 의 focus 블록으로 자동 focus 이동 (selection 보존) |
+| **Shift+↑/↓ 누적 확장 (Scope A)** | Multi 존재 시 최상위가 소유 — anchor 고정 + focus 한 칸씩 이동. 같은 컨테이너 안에서 연타로 계속 확장. 경계 도달 시 보존. atomic 블록은 통째 포함 |
+| **누적 확장 시 스크롤 따라가기** | focus endpoint 가 화면 밖이면 root LazyColumn 자동 스크롤 — 적응형 단발(`delta` 만큼 `animateScrollBy` 한 번, 멀면 `animateScrollToItem`). 스크롤 먼저 → 노드 compose → requestFocus 순서라 recycle 된 블록도 focus 성공 |
 
-### 9.3 Phase 1 의 미구현 — Phase 3 으로 이관
+### 9.3 미구현 — Phase 3 으로 이관
 
-- **selection + 텍스트 입력 → replace**: 현재 selection 시각만 있고 native 입력이 endpoint 블록에 그대로 들어감 (selection 보존). 자연스러운 동작은 selection 범위 삭제 + 입력 텍스트 삽입. Phase 3 의 `deleteSelection` / `replaceSelection` 과 통합 진행
-- **Shift+↑/↓ 누적 확장**: 한 번 더 Shift 눌러도 selection 이 더 확장되지 않음. focus 기준 baseIndex 재계산 시도가 race condition 으로 잘못 작동하여 롤백됨 (섹션 2.5). 향후 정밀 구현 시 focus 이동과 keystroke race 조심
+- **selection + 텍스트 입력 → replace**: 현재 selection 시각만 있고 native 입력이 endpoint 블록에 그대로 들어감 (selection 보존). 자연스러운 동작은 selection 범위 삭제 + 입력 텍스트 삽입. Phase 3 의 `deleteSelection` / `replaceSelection` 과 통합 진행 (섹션 11.3 분석)
+- **~~Shift+↑/↓ 누적 확장~~**: ✅ **Scope A 로 구현 완료** (섹션 2.5.1). Multi 존재 시 최상위 핸들러가 소유하여 anchor 고정 + focus 한 칸씩 누적. 컨테이너 횡단 누적(Scope B)은 보류
 
 ### 9.4 다음 작업 선택지
 
@@ -484,9 +512,9 @@ Step B 를 세 sub-step 으로 분할:
 
 | 역할 | 파일 |
 |---|---|
-| Selection 모델 + 비즈니스 로직 | `markdown/state/DocumentSelection.kt` |
-| UI 헬퍼 (단축키 / 시각화 / 확장 + escape / focus reset + endpoint 비교) | `markdown/ui/selection/SelectionUiHelpers.kt` |
-| 최상위 진입 + state 호이스팅 + CompositionLocal 제공 + native selection 색 통합 | `markdown/ui/MarkdownBlockTextField.kt` |
+| Selection 모델 + 비즈니스 로직 (`normalize` / `extractMarkdown` / `isAtomic` / **`nextFocusEndpoint`** 누적 traversal) | `markdown/state/DocumentSelection.kt` |
+| UI 헬퍼 (단축키 + **Shift+↑/↓ 누적 분기** / 시각화 / 개시 확장 + escape / focus reset + pointer reset) | `markdown/ui/selection/SelectionUiHelpers.kt` |
+| 최상위 진입 + state 호이스팅 + CompositionLocal 제공 + native selection 색 통합 + `resetDocumentSelectionOnPointerPress` 부착 | `markdown/ui/MarkdownBlockTextField.kt` |
 | 블록 dispatcher + BlockNavigation (onExtendSelection*/onSelectSelfAsAtomic/onEscapeSelection*) + 시각화 + cursor 이동 LaunchedEffect | `markdown/ui/MarkdownBlockEditor.kt` |
 | Callout title 의 Shift 핸들러 + body 재귀 호출 (documentSelection/containerPath 전파) + DL Shift+→ | `markdown/ui/block/CalloutBlockEditor.kt` |
 | TextBlock 의 Shift+↑/↓ 핸들러 + 외부 → atomic 진입 분기 | `markdown/ui/TextBlockEditor.kt` |
@@ -503,6 +531,71 @@ Step B 를 세 sub-step 으로 분할:
 
 ---
 
+## 11. Phase 3 작업량 분석 — 잘라내기 / 붙여넣기 / selection-replace
+
+Scope A 누적 selection 완료 후 가장 가치 있는 다음 작업. 코드 조사 기반 분석 (`BlockOperations.kt` 300줄, `MarkdownBlockTextField.kt` 의 blocks 호이스팅, native paste 흐름).
+
+### 11.1 핵심 신규 연산 — `deleteSelection`
+
+```kotlin
+fun deleteSelection(
+    blocks: List<EditorBlock>,
+    selection: DocumentSelection.Multi,
+): DeleteResult  // { blocks: List<EditorBlock>, focusBlockId: String, cursorOffset: Int }
+```
+
+- `normalize` 로 start/end 결정 → 같은 컨테이너 범위 (Scope A 산출물은 항상 동일 컨테이너).
+- start 블록이 Text → `substring(0, start.offset)` 잔여, end 블록이 Text → `substring(end.offset, len)` 잔여 → **두 잔여를 한 Text 블록으로 병합** (인접하므로). 중간 블록 제거.
+- start/end 가 atomic → 통째 제거.
+- cursor 는 병합 지점 (= start.offset).
+- 컨테이너가 Callout body 면 그 Callout 을 새 bodyBlocks 로 재구성 (부모 rebuild).
+
+**규모: 중.** 잔여 병합 (id 재사용 + TextFieldState 재생성 + cursor offset) 이 까다로운 핵심. 기존 `mergeWithPrevious` 와 결은 비슷하나 형태가 달라 직접 재활용은 안 됨. cross-container 시 부모 rebuild 가 추가.
+
+### 11.2 잘라내기 (Ctrl+X) / 붙여넣기 (Ctrl+V)
+
+| 동작 | 구현 | 규모 / 리스크 |
+|---|---|---|
+| **Ctrl+X** | `extractMarkdown` (구현됨) → clipboard + `deleteSelection` | **소** (deleteSelection 완성 후). 낮음 |
+| **Ctrl+V (Multi selection 있음)** | clipboard → `MarkdownBlockParser.parse` (구현됨) → `deleteSelection` 후 그 자리 삽입 + 경계 병합 | **중**. 중간 |
+| **Ctrl+V (cursor만, selection 없음)** | **native 그대로** — BasicTextField 가 텍스트 삽입, focus-out 시 기존 `tryReparse` 가 블록 승격 처리 | **0** (이미 동작). 없음 |
+
+핵심 절감: cursor-only paste 는 손대지 않는다. **Multi selection 을 대체하는 paste 만** 신규 코드. Ctrl+V 핸들러는 Multi 일 때만 가로채고 아니면 false 반환.
+
+### 11.3 selection-replace on input (입력 시 삭제 후 대체)
+
+Multi selection 상태에서 사용자가 글자를 입력하면 → selection 범위 삭제 + 입력 글자 삽입.
+
+**가장 까다로운 부분.** 이유:
+- 텍스트 입력은 key event 가 아니라 BasicTextField 의 `InputTransformation` 경로로 들어온다. 그런데 InputTransformation 은 **블록 단위**라 다른 블록을 삭제할 수 없다.
+- 입력 keystroke 는 현재 focus 된 (옛) 블록에 도착 → 삭제 적용 전에 입력이 먼저 들어가는 순서 문제 (race).
+- printable key → 문자 매핑은 IME / 로케일에서 취약 (key event 로 문자를 직접 만들면 한글 조합 등 깨짐).
+
+**후보 접근:**
+1. 최상위 `onPreviewKeyEvent` 에서 Multi + printable 감지 → `deleteSelection` → Multi=None → 병합 블록에 focus + cursor → 이벤트는 consume 안 함 → 병합 블록에서 native 입력 진행. **단 focus 이동과 입력 도착의 순서 보장이 관건** (LaunchedEffect 비동기 focus vs 동기 keystroke).
+2. IME 안전성 위해 printable 판정은 최소화하고, 조합 문자는 별도 처리 필요할 수 있음.
+
+**규모: 대 + 리스크 높음.** Phase 1 누적 시도와 유사한 focus/keystroke race 위험이 있어 가장 마지막에, 독립적으로 검증하며 진행 권장.
+
+### 11.4 plumbing
+
+- 현재 `documentSelectionShortcuts(rootBlocks, documentSelection)` 는 blocks 를 mutate 할 수단이 없음. Ctrl+X/V/replace 는 `onBlocksChanged: (List<EditorBlock>) -> Unit` 추가 전달 필요 (`MarkdownBlockTextField` 의 `blocks` state).
+- cross-container 삭제 시 부모 Callout rebuild 로직 (deleteSelection 내부).
+
+**규모: 중.**
+
+### 11.5 권장 분할 + 작업량 요약
+
+| 단계 | 내용 | 규모 | 리스크 |
+|---|---|---|---|
+| **3a** | `deleteSelection` + `Ctrl+X` + plumbing | 중 | 낮음 |
+| **3b** | `Ctrl+V` (Multi 대체 paste). cursor-only 는 native 유지 | 중 | 중간 |
+| **3c** | selection-replace on input | 대 | **높음** (focus/keystroke race, IME) |
+
+**권장 순서: 3a → 3b → 3c.** 3a 가 가장 가치 높고 자족적 (잘라내기 + 삭제 기반). 3c 는 마지막에 독립 검증. 전체적으로 Phase 1 (Step A~B 전체) 와 비슷하거나 약간 큰 규모이며, 리스크는 3c 에 집중됨.
+
+---
+
 ## 10. 개정 이력
 
 - **2026-05-05**: 최초 작성. Phase 1 진입 전 영구 설계 문서로 격상. plan 파일 (`.claude/plans/2-inherited-lecun.md`) 의 1~2 절을 본 문서로 옮김.
@@ -513,3 +606,7 @@ Step B 를 세 sub-step 으로 분할:
 - **2026-05-05**: DL Callout title 의 Shift+→ → Callout 자체만 atomic 추가 (섹션 2.4).
 - **2026-05-05**: Step B-2c 완료 (body 안 cross-selection + 경계 박스 탈출). `BlockNavigation.onSelectSelfAsAtomic` 콜백 + 헬퍼의 `onEscapeToParent` 콜백 + `CalloutBlockEditor` 의 `documentSelection`/`containerPath` 파라미터 + body 호출에서 `containerPath + block.id` 누적 + `onEscapeSelectionToPrevious/Next = { navigation.onSelectSelfAsAtomic() }` 연결. 중첩 Callout 도 재귀적 path 누적으로 자연 지원. **Phase 1 전체 완료** — 검증 대기 중.
 - **2026-05-05**: Phase 5 정책 사용자 결정 — Table 은 엑셀 형식 셀 단위 누적 사각형 selection 채택 (옵션 B). CodeBlock 은 atomic 유지 (옵션 A). 섹션 7.1 (구현 가이드 포함) / 섹션 3 의 Phase 5 갱신.
+- **2026-05-23**: Phase 1 검증 중 발견된 버그 수정 — Ctrl+A 후 마우스 클릭으로 selection 이 해제되지 않던 문제. 원인: `onFocusChanged` 기반 해제가 (1) Ctrl+A 는 포커스를 옮기지 않아 같은 블록 재클릭 시 미발동, (2) endpoint 블록 클릭은 보존 예외라 미해제. 마우스 press 시점에 무조건 해제하는 `resetDocumentSelectionOnPointerPress` (Initial pass 관찰, non-consuming) 추가하여 최상위 Box 에 부착.
+- **2026-05-23**: **Scope A 누적 확장 구현 완료** (섹션 2.5.1). 롤백된 누적 확장을 최상위 단일 소유 구조로 재설계 — `documentSelectionShortcuts` 의 onPreviewKeyEvent (preview = top-down) 가 Multi 존재 시 Shift+↑/↓ 를 가로채 `nextFocusEndpoint(blocks, focus, down)` 으로 focus 만 누적 이동, consume. 개시는 블록 핸들러 유지 (None 이면 false 반환). focus 이동을 cosmetic 으로 강등하여 race 제거. `DocumentSelection.kt` 에 `nextFocusEndpoint` 신규. 컨테이너 횡단 누적 (Scope B) 은 보류.
+- **2026-05-23**: Scope A 누적 확장에 스크롤 따라가기 추가 — cursor-following `LaunchedEffect(focusTargetId)` 에 스크롤-into-view (`!isNested` 가드). 처음엔 네비게이션 경로의 고정 80px nudge + 50ms 대기 방식을 복사했으나 **느리게 느껴져** 적응형 단발(가장자리까지 `delta` 만큼 `animateScrollBy` 한 번, 멀면 `animateScrollToItem`, 중간 대기 제거)로 교체. 섹션 2.5.1 / 9.2.
+- **2026-05-23**: Phase 3 (잘라내기/붙여넣기/selection-replace) 작업량 분석 추가 (섹션 11). 3a(deleteSelection+Ctrl+X) → 3b(Ctrl+V Multi 대체) → 3c(입력 시 대체) 분할 권장. cursor-only paste 는 native 유지로 절감. 3c 는 focus/keystroke race + IME 리스크로 마지막 독립 진행 권장.

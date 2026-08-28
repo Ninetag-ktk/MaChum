@@ -18,6 +18,8 @@ import androidx.compose.material.icons.filled.UnfoldMore
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalTextStyle
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -30,12 +32,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -89,9 +93,18 @@ fun EditorTopBar(
                         .padding(0.dp)
                 )
                 if (isEditing) {
+                    LaunchedEffect(Unit) {
+                        focusRequester.requestFocus()
+                    }
                     BasicTextField(
                         value = editingTitle,
                         onValueChange = { editingTitle = it },
+                        textStyle = LocalTextStyle.current.copy(
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontWeight = FontWeight.Normal,
+                            fontSize = 14.sp,
+                            lineHeight = 14.sp,
+                        ),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                         keyboardActions = KeyboardActions(
@@ -103,6 +116,7 @@ fun EditorTopBar(
                         ),
                         modifier = Modifier
                             .wrapContentWidth()
+                            .focusRequester(focusRequester)
                             .onKeyEvent { keyEvent ->
                                 if (keyEvent.key == Key.Escape && keyEvent.type == KeyEventType.KeyDown) {
                                     editingTitle = fileName.title
@@ -112,6 +126,7 @@ fun EditorTopBar(
                                 } else false
                             }
                             .onFocusChanged { focusState ->
+                                println("onFocusChanged ${focusState.isFocused}")
                                 if (focusState.isFocused) {
                                     hasFocused = true
                                 } else if (hasFocused) {
@@ -122,9 +137,6 @@ fun EditorTopBar(
                             }
                             .padding(0.dp)
                     )
-                    LaunchedEffect(Unit) {
-                        focusRequester.requestFocus()
-                    }
                 } else {
                     Text(
                         text = editingTitle,

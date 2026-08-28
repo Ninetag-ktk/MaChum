@@ -69,8 +69,11 @@
     - [x] **B-2c body 안 cross-selection + 경계 박스 탈출**: `CalloutBlockEditor` Standard/Dialogue 시그니처에 `documentSelection`/`containerPath` 추가, body 호출에 `containerPath + block.id` 전파. `MarkdownBlockEditor`/`BlockItem` 도 전달. 헬퍼에 `onEscapeToParent` 콜백 — `currentIndex==0` (또는 lastIndex) + path 비어있지 않으면 호출. body 호출에서 `{ navigation.onSelectSelfAsAtomic() }` 으로 연결 → 부모 Callout 자체 atomic
     - [x] **DL Shift+→ Callout 자체 atomic**: DialogueCallout title 의 Key.DirectionRight 에 isShiftPressed 분기 추가
     - [x] **Shift 누적 확장 시도 → 롤백**: focus 기준 baseIndex 재계산 + 누적 분기가 race condition 으로 잘못 작동 → 단일 호출 정책으로 롤백. SELECTION.md 2.5 참조 (보존: cursor 이동 LaunchedEffect + endpoint 비교 reset)
+    - [x] **Ctrl+A 후 마우스 클릭 미해제 버그 수정**: `resetDocumentSelectionOnPointerPress` (Initial pass non-consuming) 최상위 Box 부착. onFocusChanged 사각지대(Ctrl+A 는 focus 안 옮김 / endpoint 클릭 보존 예외) 보완. SELECTION.md 10 참조
+    - [x] **Scope A 누적 확장 (재구현)**: 최상위 단일 소유로 재설계. `documentSelectionShortcuts` onPreviewKeyEvent (preview=top-down) 가 Multi 존재 시 Shift+↑/↓ 가로채 `nextFocusEndpoint(blocks, focus, down)` 으로 focus 누적 이동 + consume. 개시는 블록 핸들러 (None 이면 false). focus 이동 cosmetic 강등으로 race 제거. `DocumentSelection.kt` 에 `nextFocusEndpoint` 신규. 컨테이너 횡단 누적(Scope B) 보류. SELECTION.md 2.5.1 참조
+    - [x] **Scope A 스크롤 따라가기**: cursor-following `LaunchedEffect(focusTargetId)` 에 네비게이션 경로(`focusRequestCounter`)와 동일한 스크롤-into-view (`animateScrollBy`→`animateScrollToItem`, `!isNested` 가드) 추가. 스크롤 먼저→노드 compose→requestFocus 순서로 off-screen recycle 블록도 focus 성공
   - **Phase 2**: 마우스 드래그 selection + auto-scroll
-  - **Phase 3**: 잘라내기/붙여넣기 (Ctrl+X/V) + selection-replace
+  - **Phase 3**: 잘라내기/붙여넣기 (Ctrl+X/V) + selection-replace — 작업량 분석 완료 (SELECTION.md 11). **3a** deleteSelection+Ctrl+X (중/낮음) → **3b** Ctrl+V Multi 대체, cursor-only 는 native 유지 (중/중간) → **3c** 입력 시 대체 (대/높음 — focus·keystroke race + IME)
   - **Phase 4**: 글자/단어/줄/페이지 단위 Shift+화살표
   - **Phase 5**: Table 셀 단위 누적 사각형 selection (엑셀 형식, 채택 완료) + CodeBlock atomic 유지. `SelectionEndpoint` 에 `cell: TableCell?` 추가, `TableBlockEditor` 의 셀 Shift+→/←/↑/↓ 분기, 사각형 시각화, `\|` join 의 부분 markdown 추출. `SELECTION.md` 7.1 참조
 - [ ] #22 Undo/Redo (문서 스냅샷)
