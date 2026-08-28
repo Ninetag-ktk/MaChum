@@ -46,7 +46,7 @@ import kotlin.time.Duration.Companion.milliseconds
  * 일반 텍스트 블록 에디터.
  *
  * 인라인 서식(OutputTransformation, BlockDecorationDrawer)을 적용.
- * 블록 분할 패턴(```, > [!TYPE], ---)을 감지하여 [navigation]을 통해 분리 요청.
+ * 블록 분할 패턴(```, > [!TYPE], ---)을 감지하여 `navigation`을 통해 분리 요청.
  */
 @OptIn(FlowPreview::class)
 @Composable
@@ -54,8 +54,8 @@ internal fun TextBlockEditor(
     block: EditorBlock.Text,
     styleConfig: MarkdownStyleConfig,
     textStyle: TextStyle,
-    cursorBrush: Brush = SolidColor(Color.Black),
     modifier: Modifier = Modifier,
+    cursorBrush: Brush = SolidColor(Color.Black),
     focusRequester: FocusRequester = remember { FocusRequester() },
     navigation: BlockNavigation = BlockNavigation(),
     cursorHint: CursorHint? = null,
@@ -63,7 +63,7 @@ internal fun TextBlockEditor(
      * 빈 마지막 줄 + Enter → trailing \n 제거 + onMoveToNext 호출.
      * Callout body 안 TextBlock 에서만 true (CalloutBlockEditor 의 body MarkdownBlockEditor 호출 →
      * BlockItem → TextBlockEditor 체인). 외부 TextBlock 은 false (default) 로 두어 ZWSP/격하 결과물의
-     * 의도치 않은 탈출 방지. CLAUDE_sub.md #20 정책 v2.
+     * 의도치 않은 탈출 방지. docs/markdown-editor.md의 Smart Enter 정책.
      */
     escapeOnEmptyEnter: Boolean = false,
 ) {
@@ -116,7 +116,7 @@ internal fun TextBlockEditor(
     // 주의: endsWith("\n\n") 자동 분리는 비활성화됨 (#16 빈 줄 TextBlock 포함과 충돌)
     // 블록 생성은 #20 Smart Enter에서 처리 예정
     //
-    // dissolve 정책 v3 (CLAUDE_sub.md 섹션 10):
+    // dissolve 현행 정책 (docs/markdown-editor.md):
     // rawMode=true 블록은 편집 중 reparse 를 보류한다. focus-out 시점에 약간의 delay 후 reparse.
     // (key 에 block.rawMode 포함 → dissolve/자동해제로 rawMode 가 변하면 LaunchedEffect 재시작)
     LaunchedEffect(block.textFieldState, block.rawMode) {
@@ -207,7 +207,7 @@ internal fun TextBlockEditor(
                 // 시각(visual) 줄 기준으로 판정한다. soft-wrap 된 문단에서도 "첫 시각 줄"에서만
                 // 블록을 탈출하고, 그 외 시각 줄 사이 이동은 BasicTextField 의 네이티브 처리에 맡긴다.
                 // (기존 '\n' 기준은 줄바꿈 없이 감긴 긴 문단에서 커서 위치와 무관하게 항상 블록을
-                //  탈출하는 버그가 있었음 — CLAUDE_sub.md #19. textLayoutResult 로 시각 줄을 판정해 해결.)
+                //  탈출하는 버그가 있었음 — docs/markdown-editor.md. textLayoutResult 로 시각 줄을 판정해 해결.)
                 val layout = textLayoutResult
                 if (sel.collapsed && layout != null && layout.getLineForOffset(sel.start) == 0) {
                     if (event.isShiftPressed) {

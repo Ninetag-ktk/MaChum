@@ -121,7 +121,7 @@ fun MarkdownBlockTextField(
 
 /**
  * Material3 테마를 자동 적용하는 블록 에디터.
- * v1 [com.ninetag.machum.markdown.ui.MarkdownTextField]의 drop-in replacement.
+ * 제거된 v1 `MarkdownTextField`의 drop-in replacement.
  */
 @Composable
 fun MarkdownBlockTextFieldM3(

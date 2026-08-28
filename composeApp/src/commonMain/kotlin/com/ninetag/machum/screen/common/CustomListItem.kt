@@ -33,11 +33,11 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 fun CustomListItem(
-    selected: Boolean = false,
     isLongPressed: Boolean,
     onClick: () -> Unit,
     onContextMenu: (Offset) -> Unit,
     modifier: Modifier = Modifier,
+    selected: Boolean = false,
     content: @Composable RowScope.() -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }

@@ -3,7 +3,7 @@ package com.ninetag.machum.external
 /**
  * 마크다운 노트 = YAML 프론트매터 + 본문.
  *
- * ## 프론트매터 정책 (docs/folder-zone-model.md §4~§5, 접근법 A)
+ * ## 프론트매터 정책 (docs/product-roadmap.md)
  *
  * - **관리 키**(`id`/`tags`/`aliases`/`plot`)만 구조적으로 읽고 병합·쓴다.
  * - 그 외 키/주석/키 순서/포맷은 **원형 그대로 보존**한다 (Obsidian 호환의 핵심 계약).
@@ -11,7 +11,7 @@ package com.ninetag.machum.external
  *   스칼라 = `key: value`, 리스트 = block `- ` 형태. 수정 전에는 원본 그대로 유지되므로
  *   순수 `parse → inject` 왕복은 (본문 앞 공백 정규화를 제외하면) 무손실이다.
  *
- * 프론트매터를 top-level 키 단위 [Block] 리스트로 관리한다. YAML 라이브러리를 쓰지 않는 이유는
+ * 프론트매터를 top-level 키 단위 `Block` 리스트로 관리한다. YAML 라이브러리를 쓰지 않는 이유는
  * round-trip 시 라이브러리가 따옴표/키 순서/주석을 임의로 재포맷해 원형 보존 계약을 깨기 때문이다.
  */
 class NoteFile private constructor(
@@ -131,7 +131,7 @@ class NoteFile private constructor(
         const val KEY_ALIASES = "aliases"
         const val KEY_PLOT = "plot"
 
-        /** 앱 전역 plot 선택 값 (docs/folder-zone-model.md §4.3). NoteFile 은 저장만 하고 강제하지 않는다. */
+        /** 앱 전역 plot 선택 값 (docs/product-roadmap.md). NoteFile 은 저장만 하고 강제하지 않는다. */
         val PLOT_VALUES = listOf("1) 발단", "2) 전개", "3) 위기", "4) 절정", "5) 결말")
 
         private val CHARS = ('a'..'z') + ('0'..'9')

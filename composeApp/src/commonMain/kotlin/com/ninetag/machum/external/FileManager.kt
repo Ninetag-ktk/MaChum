@@ -386,7 +386,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                     setPreferences(getPreferences().copy(fileData = it)).fileData
                 }
                 ?:run{
-                    // 빈 프로젝트: 원고 첫 파일 생성 (넘버링 0부터, docs/folder-zone-model.md §6.1).
+                    // 빈 프로젝트: 원고 첫 파일 생성 (넘버링 0부터, docs/product-roadmap.md).
                     // 폴더-존 파일생성 UX 로 추후 정교화 예정 (임시 기본 제목).
                     val name = "0. 제목"
                     createFile(project, name)

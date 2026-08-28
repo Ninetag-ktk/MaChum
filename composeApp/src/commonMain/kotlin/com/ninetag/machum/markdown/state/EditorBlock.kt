@@ -33,7 +33,7 @@ sealed class EditorBlock {
      * [rawMode]/[rawOrigin] 은 dissolve(서식 해제) 동작용 transient 필드.
      * - rawMode=true 면 tryReparse 가 origin 비교로 reparse 를 skip 하여 raw 유지
      * - 직렬화 시점([toMarkdown])에는 둘 다 무시됨 (저장/로드는 항상 raw=false)
-     * 상세: CLAUDE_sub.md 섹션 10.
+     * 상세: docs/markdown-editor.md.
      */
     data class Text(
         override val id: String = generateId(),

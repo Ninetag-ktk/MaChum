@@ -8,6 +8,7 @@ import com.ninetag.machum.markdown.state.SelectionEndpoint
 import com.ninetag.machum.markdown.state.extractMarkdown
 import com.ninetag.machum.markdown.state.isAtomic
 import com.ninetag.machum.markdown.state.nextFocusEndpoint
+import com.ninetag.machum.markdown.ui.MarkdownBlockTextField
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
@@ -35,7 +36,7 @@ import kotlinx.coroutines.launch
  * 모델 / 비즈니스 로직은 `state/DocumentSelection.kt` 참조.
  * 본 파일은 Compose UI 통합 (Modifier 확장, 시각화 검사, 유틸) 만 담당.
  *
- * 상세 설계: `markdown/SELECTION.md`.
+ * 상세 설계: `docs/markdown-editor.md`.
  */
 
 // ── 1. 시각화 ──
@@ -128,7 +129,7 @@ fun Modifier.documentSelectionShortcuts(
             }
             // Shift+↑/↓ 누적 확장 (Scope A) — Multi 가 이미 존재할 때만 최상위가 소유.
             // None 이면 false 반환 → 블록 핸들러가 개시 (첫 Shift+화살표). preview 라 블록보다 먼저
-            // 발동하므로 focus 위치와 무관하게 단일 소유 → 이전 누적 시도의 race 제거 (SELECTION.md 2.5).
+            // 발동하므로 focus 위치와 무관하게 단일 소유 → 이전 누적 시도의 race 제거 (docs/markdown-editor.md).
             (event.key == Key.DirectionUp || event.key == Key.DirectionDown) && event.isShiftPressed -> {
                 val sel = documentSelection.value as? DocumentSelection.Multi
                     ?: return@onPreviewKeyEvent false  // 개시는 블록 핸들러 담당
@@ -161,7 +162,7 @@ fun Modifier.documentSelectionShortcuts(
 /**
  * 현재 블록의 첫 위치에서 위쪽으로 selection 확장 (Shift+↑ 트리거).
  *
- * 정책 (SELECTION.md 2.4 옵션 C v2 — Shift 누적 확장은 SELECTION.md 2.5 에 따라 롤백됨):
+ * 정책 (docs/markdown-editor.md — Multi 누적 확장은 최상위 preview handler가 소유):
  * - 이전 블록이 atomic → 그 atomic 블록 자체만 selection (외부 Text 의 anchor 보존 X)
  * - 이전 블록이 Text → anchor=현재 블록 끝, focus=이전 블록 시작 (외부 Text ↔ Text 의 native 확장 형태)
  * - 이전 블록 없음 (currentIndex == 0): 컨테이너 외부 escalate 는 호출자 책임 (B-2c)
@@ -230,7 +231,7 @@ fun extendSelectionToNext(
 }
 
 /**
- * 현재 블록 (Callout) 자체만 atomic selection 으로 설정. "박스 탈출" 정책 (SELECTION.md 2.4 옵션 C).
+ * 현재 블록 (Callout) 자체만 atomic selection 으로 설정. "박스 탈출" 정책 (docs/markdown-editor.md).
  *
  * anchor 와 focus 가 같은 블록의 atomic start/end 를 가리키므로 normalize 결과는 이 블록 한 개의 범위.
  * 외부 다른 블록은 selection 에 포함되지 않음.

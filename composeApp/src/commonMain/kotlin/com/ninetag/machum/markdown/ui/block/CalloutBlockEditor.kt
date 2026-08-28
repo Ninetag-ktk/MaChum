@@ -65,8 +65,8 @@ import kotlin.time.Duration.Companion.milliseconds
  * body는 [MarkdownBlockEditor]를 재귀 호출하여 중첩 블록을 지원한다.
  *
  * 포커스 진입:
- * - ↓ 진입 → block-level [focusRequester] = title
- * - ↑ 진입 → [onRegisterBottomEntryFR]로 등록한 FR = body 마지막 (또는 body 없으면 title)
+ * - ↓ 진입 → block-level `focusRequester` = title
+ * - ↑ 진입 → `onRegisterBottomEntryFR`로 등록한 FR = body 마지막 (또는 body 없으면 title)
  *   MarkdownBlockEditor가 bottomEntryFRMap에서 직접 포커스하므로 내부 redirect 불필요.
  */
 @Composable
@@ -74,8 +74,8 @@ internal fun CalloutBlockEditor(
     block: EditorBlock.Callout,
     styleConfig: MarkdownStyleConfig,
     textStyle: TextStyle,
-    cursorBrush: Brush = SolidColor(Color.Black),
     modifier: Modifier = Modifier,
+    cursorBrush: Brush = SolidColor(Color.Black),
     focusRequester: FocusRequester = remember { FocusRequester() },
     navigation: BlockNavigation = BlockNavigation(),
     onRegisterBottomEntryFR: (FocusRequester?) -> Unit = {},
@@ -170,7 +170,7 @@ private fun StandardCallout(
             }
             Key.DirectionDown -> {
                 if (event.isShiftPressed) {
-                    // SELECTION.md 2.5 — 누적 분기 롤백. 항상 Callout 자체만 atomic
+                    // docs/markdown-editor.md — 항상 Callout 자체만 atomic
                     navigation.onSelectSelfAsAtomic()
                 } else if (block.bodyBlocks.isNotEmpty()) {
                     focusBodyStart()
@@ -329,7 +329,7 @@ private fun DialogueCallout(
             }
             Key.DirectionRight -> {
                 if (event.isShiftPressed) {
-                    // Shift+→ from DL title → Callout 자체만 atomic selection (SELECTION.md 2.4 옵션 C v2).
+                    // Shift+→ from DL title → Callout 자체만 atomic selection (docs/markdown-editor.md).
                     // DL 은 title 과 body 가 가로 배치라 →가 자연스러운 "박스 탈출" 방향
                     navigation.onSelectSelfAsAtomic()
                     true
@@ -340,7 +340,7 @@ private fun DialogueCallout(
             }
             Key.DirectionDown -> {
                 if (event.isShiftPressed) {
-                    // SELECTION.md 2.5 — 누적 분기 롤백
+                    // docs/markdown-editor.md — 누적 selection은 최상위 preview handler가 소유
                     navigation.onSelectSelfAsAtomic()
                 } else {
                     navigation.onMoveToNext()

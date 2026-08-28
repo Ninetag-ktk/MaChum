@@ -54,7 +54,7 @@ import kotlin.time.Duration.Companion.milliseconds
  * 테이블 블록 에디터.
  *
  * 그리드 레이아웃 + 셀별 BasicTextField.
- * 방향키로 셀 간 이동, Tab으로 다음 셀(마지막이면 행 추가), Enter로 행 삽입.
+ * 방향키로 셀 간 이동, Tab으로 다음 열(마지막이면 열 추가), Enter로 다음 행(마지막이면 행 추가).
  * 포커스 시 오른쪽/아래에 열/행 추가 버튼 표시.
  */
 @Composable
@@ -62,8 +62,8 @@ internal fun TableBlockEditor(
     block: EditorBlock.Table,
     styleConfig: MarkdownStyleConfig,
     textStyle: TextStyle,
-    cursorBrush: Brush = SolidColor(Color.Black),
     modifier: Modifier = Modifier,
+    cursorBrush: Brush = SolidColor(Color.Black),
     focusRequester: FocusRequester = remember { FocusRequester() },
     navigation: BlockNavigation = BlockNavigation(),
     onBlockChanged: (EditorBlock.Table) -> Unit = {},

@@ -66,11 +66,7 @@ import java.util.UUID
 @Composable
 fun WorkflowNodeItem(
     node: HeaderNode,
-    onNodeChanged: (HeaderNode) -> Unit = {},
     childExpandTrigger: Boolean,
-    onChildExpandTrigger: () -> Unit = {},
-    descriptionExpandTrigger: Boolean? = null,
-    modifier: Modifier = Modifier,
     isDragging: Boolean,
     isDraggingActive: Boolean,
     isDropTargetAbove: Boolean,
@@ -78,6 +74,10 @@ fun WorkflowNodeItem(
     isDropTargetBelow: Boolean,
     onPositionChanged: (Float) -> Unit,
     onDragStart: () -> Unit,
+    modifier: Modifier = Modifier,
+    onNodeChanged: (HeaderNode) -> Unit = {},
+    onChildExpandTrigger: () -> Unit = {},
+    descriptionExpandTrigger: Boolean? = null,
     onFocusGained: () -> Unit = {},
     shouldRequestFocus: Boolean = false,
     onFocusRequested: () -> Unit = {},

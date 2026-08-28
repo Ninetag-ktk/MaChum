@@ -78,7 +78,7 @@ data class BlockNavigation(
     /** focus-out 트리거 reparse: 블록 교체만 하고 새 블록으로 focus 를 이동시키지 않는다.
      *  사용자가 이미 다른 블록으로 포커스를 옮긴 상태이므로 그 포커스를 보존해야 함 (dissolve v3) */
     val onReparseSilent: () -> Unit = {},
-    /** Callout title 위치 0 Backspace 등 자기 자신을 dissolve 하는 트리거. dissolve 정책 v3 (CLAUDE_sub.md 섹션 10) */
+    /** Callout title 위치 0 Backspace 등 자기 자신을 dissolve 하는 트리거. docs/markdown-editor.md 참조. */
     val onDissolveSelf: () -> Unit = {},
     /** raw 블록(rawMode=true) 의 텍스트가 빈 상태가 되면 즉시 rawMode 해제.
      *  block.id/textFieldState 유지하므로 cursor/focus 보존 (transient 상태 정리) */
@@ -86,7 +86,7 @@ data class BlockNavigation(
     /**
      * Shift+↑ 등으로 현재 블록의 첫 위치에서 위쪽으로 selection 확장 요청.
      * Phase 1 Step B: 현재 블록을 atomic 으로 selection 에 포함 + anchor 가 없으면 anchor=현재 끝,
-     * 그 다음 focus 를 이전 블록으로 확장. SELECTION.md 참조
+     * 그 다음 focus 를 이전 블록으로 확장. docs/markdown-editor.md 참조
      */
     val onExtendSelectionToPrevious: () -> Unit = {},
     /** Shift+↓ 등으로 현재 블록의 끝 위치에서 아래쪽으로 selection 확장 요청 */
@@ -94,7 +94,7 @@ data class BlockNavigation(
     /**
      * Callout 의 title/body 경계에서 외부로 "박스 탈출" 시 호출.
      * 현재 블록 (Callout) 자체만 atomic selection 으로 documentSelection 갱신.
-     * 외부 다른 블록은 selection 에 포함 X. SELECTION.md 2.4 옵션 C 정책.
+     * 외부 다른 블록은 selection 에 포함 X. docs/markdown-editor.md의 atomic 정책.
      */
     val onSelectSelfAsAtomic: () -> Unit = {},
 )
@@ -124,7 +124,7 @@ internal fun MarkdownBlockEditor(
     /**
      * 이 컨테이너 안의 TextBlock 에서 빈 마지막 줄 + Enter → 다음 블록으로 탈출 활성화.
      * Callout 의 body 호출에서만 true. 외부(최상위) 호출에서는 false (default).
-     * CLAUDE_sub.md #20 정책 v2.
+     * docs/markdown-editor.md의 Smart Enter 정책.
      */
     enableEnterEscape: Boolean = false,
     /**
@@ -134,7 +134,7 @@ internal fun MarkdownBlockEditor(
     documentSelection: androidx.compose.runtime.MutableState<DocumentSelection>? = null,
     /**
      * 이 컨테이너의 path — 최상위는 empty, Callout body 호출 시 ["calloutId"] 같이 누적.
-     * SelectionEndpoint 생성 시 사용. SELECTION.md 참조.
+     * SelectionEndpoint 생성 시 사용. docs/markdown-editor.md 참조.
      */
     containerPath: List<String> = emptyList(),
     /**
@@ -314,7 +314,7 @@ internal fun MarkdownBlockEditor(
 
     /**
      * dissolve 결과 적용. 새 raw TextBlock 으로 포커스 + 커서 위치 = raw 끝.
-     * (CLAUDE_sub.md 섹션 10 dissolve 정책)
+     * (docs/markdown-editor.md의 dissolve 정책)
      */
     fun applyDissolveResult(result: DissolveResult?) {
         if (result == null) return
@@ -396,7 +396,7 @@ internal fun MarkdownBlockEditor(
                     applyResult(merged)
                 } else {
                     // 기존 merge 룰이 적용되지 않을 때 직전이 특수 블록(Code/Callout/Table)이면
-                    // dissolve 정책으로 라우팅 (CLAUDE_sub.md 섹션 10)
+                    // dissolve 정책으로 라우팅 (docs/markdown-editor.md)
                     val prev = currentBlocks.getOrNull(currentIndex - 1)
                     if (prev != null && prev !is EditorBlock.Text && prev !is EditorBlock.HorizontalRule) {
                         applyDissolveResult(BlockOperations.dissolveSpecial(currentBlocks, currentIndex - 1))
@@ -542,7 +542,7 @@ private fun BlockItem(
     val latestAllBlocks by rememberUpdatedState(allBlocks)
     val latestBlockIndex by rememberUpdatedState(blockIndex)
 
-    // Block 유형(Code/Callout/Table) 의 state-empty 자동 격하는 두지 않는다 (CLAUDE_sub.md 섹션 10 정책 정정).
+    // Block 유형(Code/Callout/Table) 의 state-empty 자동 격하는 두지 않는다 (docs/markdown-editor.md).
     // 자동 격하의 본래 의도는 raw 블록의 마커 깨짐을 일반 텍스트로 정리하는 것이며 이는 tryReparse 가 처리.
     // 박스 UI 자체의 state-empty 트리거는 사용자가 title 잠깐 비운 채 다시 입력하려는 단순 편집에서도
     // 박스가 사라지는 부작용이 있어 제거됨.
@@ -610,7 +610,7 @@ private fun BlockItem(
             // 매번 새 TextFieldState 를 만들면 사용자 입력이 부모로 전파되지 않고 다음
             // recomposition 때 복원되는 버그가 있어, tempState 를 remember 로 보존하고
             // 사용자 입력 감지 시 raw TextBlock(rawMode=true, rawOrigin=EMBED) 으로 promotion.
-            // (CLAUDE_sub.md 섹션 10 자동 격하/해제 정책 4)
+            // (docs/markdown-editor.md의 자동 격하/해제 정책)
             val original = remember(block.id) { block.toMarkdown() }
             val tempState = remember(block.id) { TextFieldState(original) }
             LaunchedEffect(block.id) {

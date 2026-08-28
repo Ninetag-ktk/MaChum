@@ -50,7 +50,7 @@ internal class RawMarkdownOutputTransformation(
     /**
      * dissolve 된 raw TextBlock(rawMode=true) 인지 여부.
      * true 면 전체 텍스트가 raw zone 으로 처리되어 인라인 서식이 모든 줄에서 비활성.
-     * (CLAUDE_sub.md 섹션 10 dissolve 정책)
+     * (docs/markdown-editor.md의 dissolve 정책)
      */
     var isRawMode: Boolean = false
 

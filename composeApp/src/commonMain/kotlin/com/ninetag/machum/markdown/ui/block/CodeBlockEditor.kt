@@ -39,8 +39,8 @@ internal fun CodeBlockEditor(
     block: EditorBlock.Code,
     styleConfig: MarkdownStyleConfig,
     textStyle: TextStyle,
-    cursorBrush: Brush = SolidColor(Color.Black),
     modifier: Modifier = Modifier,
+    cursorBrush: Brush = SolidColor(Color.Black),
     focusRequester: FocusRequester = remember { FocusRequester() },
     navigation: BlockNavigation = BlockNavigation(),
 ) {
@@ -84,7 +84,7 @@ internal fun CodeBlockEditor(
                     val isFirstLine = text.lastIndexOf('\n', (sel.start - 1).coerceAtLeast(0)) == -1
                     if (isFirstLine) {
                         if (event.isShiftPressed) {
-                            // SELECTION.md 2.5 — 누적 분기 롤백. 항상 CodeBlock 자체만 atomic
+                            // docs/markdown-editor.md — 항상 CodeBlock 자체만 atomic
                             navigation.onSelectSelfAsAtomic()
                         } else {
                             navigation.onMoveToPrevious()

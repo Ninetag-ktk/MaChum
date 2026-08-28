@@ -6,7 +6,7 @@ import androidx.compose.foundation.text.input.TextFieldState
  * 블록 리스트에 대한 분할/병합/변환 연산.
  *
  * 모든 함수는 새 리스트를 반환한다 (immutable 패턴).
- * [onBlocksChanged]에 전달하여 상태를 갱신.
+ * `onBlocksChanged`에 전달하여 상태를 갱신.
  */
 object BlockOperations {
 
@@ -163,7 +163,7 @@ object BlockOperations {
      * 사용자가 TextBlock 안에서 callout, codeblock, table, HR 등을 입력했을 때
      * 해당 패턴을 감지하여 적절한 블록으로 변환.
      *
-     * dissolve 정책 v3 (CLAUDE_sub.md 섹션 10):
+     * dissolve 현행 정책 (docs/markdown-editor.md):
      * rawMode=true 인 블록의 reparse 호출은 focus-out 시점뿐이므로
      * (snapshotFlow 는 TextBlockEditor 에서 rawMode 가드로 차단) 무조건 적용한다.
      * - 마커 살아있음 (parsed = 단일 특수 블록) → 특수 블록으로 변환 (rendering 복귀)
@@ -284,7 +284,7 @@ object BlockOperations {
 }
 
 /**
- * dissolve 결과. [BlockNavigation.onDissolveSelf] 라우팅이나
+ * dissolve 결과. `BlockNavigation.onDissolveSelf` 라우팅이나
  * onMergeWithPrevious 에서 직전 특수블록 dissolve 시 사용.
  */
 data class DissolveResult(

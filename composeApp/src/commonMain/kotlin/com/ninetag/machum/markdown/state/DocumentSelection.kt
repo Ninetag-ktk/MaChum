@@ -4,10 +4,10 @@ package com.ninetag.machum.markdown.state
  * 문서 레벨 selection 모델.
  *
  * 각 [EditorBlock] 이 독립 TextFieldState 를 보유하는 v2 아키텍처에서 블록 경계를 넘는
- * selection 추적용. native [androidx.compose.foundation.text.input.TextFieldState.selection] 은
+ * selection 추적용. native `TextFieldState.selection`은
  * 블록 내부에만 작동하므로 cross-block 영역은 본 모델로 별도 추적한다.
  *
- * 상세 설계: `markdown/SELECTION.md`.
+ * 상세 설계: `docs/markdown-editor.md`.
  */
 sealed class DocumentSelection {
 
@@ -33,7 +33,8 @@ sealed class DocumentSelection {
  *   외부 (최상위 블록 직접) 면 empty. 예: 최상위 Callout(id="A") body 안 TextBlock 의 endpoint 는
  *   `containerPath=["A"], blockId="<text>"`. 중첩 Callout 의 경우 깊이만큼 누적.
  * @property blockId 가리키는 블록 자체의 id
- * @property offset 블록 내부 텍스트 offset. atomic 블록은 [ATOMIC_START] 또는 [ATOMIC_END] sentinel
+ * @property offset 블록 내부 텍스트 offset. atomic 블록은
+ *   [SelectionEndpoint.ATOMIC_START] 또는 [SelectionEndpoint.ATOMIC_END] sentinel
  */
 data class SelectionEndpoint(
     val containerPath: List<String>,
