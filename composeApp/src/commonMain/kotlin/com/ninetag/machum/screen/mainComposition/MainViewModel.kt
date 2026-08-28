@@ -2,6 +2,8 @@ package com.ninetag.machum.screen.mainComposition
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ninetag.machum.entity.FolderConfig
+import com.ninetag.machum.entity.ProjectConfig
 import com.ninetag.machum.external.FileManager
 import com.ninetag.machum.external.NoteFile
 import io.github.vinceglb.filekit.PlatformFile
@@ -16,6 +18,8 @@ import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.milliseconds
 
 class MainViewModel(private val fileManager: FileManager) : ViewModel() {
+    val projectConfig: StateFlow<ProjectConfig?> = fileManager.projectConfig
+
     private val _fileList = MutableStateFlow<List<PlatformFile>>(emptyList())
     val fileList: StateFlow<List<PlatformFile>> = _fileList.asStateFlow()
 
@@ -138,6 +142,12 @@ class MainViewModel(private val fileManager: FileManager) : ViewModel() {
         val updated = current.withBody(newBody)
         _noteFileCache.value += fileName to updated
         saveCoordinator.schedule(fileName, updated)
+    }
+
+    fun setFolderConfig(relativePath: String, folderConfig: FolderConfig) {
+        viewModelScope.launch {
+            fileManager.setFolderConfig(relativePath, folderConfig)
+        }
     }
 
     fun onRenameFile(file: PlatformFile, newName: String) {

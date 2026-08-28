@@ -20,6 +20,27 @@ data class ProjectConfig(
     val fileIds: Map<String, String> = emptyMap(),
 )
 
+/** 프로젝트 디렉토리 자체를 가리키는 [ProjectConfig.folders] 키. */
+const val BASE_FOLDER_PATH = ""
+
+/** 제품 정책상 프로젝트 디렉토리(base)의 초기 폴더 설정. */
+val DEFAULT_BASE_FOLDER_CONFIG = FolderConfig(type = FolderType.NUMBERED)
+
+/**
+ * base 폴더 설정이 없는 구 설정/빈 설정에 제품 기본값을 보완한다.
+ * 사용자가 이미 지정한 base 설정은 그대로 보존한다.
+ */
+fun ProjectConfig.withDefaultBaseFolder(): ProjectConfig {
+    if (BASE_FOLDER_PATH in folders) return this
+
+    return copy(
+        folders = buildMap {
+            put(BASE_FOLDER_PATH, DEFAULT_BASE_FOLDER_CONFIG)
+            putAll(folders)
+        },
+    )
+}
+
 /**
  * 폴더별 동작 선언 (docs/product-roadmap.md).
  * - [FolderConfig.type]: 폴더 유형 (능력 중첩 general ⊂ plot ⊂ numbered).

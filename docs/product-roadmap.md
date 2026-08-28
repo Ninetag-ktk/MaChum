@@ -293,7 +293,7 @@ FileMeta(
 | 저장·외부 변경 충돌 검증 | 구현·검증 필요 | M | P0 |
 | 에디터 파서·직렬화 테스트 | 검증 완료 | M | P0 |
 | Table 비정형 행 정규화 | 검증 완료 | M | P0 |
-| ProjectConfig 상태 연결 | 부분 구현 | M | P1 |
+| ProjectConfig 상태 연결 | 검증 완료 | M | P1 |
 | 상대 경로/ID 기반 파일 cache | 미구현 | M | P1 |
 | `listFolders`와 현재 폴더 | 미구현 | L | P1 |
 | numbered 정렬·생성 | 부분 구현 | M | P1 |
@@ -324,7 +324,7 @@ FileMeta(
 
 ### 2단계: 폴더-존 최소 수직 흐름
 
-1. ProjectConfig 상태 연결
+1. ProjectConfig 상태 연결: 완료
 2. 상대 경로 또는 ID 기반 cache
 3. 폴더 발견
 4. 현재 폴더 상태

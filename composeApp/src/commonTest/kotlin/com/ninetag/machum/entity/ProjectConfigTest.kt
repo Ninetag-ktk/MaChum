@@ -66,4 +66,39 @@ class ProjectConfigTest {
         )
         assertEquals(FolderConfig(FolderType.GENERAL, emptyList()), config.folders["Scene"])
     }
+
+    @Test
+    fun withDefaultBaseFolder_addsNumberedBaseToEmptyConfig() {
+        val normalized = ProjectConfig().withDefaultBaseFolder()
+
+        assertEquals(DEFAULT_BASE_FOLDER_CONFIG, normalized.folders[BASE_FOLDER_PATH])
+        assertEquals(FolderType.NUMBERED, normalized.folders[BASE_FOLDER_PATH]?.type)
+    }
+
+    @Test
+    fun withDefaultBaseFolder_preservesExplicitBaseAndOtherData() {
+        val original = ProjectConfig(
+            folders = mapOf(
+                BASE_FOLDER_PATH to FolderConfig(FolderType.GENERAL, listOf("직접설정")),
+                "Scene" to FolderConfig(FolderType.PLOT),
+            ),
+            fileIds = mapOf("id1" to "Scene/도입"),
+        )
+
+        assertEquals(original, original.withDefaultBaseFolder())
+    }
+
+    @Test
+    fun withDefaultBaseFolder_preservesNonBaseFoldersAndFileIds() {
+        val original = ProjectConfig(
+            folders = mapOf("Character" to FolderConfig(autoTags = listOf("캐릭터"))),
+            fileIds = mapOf("id1" to "Character/주인공"),
+        )
+
+        val normalized = original.withDefaultBaseFolder()
+
+        assertEquals(original.folders["Character"], normalized.folders["Character"])
+        assertEquals(original.fileIds, normalized.fileIds)
+        assertEquals(2, normalized.folders.size)
+    }
 }

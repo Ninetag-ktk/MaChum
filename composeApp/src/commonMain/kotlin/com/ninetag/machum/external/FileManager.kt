@@ -5,8 +5,10 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.byteArrayPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.ninetag.machum.entity.FolderConfig
 import com.ninetag.machum.entity.ProjectConfig
 import com.ninetag.machum.entity.WorkflowStep
+import com.ninetag.machum.entity.withDefaultBaseFolder
 import io.github.vinceglb.filekit.FileKit
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.bookmarkData
@@ -31,6 +33,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlin.collections.emptyList
@@ -38,6 +42,7 @@ import kotlin.collections.emptyList
 class FileManager(private val dataStore: DataStore<Preferences>) {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val projectConfigMutex = Mutex()
 
     val workflowParser = WorkflowParser()
 
@@ -60,6 +65,9 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             bookmark.vaultData?.let { pref[BOOKMARK_VAULT] = it.bookmarkData().bytes }
             bookmark.projectData?.let { pref[BOOKMARK_PROJECT] = it.bookmarkData().bytes }?:pref.remove(BOOKMARK_PROJECT)
             bookmark.fileData?.let { pref[BOOKMARK_FILE] = it.name }?:pref.remove(BOOKMARK_FILE)
+        }
+        if (!sameLocation(_bookmarks.value.projectData, bookmark.projectData)) {
+            _projectConfig.value = null
         }
         _bookmarks.value = bookmark
         return bookmark
@@ -88,6 +96,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             pref.remove(BOOKMARK_FILE)
         }
         _bookmarks.value = getPreferences()
+        _projectConfig.value = null
     }
 
     // ToDo 테스트 이후 삭제
@@ -98,10 +107,15 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             pref.remove(BOOKMARK_FILE)
         }
         _bookmarks.value = getPreferences()
+        _projectConfig.value = null
     }
 
     private val _bookmarks = MutableStateFlow(Bookmarks())
     val bookmarks: StateFlow<Bookmarks> = _bookmarks.asStateFlow()
+
+    /** null이면 선택된 프로젝트가 없거나 해당 프로젝트의 설정을 아직 로드하지 못한 상태다. */
+    private val _projectConfig = MutableStateFlow<ProjectConfig?>(null)
+    val projectConfig: StateFlow<ProjectConfig?> = _projectConfig.asStateFlow()
 
     private val _workflowList = MutableStateFlow<List<PlatformFile>>(emptyList())
     val workflowList: StateFlow<List<PlatformFile>> = _workflowList.asStateFlow()
@@ -129,13 +143,15 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
         val bookmark = Bookmarks(vaultData = vault)
         _bookmarks.value = bookmark
+        _projectConfig.value = null
         return vault
     }
 
     private suspend fun validProject(): PlatformFile? {
-        val project = getPreferences().projectData ?: return null
-        _bookmarks.value = getPreferences()
-        setConfig(project) ?: return null
+        val bookmarks = getPreferences()
+        val project = bookmarks.projectData ?: return null
+        _bookmarks.value = bookmarks
+        loadProjectConfig(project) ?: return null
         return project
     }
 
@@ -217,8 +233,8 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     fun pickProject(project: PlatformFile) {
         scope.launch {
             try {
-                setPreferences(getPreferences().copy(projectData = project))
-                setConfig(project)
+                setPreferences(getPreferences().copy(projectData = project, fileData = null))
+                loadProjectConfig(project)
             } catch (e: Exception) {
                 println(e)
             }
@@ -283,15 +299,30 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         file.readString()
     }
 
-    private suspend fun readConfig(): ProjectConfig? = withContext(Dispatchers.IO) {
-        try {
-            val configFile = _bookmarks.value.projectData!!.list().find { it.name == ".machum.json" } ?: return@withContext null
-            val content = configFile.readString()
-            if (content.isBlank()) return@withContext null
+    private suspend fun readConfig(configFile: PlatformFile): ProjectConfig? = withContext(Dispatchers.IO) {
+        val content = configFile.readString()
+        if (content.isBlank()) return@withContext null
 
-            configJson.decodeFromString(ProjectConfig.serializer(), content)
-        } catch (e: Exception) {
-            throw e
+        configJson.decodeFromString(ProjectConfig.serializer(), content)
+    }
+
+    /**
+     * 프로젝트 설정을 읽어 라이브 상태로 전환한다.
+     * 빈 파일 또는 base 설정이 없는 구 설정은 기본값을 보완해 즉시 디스크에도 기록한다.
+     */
+    private suspend fun loadProjectConfig(project: PlatformFile): ProjectConfig? = withContext(Dispatchers.IO) {
+        projectConfigMutex.withLock {
+            val configFile = setConfig(project) ?: return@withLock null
+            val stored = readConfig(configFile)
+            val normalized = (stored ?: ProjectConfig()).withDefaultBaseFolder()
+
+            if (stored != normalized) {
+                persistConfig(configFile, normalized)
+            }
+
+            if (!sameLocation(_bookmarks.value.projectData, project)) return@withLock null
+            _projectConfig.value = normalized
+            normalized
         }
     }
 
@@ -325,14 +356,49 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         file.writeString(body)
     }
 
-    suspend fun writeConfig(projectConfig: ProjectConfig) = withContext(Dispatchers.IO) {
-        try {
-            val configFile = _bookmarks.value.projectData!!.list().find { it.name == ".machum.json" } ?: return@withContext null
-            val content = configJson.encodeToString(ProjectConfig.serializer(), projectConfig)
-            configFile.writeString(content)
-        } catch (e: Exception) {
-            throw e
+    /** 설정 전체를 현재 프로젝트에 저장하고 라이브 상태를 함께 갱신한다. */
+    suspend fun writeConfig(projectConfig: ProjectConfig): ProjectConfig? = withContext(Dispatchers.IO) {
+        projectConfigMutex.withLock {
+            val project = _bookmarks.value.projectData ?: return@withLock null
+            persistProjectConfig(project, projectConfig)
         }
+    }
+
+    /** 현재 설정을 원자적으로 변경하고 저장한다. 설정이 로드되지 않았다면 null을 반환한다. */
+    suspend fun updateProjectConfig(
+        transform: (ProjectConfig) -> ProjectConfig,
+    ): ProjectConfig? = withContext(Dispatchers.IO) {
+        projectConfigMutex.withLock {
+            val project = _bookmarks.value.projectData ?: return@withLock null
+            val current = _projectConfig.value ?: return@withLock null
+            persistProjectConfig(project, transform(current))
+        }
+    }
+
+    /** 상대 경로에 해당하는 폴더 설정을 추가하거나 교체한다. 빈 경로는 base 폴더다. */
+    suspend fun setFolderConfig(
+        relativePath: String,
+        folderConfig: FolderConfig,
+    ): ProjectConfig? = updateProjectConfig { current ->
+        current.copy(folders = current.folders + (relativePath to folderConfig))
+    }
+
+    private suspend fun persistProjectConfig(
+        project: PlatformFile,
+        projectConfig: ProjectConfig,
+    ): ProjectConfig? {
+        val configFile = setConfig(project) ?: return null
+        val normalized = projectConfig.withDefaultBaseFolder()
+        persistConfig(configFile, normalized)
+
+        if (!sameLocation(_bookmarks.value.projectData, project)) return null
+        _projectConfig.value = normalized
+        return normalized
+    }
+
+    private suspend fun persistConfig(configFile: PlatformFile, projectConfig: ProjectConfig) {
+        val content = configJson.encodeToString(ProjectConfig.serializer(), projectConfig)
+        configFile.writeString(content)
     }
 
     suspend fun writeMarkdown(file: PlatformFile, noteFile: NoteFile) = withContext(Dispatchers.IO) {
@@ -373,8 +439,8 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      */
     suspend fun setProject(name: String): PlatformFile? = withContext(Dispatchers.IO) {
         createFolder(_bookmarks.value.vaultData!!, name)?.let{
-            setPreferences(getPreferences().copy(projectData = it))
-            setConfig(it)
+            setPreferences(getPreferences().copy(projectData = it, fileData = null))
+            loadProjectConfig(it)
             it
         }
     }
@@ -413,6 +479,9 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     suspend fun renameFile(file: PlatformFile, name: String): PlatformFile? = withContext(Dispatchers.IO) {
         renameMarkdown(_bookmarks.value.projectData!!, file, name)
     }
+
+    private fun sameLocation(first: PlatformFile?, second: PlatformFile?): Boolean =
+        first?.toString() == second?.toString()
 }
 
 /**
