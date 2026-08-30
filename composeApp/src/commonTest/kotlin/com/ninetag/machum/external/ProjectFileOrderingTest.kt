@@ -23,7 +23,10 @@ class ProjectFileOrderingTest {
         val files = listOf("0. 영.md", "4. 넷.md", "외부.md").map(::projectFile)
 
         assertEquals(5, files.nextNumber())
-        assertEquals(0, listOf(projectFile("외부.md")).nextNumber())
+        assertEquals(1, listOf(projectFile("외부.md")).nextNumber())
+        assertEquals(0, listOf(projectFile("외부.md")).nextNumber(startAt = 0))
+        assertEquals("1. 새 장면", emptyList<ProjectFile>().nextDefaultFileName("새 장면"))
+        assertEquals("0. 새 장면", emptyList<ProjectFile>().nextDefaultFileName("새 장면", startAt = 0))
         assertEquals("5. 새 장면", files.nextDefaultFileName("새 장면"))
     }
 
@@ -52,7 +55,9 @@ class ProjectFileOrderingTest {
         )
         assertEquals(3, entries.nextPlotOrder(PlotStage.SETUP))
         assertEquals("1-3. 새 사건", entries.nextPlotFileName(PlotStage.SETUP, "새 사건"))
-        assertEquals(1, entries.nextPlotOrder(PlotStage.CRISIS))
+        assertEquals(0, entries.nextPlotOrder(PlotStage.CRISIS))
+        assertEquals("3-0. 새 위기", entries.nextPlotFileName(PlotStage.CRISIS, "새 위기"))
+        assertEquals(PlotFilePrefix(stageCode = 1, order = 0), projectFile("1-0. 첫 장면.md").plotPrefix())
     }
 
     private fun projectFile(name: String): ProjectFile =

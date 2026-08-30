@@ -18,7 +18,7 @@ enum class PlotStage(
         get() = "$code) $displayName"
 
     fun fileName(order: Int, title: String): String {
-        require(order >= 1) { "plot order must start at 1" }
+        require(order >= 0) { "plot order must not be negative" }
         return "$code-$order. $title"
     }
 

@@ -6,10 +6,12 @@ import androidx.datastore.preferences.core.byteArrayPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.ninetag.machum.entity.BASE_FOLDER_PATH
+import com.ninetag.machum.entity.DEFAULT_PROJECT_FOLDERS
 import com.ninetag.machum.entity.FolderConfig
 import com.ninetag.machum.entity.FolderType
 import com.ninetag.machum.entity.ProjectConfig
 import com.ninetag.machum.entity.WorkflowStep
+import com.ninetag.machum.entity.defaultProjectConfig
 import com.ninetag.machum.entity.effectiveAutoTags
 import com.ninetag.machum.entity.normalizeTag
 import com.ninetag.machum.entity.withDefaultBaseFolder
@@ -165,7 +167,22 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         return project
     }
 
-    suspend fun createProject(name: String): PlatformFile? = withContext(Dispatchers.IO) { createFolder(_bookmarks.value.vaultData!!, name) }
+    suspend fun createProject(name: String): PlatformFile? = withContext(Dispatchers.IO) {
+        val vault = _bookmarks.value.vaultData ?: return@withContext null
+        val projectName = name.trim()
+        if (!isValidProjectFolderName(projectName)) return@withContext null
+        if (vault.list().any { it.name.equals(projectName, ignoreCase = true) }) {
+            return@withContext null
+        }
+
+        val project = createFolder(vault, projectName) ?: return@withContext null
+        val initialized = runCatching { initializeNewProject(project) }.getOrDefault(false)
+        if (!initialized) {
+            rollbackNewProject(project)
+            return@withContext null
+        }
+        project
+    }
 
     suspend fun createWorkflow(name: String = "New_Workflow"): PlatformFile? = withContext(Dispatchers.IO) {
         val parentDirectory = _bookmarks.value.vaultData!!.list().find { it.name == ".workflow" }?:return@withContext null
@@ -630,11 +647,27 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * @return 프로젝트
      */
     suspend fun setProject(name: String): PlatformFile? = withContext(Dispatchers.IO) {
-        createFolder(_bookmarks.value.vaultData!!, name)?.let{
+        createProject(name)?.let{
             projectIndexer.prepare(it)
             setPreferences(getPreferences().copy(projectData = it, fileData = null))
             loadProjectConfig(it)
             it
+        }
+    }
+
+    private suspend fun initializeNewProject(project: PlatformFile): Boolean {
+        DEFAULT_PROJECT_FOLDERS.forEach { template ->
+            createFolder(project, template.name) ?: return false
+        }
+        val configFile = setConfig(project) ?: return false
+        persistConfig(configFile, defaultProjectConfig())
+        return true
+    }
+
+    private suspend fun rollbackNewProject(project: PlatformFile) {
+        runCatching {
+            project.list().forEach { child -> child.delete() }
+            project.delete()
         }
     }
 

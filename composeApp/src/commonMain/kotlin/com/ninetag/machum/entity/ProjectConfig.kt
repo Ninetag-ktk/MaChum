@@ -31,6 +31,43 @@ const val BASE_FOLDER_PATH = ""
 /** 제품 정책상 프로젝트 디렉토리(base)의 초기 폴더 설정. */
 val DEFAULT_BASE_FOLDER_CONFIG = FolderConfig(type = FolderType.DEFAULT)
 
+/** 새 프로젝트에 순서대로 생성하는 기본 작업 영역. */
+val DEFAULT_PROJECT_FOLDERS = listOf(
+    ProjectFolderTemplate(
+        name = "1. Concept",
+        config = FolderConfig(type = FolderType.DEFAULT, autoTags = listOf("구상")),
+    ),
+    ProjectFolderTemplate(
+        name = "2. Outline",
+        config = FolderConfig(type = FolderType.DEFAULT, autoTags = listOf("설계")),
+    ),
+    ProjectFolderTemplate(
+        name = "3. Character",
+        config = FolderConfig(type = FolderType.GENERAL, autoTags = listOf("캐릭터")),
+    ),
+    ProjectFolderTemplate(
+        name = "4. Scene",
+        config = FolderConfig(
+            type = FolderType.DEFAULT,
+            plotEnabled = true,
+            autoTags = listOf("장면구상"),
+        ),
+    ),
+)
+
+data class ProjectFolderTemplate(
+    val name: String,
+    val config: FolderConfig,
+)
+
+/** 새 프로젝트의 `.machum.json`에 기록할 기본 설정. */
+fun defaultProjectConfig(): ProjectConfig = ProjectConfig(
+    folders = buildMap {
+        put(BASE_FOLDER_PATH, DEFAULT_BASE_FOLDER_CONFIG)
+        DEFAULT_PROJECT_FOLDERS.forEach { folder -> put(folder.name, folder.config) }
+    },
+)
+
 /**
  * base 폴더 설정이 없는 구 설정/빈 설정에 제품 기본값을 보완한다.
  * 사용자가 이미 지정한 base 설정은 그대로 보존한다.

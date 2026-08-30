@@ -39,7 +39,7 @@ data class PlotOrderUpdate(
 fun ProjectFile.plotPrefix(): PlotFilePrefix? {
     val match = plotPrefixRegex.find(key.fileName) ?: return null
     val stageCode = match.groupValues[1].toIntOrNull() ?: return null
-    val order = match.groupValues[2].toIntOrNull()?.takeIf { it >= 1 } ?: return null
+    val order = match.groupValues[2].toIntOrNull()?.takeIf { it >= 0 } ?: return null
     return PlotFilePrefix(stageCode, order)
 }
 
@@ -68,18 +68,20 @@ fun List<ProjectFile>.sortedFor(folderConfig: FolderConfig): List<ProjectFile> =
     FolderType.GENERAL -> sortedBy { it.key.fileName.lowercase() }
 }
 
-fun List<ProjectFile>.nextNumber(): Int =
-    mapNotNull(ProjectFile::numberedPrefix).maxOrNull()?.plus(1) ?: 0
+fun List<ProjectFile>.nextNumber(startAt: Int = 1): Int {
+    require(startAt >= 0) { "startAt must not be negative" }
+    return mapNotNull(ProjectFile::numberedPrefix).maxOrNull()?.plus(1) ?: startAt
+}
 
-fun List<ProjectFile>.nextDefaultFileName(title: String): String =
-    "${nextNumber()}. $title"
+fun List<ProjectFile>.nextDefaultFileName(title: String, startAt: Int = 1): String =
+    "${nextNumber(startAt)}. $title"
 
 fun List<PlotFileEntry>.nextPlotOrder(stage: PlotStage): Int =
     filter { it.stage == stage }
         .mapNotNull(PlotFileEntry::order)
         .maxOrNull()
         ?.plus(1)
-        ?: 1
+        ?: 0
 
 fun List<PlotFileEntry>.nextPlotFileName(stage: PlotStage, title: String): String =
     stage.fileName(nextPlotOrder(stage), title)

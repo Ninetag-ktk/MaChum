@@ -195,6 +195,7 @@ fun MainScreen() {
     if (showCreateFileDialog) {
         CreateProjectFileDialog(
             folderConfig = currentFolderConfig,
+            defaultStartNumber = if (isProjectRoot) 0 else 1,
             files = fileList,
             plotEntries = plotFileEntries,
             onDismissRequest = { showCreateFileDialog = false },

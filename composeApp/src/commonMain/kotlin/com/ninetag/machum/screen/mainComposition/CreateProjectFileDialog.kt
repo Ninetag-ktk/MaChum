@@ -34,6 +34,7 @@ import com.ninetag.machum.external.nextPlotFileName
 @Composable
 internal fun CreateProjectFileDialog(
     folderConfig: FolderConfig,
+    defaultStartNumber: Int,
     files: List<ProjectFile>,
     plotEntries: List<PlotFileEntry>,
     onDismissRequest: () -> Unit,
@@ -53,7 +54,10 @@ internal fun CreateProjectFileDialog(
     val previewBaseName = when {
         trimmedTitle.isEmpty() || titleError != null -> null
         folderConfig.isPlot -> selectedStage?.let { plotEntries.nextPlotFileName(it, trimmedTitle) }
-        folderConfig.type == FolderType.DEFAULT -> files.nextDefaultFileName(trimmedTitle)
+        folderConfig.type == FolderType.DEFAULT -> files.nextDefaultFileName(
+            title = trimmedTitle,
+            startAt = defaultStartNumber,
+        )
         else -> trimmedTitle
     }
     val previewFileName = previewBaseName?.let { "$it.md" }

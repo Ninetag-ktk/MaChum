@@ -152,7 +152,7 @@ internal fun PlotOrderEditorDialog(
                 onClick = {
                     val assignments = PlotStage.entries.flatMap { stage ->
                         draft.filter { it.stage == stage }.mapIndexed { index, item ->
-                            PlotOrderAssignment(item.fileKey, stage, index + 1)
+                            PlotOrderAssignment(item.fileKey, stage, index)
                         }
                     }
                     scope.launch {

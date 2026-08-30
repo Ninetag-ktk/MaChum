@@ -44,10 +44,12 @@ vault
 └── project
     ├── 0. 프롤로그.md       base 원고 스코프
     ├── 1. 첫 장.md
-    ├── Character/           하위 모듈
+    ├── 1. Concept/          구상(Default)
+    ├── 2. Outline/          설계(Default)
+    ├── 3. Character/        캐릭터 구체화(General)
     │   └── 인물.md
-    └── Scene/               하위 모듈
-        └── 장면.md
+    └── 4. Scene/            장면 구체화(Default + Plot)
+        └── 1-0. 장면.md
 ```
 
 프로젝트 디렉터리 자체가 base 폴더이며 설정 경로 `""`로 표현한다.
@@ -73,7 +75,8 @@ vault
 | `general` | 아니오 | 사용 불가 | 파일명을 그대로 사용하고 이름순으로 정렬하는 자유 형식 |
 
 제품 기본값과 UI 첫 번째 항목은 `Default`다. 두 번째 항목은 `General`이며 Plot은 Default에서만 선택할 수 있다.
-Plot을 켜면 단계 코드를 첫 번째 축, 단계 내부의 1부터 시작하는 순번을 두 번째 축으로 사용한다.
+일반 Default 디렉터리는 1부터 시작한다. Project 루트의 Default는 장별 원고 영역이므로 0부터 시작한다.
+Plot을 켜면 단계 코드를 첫 번째 축, 단계 내부의 0부터 시작하는 순번을 두 번째 축으로 사용한다.
 General로 변경하면 Plot 옵션은 해제된다.
 `autoTags`는 유형과 독립적인 속성이다.
 
@@ -87,14 +90,24 @@ General로 변경하면 Plot 옵션은 해제된다.
     "": {
       "type": "default",
       "plotEnabled": false,
-      "autoTags": ["당신을_구하던_삶"]
+      "autoTags": []
     },
-    "Character": {
+    "1. Concept": {
+      "type": "default",
+      "plotEnabled": false,
+      "autoTags": ["구상"]
+    },
+    "2. Outline": {
+      "type": "default",
+      "plotEnabled": false,
+      "autoTags": ["설계"]
+    },
+    "3. Character": {
       "type": "general",
       "plotEnabled": false,
       "autoTags": ["캐릭터"]
     },
-    "Scene": {
+    "4. Scene": {
       "type": "default",
       "plotEnabled": true,
       "autoTags": ["장면구상"]
@@ -109,6 +122,13 @@ General로 변경하면 Plot 옵션은 해제된다.
 - 구 `workflow`, `workflowLastModified` 필드는 읽을 때 무시
 - 구 유형 `numbered`는 `default`, `plot`은 `default + plotEnabled`로 읽고 다음 저장부터 새 형식만 기록
 
+새 프로젝트를 만들면 `1. Concept`, `2. Outline`, `3. Character`, `4. Scene`을 순서대로 자동 생성하고,
+같은 경로의 설정을 `.machum.json`에 함께 기록한다. 기존 프로젝트를 선택할 때는 이 템플릿을 소급 생성하지 않는다.
+`1. Concept`는 모티브·글감·메시지를 순서대로 축적하는 구상 영역이고,
+`2. Outline`은 캐릭터 초안·전체 플롯·발단부 구상 등 설계 산출물을 순서대로 축적하는 영역이다.
+둘 다 Default이며 첫 파일은 `1. 제목.md`다. 구체화 결과는 `3. Character`(General)와
+`4. Scene`(Default + Plot)에 두고, 실제 장별 원고는 Project 루트(Default)에 둔다.
+
 현재 상태:
 
 | 항목 | 상태 |
@@ -118,7 +138,8 @@ General로 변경하면 Plot 옵션은 해제된다.
 | `.machum.json` 파일 생성 | 구현됨 |
 | 설정을 현재 프로젝트 상태로 노출 | 검증 완료 |
 | 기본 base 설정 자동 기록 | 검증 완료 |
-| 폴더 동작에 설정 적용 | 미구현 |
+| 새 프로젝트 기본 4개 디렉터리·설정 자동 생성 | JVM 통합 검증 완료 |
+| 폴더 동작에 설정 적용 | 구현·자동 검증 완료 |
 
 ---
 
@@ -262,14 +283,16 @@ Project dropdown을 열고 설정 아이콘에서 Vault를 다시 선택한다. 
 
 ### 6.4 넘버링
 
-- 0부터 시작
+- 일반 Default 디렉터리는 1부터 시작
+- Project 루트의 Default는 0부터 시작
+- Default + Plot은 각 Plot 단계 내부에서 0부터 시작
 - 파일명: `"{n}. {제목}"`
 - 숫자 prefix로 정렬
 - 다음 번호는 현재 최댓값 + 1
-- 번호가 없는 외부 파일의 배치 정책은 구현 전에 결정 필요
+- 번호가 없는 외부 파일은 번호 파일 뒤에 이름순으로 배치
 
 PLOT 순서 편집은 7단계 그룹에서 드래그로 수행한다. 같은 그룹 안의 이동은 순번 변경, 다른 그룹으로의
-이동은 단계 변경이며 저장 시 각 단계 순번을 1부터 다시 계산한다. 파일명 충돌을 피하기 위해 임시 이름을
+이동은 단계 변경이며 저장 시 각 단계 순번을 0부터 다시 계산한다. 파일명 충돌을 피하기 위해 임시 이름을
 거치는 일괄 rename을 사용한다.
 
 현재 `setFile()`의 `"0. 제목"` 생성은 빈 프로젝트를 열기 위한 임시 fallback이다.
@@ -444,7 +467,7 @@ Undo/Redo 전에 끝내서 편집 이력과 selection이 불안정한 상태 소
 - base 프로젝트 폴더가 원고 랜딩 스코프
 - 폴더가 파일 스와이프 스코프
 - 기본 폴더 유형은 Default이며 UI 순서는 Default, General
-- Default는 0부터 시작
+- 일반 Default 디렉터리는 1부터, Project 루트 Default와 Default + Plot은 0부터 시작
 - 관리 frontmatter 키와 원형 보존 계약
 - Table 셀 selection은 장기적으로 사각형 방식
 

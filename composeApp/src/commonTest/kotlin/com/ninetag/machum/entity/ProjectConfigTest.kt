@@ -101,4 +101,36 @@ class ProjectConfigTest {
         assertEquals(original.fileIds, normalized.fileIds)
         assertEquals(2, normalized.folders.size)
     }
+
+    @Test
+    fun defaultProjectConfig_containsOrderedWorkspaceFoldersAndMatchingSettings() {
+        assertEquals(
+            listOf("1. Concept", "2. Outline", "3. Character", "4. Scene"),
+            DEFAULT_PROJECT_FOLDERS.map { it.name },
+        )
+
+        val config = defaultProjectConfig()
+        assertEquals(DEFAULT_BASE_FOLDER_CONFIG, config.folders[BASE_FOLDER_PATH])
+        assertEquals(
+            FolderConfig(type = FolderType.DEFAULT, autoTags = listOf("구상")),
+            config.folders["1. Concept"],
+        )
+        assertEquals(
+            FolderConfig(type = FolderType.DEFAULT, autoTags = listOf("설계")),
+            config.folders["2. Outline"],
+        )
+        assertEquals(
+            FolderConfig(type = FolderType.GENERAL, autoTags = listOf("캐릭터")),
+            config.folders["3. Character"],
+        )
+        assertEquals(
+            FolderConfig(
+                type = FolderType.DEFAULT,
+                plotEnabled = true,
+                autoTags = listOf("장면구상"),
+            ),
+            config.folders["4. Scene"],
+        )
+        assertEquals(5, config.folders.size)
+    }
 }

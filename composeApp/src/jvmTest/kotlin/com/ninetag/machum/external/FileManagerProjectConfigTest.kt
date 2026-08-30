@@ -2,6 +2,7 @@ package com.ninetag.machum.external
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import com.ninetag.machum.entity.BASE_FOLDER_PATH
+import com.ninetag.machum.entity.DEFAULT_PROJECT_FOLDERS
 import com.ninetag.machum.entity.FolderConfig
 import com.ninetag.machum.entity.FolderType
 import com.ninetag.machum.entity.ProjectConfig
@@ -29,6 +30,48 @@ class FileManagerProjectConfigTest {
 
     private val json = Json {
         ignoreUnknownKeys = true
+    }
+
+    @Test
+    fun creatingProject_createsOrderedDefaultFoldersAndPersistsTheirSettings() = runBlocking {
+        val testRoot = Files.createTempDirectory("machum-new-project").toFile()
+        val vaultDirectory = File(testRoot, "Vault").apply { mkdirs() }
+        val dataStoreScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val dataStore = PreferenceDataStoreFactory.createWithPath(scope = dataStoreScope) {
+            File(testRoot, "preferences.preferences_pb").absolutePath.toPath()
+        }
+
+        try {
+            val fileManager = FileManager(dataStore)
+            fileManager.setPreferences(Bookmarks(vaultData = PlatformFile(vaultDirectory)))
+
+            val created = fileManager.setProject("New Project")
+
+            assertNotNull(created)
+            val projectDirectory = File(vaultDirectory, "New Project")
+            assertEquals(
+                DEFAULT_PROJECT_FOLDERS.map { it.name },
+                projectDirectory.listFiles()!!
+                    .filter(File::isDirectory)
+                    .sortedBy { it.name }
+                    .map { it.name },
+            )
+            val persisted = json.decodeFromString(
+                ProjectConfig.serializer(),
+                File(projectDirectory, ".machum.json").readText(),
+            )
+            assertEquals(
+                DEFAULT_PROJECT_FOLDERS.associate { it.name to it.config },
+                persisted.folders.filterKeys { it != BASE_FOLDER_PATH },
+            )
+
+            val existingMarker = File(projectDirectory, "keep.md").apply { writeText("keep") }
+            assertNull(fileManager.setProject("New Project"))
+            assertEquals("keep", existingMarker.readText())
+        } finally {
+            dataStoreScope.cancel()
+            testRoot.deleteRecursively()
+        }
     }
 
     @Test

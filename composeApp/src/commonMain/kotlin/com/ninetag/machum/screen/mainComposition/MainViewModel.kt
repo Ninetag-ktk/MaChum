@@ -209,7 +209,10 @@ class MainViewModel(private val fileManager: FileManager) : ViewModel() {
             val config = folderConfig(folder.key)
             if (config.isPlot) return@launch
             val fileName = when (config.type) {
-                FolderType.DEFAULT -> existing.nextDefaultFileName(title)
+                FolderType.DEFAULT -> existing.nextDefaultFileName(
+                    title = title,
+                    startAt = if (folder.key == FolderKey.Base) 0 else 1,
+                )
                 FolderType.GENERAL -> title
             }
             if (existing.any { it.key.fileName.equals("$fileName.md", ignoreCase = true) }) return@launch
