@@ -1,7 +1,8 @@
 # 블록 기반 마크다운 에디터 설계
 
 > 역할: `composeApp/.../markdown/`의 현행 구현 계약과 검증 기준의 source of truth  
-> 마지막 검토: 2026-08-28  
+> 마지막 검토: 2026-08-29
+>
 > 제품 우선순위: [product-roadmap.md](product-roadmap.md)  
 > 앱 상위 구조: [architecture.md](architecture.md)
 
@@ -25,6 +26,14 @@ raw markdown
 ```
 
 각 블록은 안정 ID와 자체 `TextFieldState`를 가진다. 최상위는 `LazyColumn`, Callout body는 재귀 `Column`을 사용한다.
+
+### 컴포지션 정비 일정
+
+폴더-존 최소 수직 흐름과 전환 UI의 회귀 검증을 마친 직후, frontmatter 자동화와 Undo/Redo보다 먼저
+에디터 컴포지션 정비를 수행한다. 상세 순서와 완료 조건은 [제품 로드맵의 에디터 컴포지션 정비 게이트](product-roadmap.md#에디터-컴포지션-정비-게이트-2단계-완료-직후)를 따른다.
+
+정비 중에는 블록 모델·Markdown 직렬화 결과·키보드 동작을 바꾸지 않는다. 상태 소유권과 effect 생명주기,
+callback 경계, recomposition 범위만 정리하고 기능 변경은 별도 작업으로 분리한다.
 
 ---
 
@@ -148,7 +157,7 @@ language와 code `TextFieldState`만 저장한다. 여는 fence와 닫는 fence�
 - 두 번째 행에 구분자(`---`) 필요
 - 한 줄 `|col|` 또는 구분자 없는 표 모양 텍스트는 TextBlock 유지
 
-현재 파서는 데이터 행의 열 수를 헤더에 맞춰 정규화하지 않는다. 외부 Markdown 안전성을 위해 최대 열 수 기준 정규화가 P0 작업이다.
+파서는 헤더와 데이터 행의 최대 열 수를 기준으로 모든 행을 정규화한다. 비정형 Table 자동 테스트와 수동 로드 검증을 완료했다.
 
 ### HorizontalRule
 
@@ -458,8 +467,8 @@ cursor-only paste는 native TextField 동작을 유지한다. 입력 대체는 I
 | 블록 간 기본 이동 | 구현됨 |
 | soft wrap ↑/↓ | 부분 구현 |
 | Smart Enter | 구현됨 |
-| dissolve v3 | 구현·수동 검증 필요 |
-| selection foundation·Scope A | 구현·수동 검증 필요 |
+| dissolve v3 | 구현·수동 검증 완료 |
+| selection foundation·Scope A | 구현·수동 검증 완료 |
 | Undo/Redo | 미구현 |
 | selection Cut/Paste/replace | 미구현 |
 | 마우스 drag | 미구현 |
@@ -532,13 +541,14 @@ cursor-only paste는 native TextField 동작을 유지한다. 입력 대체는 I
 
 ## 14. 다음 작업 권장 순서
 
-1. 파서·직렬화·BlockOperations 자동 테스트
-2. Table 열 수 정규화
-3. 저장·외부 변경 경합 검증
-4. Undo/Redo
-5. Cross-block delete/Cut
-6. Multi paste
-7. selection 입력 대체
-8. 마우스 drag
-9. Table 셀 selection
-10. Embed와 M3 시각 정리
+1. 폴더-존 최소 수직 흐름과 전환 UI 완료
+2. 에디터 컴포지션 정비 게이트 수행
+3. frontmatter·메타 인덱스 완료
+4. 제품 로드맵의 첫 전체 최적화 게이트 수행
+5. Undo/Redo
+6. Cross-block delete/Cut
+7. Multi paste
+8. selection 입력 대체
+9. 마우스 drag
+10. Table 셀 selection
+11. Embed와 M3 시각 정리

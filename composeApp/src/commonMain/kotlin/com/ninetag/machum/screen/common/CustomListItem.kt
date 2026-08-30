@@ -58,7 +58,7 @@ fun CustomListItem(
     val borderModifier = if (isFocused) {
         Modifier.border(
             width = 1.dp,
-            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.5f),
+            color = MaterialTheme.colorScheme.primary,
             shape = MaterialTheme.shapes.medium
         )
     } else {

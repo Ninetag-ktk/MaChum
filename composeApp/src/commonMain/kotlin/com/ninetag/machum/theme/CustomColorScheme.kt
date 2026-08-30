@@ -2,6 +2,7 @@ package com.ninetag.machum.theme
 
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.Color
 
@@ -41,7 +42,7 @@ val lightScheme = lightColorScheme(
     surfaceContainer = surfaceContainerLight,
     surfaceContainerHigh = surfaceContainerHighLight,
     surfaceContainerHighest = surfaceContainerHighestLight,
-)
+).withCustomFixedColors()
 
 val darkScheme = darkColorScheme(
     primary = primaryDark,
@@ -79,9 +80,9 @@ val darkScheme = darkColorScheme(
     surfaceContainer = surfaceContainerDark,
     surfaceContainerHigh = surfaceContainerHighDark,
     surfaceContainerHighest = surfaceContainerHighestDark,
-)
+).withCustomFixedColors()
 
-private val mediumContrastLightColorScheme = lightColorScheme(
+internal val mediumContrastLightColorScheme = lightColorScheme(
     primary = primaryLightMediumContrast,
     onPrimary = onPrimaryLightMediumContrast,
     primaryContainer = primaryContainerLightMediumContrast,
@@ -117,9 +118,9 @@ private val mediumContrastLightColorScheme = lightColorScheme(
     surfaceContainer = surfaceContainerLightMediumContrast,
     surfaceContainerHigh = surfaceContainerHighLightMediumContrast,
     surfaceContainerHighest = surfaceContainerHighestLightMediumContrast,
-)
+).withCustomFixedColors()
 
-private val highContrastLightColorScheme = lightColorScheme(
+internal val highContrastLightColorScheme = lightColorScheme(
     primary = primaryLightHighContrast,
     onPrimary = onPrimaryLightHighContrast,
     primaryContainer = primaryContainerLightHighContrast,
@@ -155,9 +156,9 @@ private val highContrastLightColorScheme = lightColorScheme(
     surfaceContainer = surfaceContainerLightHighContrast,
     surfaceContainerHigh = surfaceContainerHighLightHighContrast,
     surfaceContainerHighest = surfaceContainerHighestLightHighContrast,
-)
+).withCustomFixedColors()
 
-private val mediumContrastDarkColorScheme = darkColorScheme(
+internal val mediumContrastDarkColorScheme = darkColorScheme(
     primary = primaryDarkMediumContrast,
     onPrimary = onPrimaryDarkMediumContrast,
     primaryContainer = primaryContainerDarkMediumContrast,
@@ -193,9 +194,9 @@ private val mediumContrastDarkColorScheme = darkColorScheme(
     surfaceContainer = surfaceContainerDarkMediumContrast,
     surfaceContainerHigh = surfaceContainerHighDarkMediumContrast,
     surfaceContainerHighest = surfaceContainerHighestDarkMediumContrast,
-)
+).withCustomFixedColors()
 
-private val highContrastDarkColorScheme = darkColorScheme(
+internal val highContrastDarkColorScheme = darkColorScheme(
     primary = primaryDarkHighContrast,
     onPrimary = onPrimaryDarkHighContrast,
     primaryContainer = primaryContainerDarkHighContrast,
@@ -231,6 +232,21 @@ private val highContrastDarkColorScheme = darkColorScheme(
     surfaceContainer = surfaceContainerDarkHighContrast,
     surfaceContainerHigh = surfaceContainerHighDarkHighContrast,
     surfaceContainerHighest = surfaceContainerHighestDarkHighContrast,
+).withCustomFixedColors()
+
+private fun ColorScheme.withCustomFixedColors(): ColorScheme = copy(
+    primaryFixed = primaryContainerLight,
+    primaryFixedDim = primaryDark,
+    onPrimaryFixed = onPrimaryDark,
+    onPrimaryFixedVariant = primaryContainerDark,
+    secondaryFixed = secondaryContainerLight,
+    secondaryFixedDim = secondaryDark,
+    onSecondaryFixed = onSecondaryDark,
+    onSecondaryFixedVariant = secondaryContainerDark,
+    tertiaryFixed = tertiaryContainerLight,
+    tertiaryFixedDim = tertiaryDark,
+    onTertiaryFixed = onTertiaryDark,
+    onTertiaryFixedVariant = tertiaryContainerDark,
 )
 
 @Immutable

@@ -1,5 +1,7 @@
 package com.ninetag.machum.external
 
+import com.ninetag.machum.entity.PlotStage
+
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -108,6 +110,16 @@ class NoteFileTest {
     }
 
     @Test
+    fun withTags_replacesWhitespaceWithUnderscore_andDeduplicates() {
+        val note = NoteFile.parse("본문").withTags(
+            listOf("폴더 1", " 캐릭터 설정 ", "#폴더_1"),
+        )
+
+        assertEquals(listOf("폴더_1", "캐릭터_설정"), note.tags)
+        assertTrue(note.inject().contains("tags:\n  - 폴더_1\n  - 캐릭터_설정"))
+    }
+
+    @Test
     fun withPlot_addsWhenMissing_and_removesWhenNull() {
         val added = NoteFile.parse("---\nid: abc12345\n---\n\n본문").withPlot("2) 전개")
         assertEquals("2) 전개", added.plot)
@@ -115,6 +127,15 @@ class NoteFileTest {
         val removed = added.withPlot(null)
         assertNull(removed.plot)
         assertTrue(!removed.inject().contains("plot"))
+    }
+
+    @Test
+    fun plotStageUsesNumberParenthesisAndStageFrontmatterFormat() {
+        val note = NoteFile.parse("본문").withPlotStage(PlotStage.SETUP)
+
+        assertEquals(PlotStage.SETUP, note.plotStage)
+        assertEquals("1) 발단", note.plot)
+        assertEquals("1) 발단", NoteFile.PLOT_VALUES[1])
     }
 
     @Test

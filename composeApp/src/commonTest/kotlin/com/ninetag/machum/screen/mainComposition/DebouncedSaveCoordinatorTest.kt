@@ -1,5 +1,6 @@
 package com.ninetag.machum.screen.mainComposition
 
+import com.ninetag.machum.external.FileKey
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -47,6 +48,24 @@ class DebouncedSaveCoordinatorTest {
     }
 
     @Test
+    fun sameFileNameInDifferentFolders_isDebouncedIndependently() = runTest {
+        val saved = mutableListOf<Pair<FileKey, String>>()
+        val coordinator = DebouncedSaveCoordinator<FileKey, String>(
+            scope = this,
+            debounceMillis = 500,
+        ) { key, value -> saved += key to value }
+        val scene = FileKey.of("Scene/same.md")
+        val character = FileKey.of("Character/same.md")
+
+        coordinator.schedule(scene, "scene")
+        coordinator.schedule(character, "character")
+        advanceTimeBy(500.milliseconds)
+        runCurrent()
+
+        assertEquals(listOf(scene to "scene", character to "character"), saved)
+    }
+
+    @Test
     fun cancel_preventsStaleSaveAfterExternalChange() = runTest {
         val saved = mutableListOf<Pair<String, String>>()
         val coordinator = coordinator(saved)
@@ -72,6 +91,35 @@ class DebouncedSaveCoordinatorTest {
         runCurrent()
 
         assertEquals(listOf("kept.md" to "kept"), saved)
+    }
+
+    @Test
+    fun cancelAll_preventsEveryPendingSave() = runTest {
+        val saved = mutableListOf<Pair<String, String>>()
+        val coordinator = coordinator(saved)
+
+        coordinator.schedule("a.md", "A")
+        coordinator.schedule("b.md", "B")
+        coordinator.cancelAll()
+        advanceTimeBy(500.milliseconds)
+        runCurrent()
+
+        assertTrue(saved.isEmpty())
+    }
+
+    @Test
+    fun flush_savesRequestedPendingValueImmediately() = runTest {
+        val saved = mutableListOf<Pair<String, String>>()
+        val coordinator = coordinator(saved)
+
+        coordinator.schedule("plot.md", "edited")
+        coordinator.schedule("other.md", "later")
+        coordinator.flush(setOf("plot.md"))
+
+        assertEquals(listOf("plot.md" to "edited"), saved)
+        advanceTimeBy(500.milliseconds)
+        runCurrent()
+        assertEquals(listOf("plot.md" to "edited", "other.md" to "later"), saved)
     }
 
     private fun kotlinx.coroutines.test.TestScope.coordinator(

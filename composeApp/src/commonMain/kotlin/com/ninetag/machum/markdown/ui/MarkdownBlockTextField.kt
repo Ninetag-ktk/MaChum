@@ -23,7 +23,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -31,6 +30,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.em
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
+import com.ninetag.machum.theme.semanticColors
 
 /**
  * v2 블록 기반 마크다운 에디터의 공개 API.
@@ -49,7 +49,7 @@ fun MarkdownBlockTextField(
     onValueChange: (String) -> Unit,
     modifier: Modifier = Modifier,
     textStyle: TextStyle = TextStyle.Default,
-    cursorBrush: Brush = SolidColor(Color.Black),
+    cursorBrush: Brush = SolidColor(MaterialTheme.colorScheme.primary),
     styleConfig: MarkdownStyleConfig = MarkdownStyleConfig(),
 ) {
     var blocks by remember { mutableStateOf(MarkdownBlockParser.parse(value)) }
@@ -143,26 +143,27 @@ fun MarkdownBlockTextFieldM3(
 
 @Composable
 private fun defaultMaterialBlockStyleConfig(): MarkdownStyleConfig {
+    val scheme = MaterialTheme.colorScheme
+    val semanticColors = MaterialTheme.semanticColors
     val linkColor = MaterialTheme.colorScheme.primary
     val codeBackground = MaterialTheme.colorScheme.surfaceVariant
     val highlightColor = MaterialTheme.colorScheme.tertiaryContainer
     val codeBlockBg = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
     val selectionBg = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
 
-    val scheme = MaterialTheme.colorScheme
-    val calloutStyles = remember(scheme) {
+    val calloutStyles = remember(scheme, semanticColors) {
         mapOf(
             "NOTE" to CalloutDecorationStyle(
                 scheme.primaryContainer.copy(alpha = 0.4f), scheme.primary
             ),
             "TIP" to CalloutDecorationStyle(
-                scheme.tertiaryContainer.copy(alpha = 0.4f), scheme.tertiary
-            ),
-            "IMPORTANT" to CalloutDecorationStyle(
                 scheme.secondaryContainer.copy(alpha = 0.4f), scheme.secondary
             ),
+            "IMPORTANT" to CalloutDecorationStyle(
+                scheme.tertiaryContainer.copy(alpha = 0.4f), scheme.tertiary
+            ),
             "WARNING" to CalloutDecorationStyle(
-                scheme.errorContainer.copy(alpha = 0.3f), scheme.error.copy(alpha = 0.7f)
+                scheme.tertiaryContainer.copy(alpha = 0.4f), scheme.tertiary
             ),
             "DANGER" to CalloutDecorationStyle(
                 scheme.errorContainer.copy(alpha = 0.4f), scheme.error
@@ -174,7 +175,7 @@ private fun defaultMaterialBlockStyleConfig(): MarkdownStyleConfig {
                 scheme.surfaceVariant.copy(alpha = 0.5f), scheme.onSurfaceVariant
             ),
             "SUCCESS" to CalloutDecorationStyle(
-                scheme.tertiaryContainer.copy(alpha = 0.4f), scheme.tertiary
+                semanticColors.successContainer.copy(alpha = 0.4f), semanticColors.success
             ),
         )
     }
@@ -186,6 +187,14 @@ private fun defaultMaterialBlockStyleConfig(): MarkdownStyleConfig {
             codeInline = SpanStyle(fontFamily = FontFamily.Monospace, fontSize = 0.85.em),
             codeInlineBackground = codeBackground,
             codeBlockBackground = codeBlockBg,
+            bulletPrefix = SpanStyle(color = scheme.onSurfaceVariant),
+            orderedPrefix = SpanStyle(
+                color = scheme.onSurfaceVariant,
+                fontFamily = FontFamily.Monospace,
+            ),
+            blockquoteAccent = scheme.outline,
+            horizontalRuleColor = scheme.outline,
+            calloutIndicator = SpanStyle(color = scheme.onSurfaceVariant.copy(alpha = 0.7f)),
             calloutStyles = calloutStyles,
             selectionAccent = selectionBg,
         )

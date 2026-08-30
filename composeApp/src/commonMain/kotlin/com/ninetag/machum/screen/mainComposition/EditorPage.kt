@@ -10,23 +10,22 @@ import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.ninetag.machum.markdown.ui.MarkdownBlockTextFieldM3
-import io.github.vinceglb.filekit.PlatformFile
-import io.github.vinceglb.filekit.name
+import com.ninetag.machum.external.ProjectFile
 import org.koin.compose.viewmodel.koinViewModel
 
 @Composable
-fun EditorPage(file: PlatformFile) {
+fun EditorPage(projectFile: ProjectFile) {
     val viewModel: MainViewModel = koinViewModel()
 
-    LaunchedEffect(file) { viewModel.loadPage(file) }
+    LaunchedEffect(projectFile) { viewModel.loadPage(projectFile) }
 
     val cache by viewModel.noteFileCache.collectAsState()
-    val noteFile = cache[file.name] ?: return
+    val noteFile = cache[projectFile.key] ?: return
 
-    key(file.name) {
+    key(projectFile.key) {
         MarkdownBlockTextFieldM3(
             value = noteFile.body,
-            onValueChange = { viewModel.updateBody(file.name, it) },
+            onValueChange = { viewModel.updateBody(projectFile.key, it) },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 16.dp),

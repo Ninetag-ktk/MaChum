@@ -12,6 +12,7 @@ import androidx.compose.ui.window.rememberWindowState
 import com.ninetag.machum.di.commonModule
 import com.ninetag.machum.external.FileManager
 import com.ninetag.machum.screen.vaultScreen.DesktopVaultPickerContainer
+import com.ninetag.machum.theme.AppTheme
 import io.github.vinceglb.filekit.FileKit
 import kotlinx.coroutines.flow.map
 import org.koin.compose.koinInject
@@ -34,14 +35,16 @@ fun main() {
                     Window(
                         onCloseRequest = ::exitApplication,
                         state = rememberWindowState(
-                            width = 420.dp,
-                            height = 560.dp,
+                            width = 520.dp,
+                            height = 620.dp,
                             position = WindowPosition(Alignment.Center),
                         ),
                         title = "맞춤",
                         resizable = false,
                     ) {
-                        DesktopVaultPickerContainer(reset = {})
+                        AppTheme {
+                            DesktopVaultPickerContainer(reset = {})
+                        }
                     }
                 }
                 else -> {

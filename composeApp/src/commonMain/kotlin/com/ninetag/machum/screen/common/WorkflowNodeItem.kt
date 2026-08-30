@@ -62,6 +62,7 @@ import com.ninetag.machum.screen.workflowSceen.DragState
 import kotlinx.coroutines.delay
 import java.util.IdentityHashMap
 import java.util.UUID
+import kotlin.time.Duration.Companion.milliseconds
 
 @Composable
 fun WorkflowNodeItem(
@@ -115,7 +116,7 @@ fun WorkflowNodeItem(
 
     LaunchedEffect(shouldRequestFocus) {
         if (shouldRequestFocus) {
-            delay(100)
+            delay(100.milliseconds)
             focusRequester.requestFocus()
             onFocusRequested()
         }
@@ -372,17 +373,16 @@ fun DragGhostCard(
                 .fillMaxWidth()
                 .shadow(elevation = 8.dp, shape = RoundedCornerShape(8.dp))
                 .background(
-                    color = MaterialTheme.colorScheme.primaryFixedDim,
+                    color = MaterialTheme.colorScheme.primaryFixedDim.copy(alpha = 0.92f),
                     shape = RoundedCornerShape(8.dp)
                 )
-                .padding(horizontal = 16.dp, vertical = 12.dp)
-                .alpha(0.5f),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 text = title.ifBlank {"(noTitle)"},
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onBackground,
+                color = MaterialTheme.colorScheme.onPrimaryFixed,
             )
         }
     }

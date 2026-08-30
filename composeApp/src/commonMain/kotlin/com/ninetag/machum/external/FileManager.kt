@@ -5,9 +5,13 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.byteArrayPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.ninetag.machum.entity.BASE_FOLDER_PATH
 import com.ninetag.machum.entity.FolderConfig
+import com.ninetag.machum.entity.FolderType
 import com.ninetag.machum.entity.ProjectConfig
 import com.ninetag.machum.entity.WorkflowStep
+import com.ninetag.machum.entity.effectiveAutoTags
+import com.ninetag.machum.entity.normalizeTag
 import com.ninetag.machum.entity.withDefaultBaseFolder
 import io.github.vinceglb.filekit.FileKit
 import io.github.vinceglb.filekit.PlatformFile
@@ -43,6 +47,9 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val projectConfigMutex = Mutex()
+    private val projectIndexer = ProjectIndexer(this)
+
+    val projectIndexState: StateFlow<ProjectIndexState> = projectIndexer.state
 
     val workflowParser = WorkflowParser()
 
@@ -61,16 +68,21 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
 
     // ToDo 테스트 이후 private 으로 변경
     suspend fun setPreferences(bookmark: Bookmarks): Bookmarks {
+        val normalizedBookmark = bookmark.copy(
+            fileRelativePath = bookmark.fileData?.let { bookmark.fileRelativePath ?: it.name },
+        )
         dataStore.edit { pref ->
-            bookmark.vaultData?.let { pref[BOOKMARK_VAULT] = it.bookmarkData().bytes }
-            bookmark.projectData?.let { pref[BOOKMARK_PROJECT] = it.bookmarkData().bytes }?:pref.remove(BOOKMARK_PROJECT)
-            bookmark.fileData?.let { pref[BOOKMARK_FILE] = it.name }?:pref.remove(BOOKMARK_FILE)
+            normalizedBookmark.vaultData?.let { pref[BOOKMARK_VAULT] = it.bookmarkData().bytes }
+            normalizedBookmark.projectData?.let { pref[BOOKMARK_PROJECT] = it.bookmarkData().bytes }?:pref.remove(BOOKMARK_PROJECT)
+            normalizedBookmark.fileData
+                ?.let { pref[BOOKMARK_FILE] = normalizedBookmark.fileRelativePath ?: it.name }
+                ?: pref.remove(BOOKMARK_FILE)
         }
-        if (!sameLocation(_bookmarks.value.projectData, bookmark.projectData)) {
+        if (!sameLocation(_bookmarks.value.projectData, normalizedBookmark.projectData)) {
             _projectConfig.value = null
         }
-        _bookmarks.value = bookmark
-        return bookmark
+        _bookmarks.value = normalizedBookmark
+        return normalizedBookmark
     }
 
     // ToDo 테스트 이후 private 으로 변경
@@ -78,36 +90,33 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         return dataStore.data.first().let{ pref ->
             val vault = pref[BOOKMARK_VAULT]?.let { PlatformFile.fromBookmarkDataWithValidate(it) }
             val project = pref[BOOKMARK_PROJECT]?.let { PlatformFile.fromBookmarkDataWithValidate(it) }
-            val file = project?.let { pref[BOOKMARK_FILE]?.let{
-                project.list().find { file -> file.name == it }
-            } }
+            val fileRelativePath = pref[BOOKMARK_FILE]
+            val file = project?.let { root ->
+                fileRelativePath?.let { resolveRelativeFile(root, it) }
+            }
             Bookmarks(
                 vaultData = vault,
                 projectData = project,
                 fileData = file,
+                fileRelativePath = fileRelativePath,
             )
         }
     }
 
-    private suspend fun clearPreferences() {
+    /** 앱이 보관한 선택 상태를 초기화한다. Vault 안의 실제 파일은 삭제하지 않는다. */
+    suspend fun reset() {
         dataStore.edit { pref ->
             pref.remove(BOOKMARK_VAULT)
             pref.remove(BOOKMARK_PROJECT)
             pref.remove(BOOKMARK_FILE)
         }
-        _bookmarks.value = getPreferences()
+        _bookmarks.value = Bookmarks()
         _projectConfig.value = null
-    }
-
-    // ToDo 테스트 이후 삭제
-    suspend fun clearPreferencesTest() {
-        dataStore.edit { pref ->
-//            pref.remove(BOOKMARK_VAULT)
-            pref.remove(BOOKMARK_PROJECT)
-            pref.remove(BOOKMARK_FILE)
-        }
-        _bookmarks.value = getPreferences()
-        _projectConfig.value = null
+        _workflowList.value = emptyList()
+        _workflow.value = emptyList()
+        _needUpdateWorkflow.value = false
+        _currentNoteFile.value = null
+        projectIndexer.reset()
     }
 
     private val _bookmarks = MutableStateFlow(Bookmarks())
@@ -138,7 +147,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     private suspend fun validateVault(): PlatformFile? {
         val vault = getPreferences().vaultData ?: return null
         if (!validPermission(vault)) {
-            clearPreferences()
+            reset()
             return null
         }
         val bookmark = Bookmarks(vaultData = vault)
@@ -150,6 +159,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     private suspend fun validProject(): PlatformFile? {
         val bookmarks = getPreferences()
         val project = bookmarks.projectData ?: return null
+        projectIndexer.prepare(project)
         _bookmarks.value = bookmarks
         loadProjectConfig(project) ?: return null
         return project
@@ -164,7 +174,10 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
 
     suspend fun createNextFile(name: String): PlatformFile? = withContext(Dispatchers.IO) {
         createFile(_bookmarks.value.projectData!!, name)
-            ?.also { pickFile(it) }
+            ?.also { file ->
+                readMarkdown(file)
+                pickFile(ProjectFile(FolderKey.Base.file(file.name), file))
+            }
     }
 
     suspend fun createChildFile(numbering: String, name: String): PlatformFile? = withContext(Dispatchers.IO) {
@@ -205,6 +218,149 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             .sortedBy { it.name }
     }
 
+    /** 프로젝트 base와 바로 아래의 비숨김 폴더를 반환한다. 중첩 폴더는 지원 범위 밖이다. */
+    suspend fun listFolders(project: PlatformFile): List<ProjectFolder> = withContext(Dispatchers.IO) {
+        listOf(ProjectFolder(FolderKey.Base, project)) + project.list()
+            .filter { it.isDirectory() && !it.name.startsWith(".") }
+            .sortedBy { it.name }
+            .map { folder -> ProjectFolder(FolderKey.of(folder.name), folder) }
+    }
+
+    /** 지정한 프로젝트 폴더의 직속 Markdown 파일을 상대 경로 정체성과 함께 반환한다. */
+    suspend fun listProjectFiles(folder: ProjectFolder): List<ProjectFile> = withContext(Dispatchers.IO) {
+        folder.platformFile.list()
+            .filter { !it.isDirectory() && it.name.endsWith(".md", ignoreCase = true) }
+            .sortedBy { it.name }
+            .map { file -> ProjectFile(folder.key.file(file.name), file) }
+    }
+
+    /** 지정 폴더에 Markdown 파일을 만들고 상대 경로 정체성을 부여한다. */
+    suspend fun createProjectFile(folder: ProjectFolder, name: String): ProjectFile? = withContext(Dispatchers.IO) {
+        createFile(folder.platformFile, name)
+            ?.let { file ->
+                readMarkdown(file)
+                ProjectFile(folder.key.file(file.name), file)
+            }
+    }
+
+    /**
+     * 폴더 설정 변경 전후의 관리 태그 차이를 실제 Markdown 파일에 반영한다.
+     * base 설정 변경은 모든 폴더, 하위 폴더 설정 변경은 해당 폴더의 직속 파일만 대상으로 한다.
+     */
+    suspend fun synchronizeAutoTags(
+        previousConfig: ProjectConfig,
+        updatedConfig: ProjectConfig,
+        editedRelativePath: String,
+    ): List<AutoTagSyncUpdate> = withContext(Dispatchers.IO) {
+        val project = _bookmarks.value.projectData ?: return@withContext emptyList()
+        val targetFolders = listFolders(project).filter { folder ->
+            editedRelativePath == BASE_FOLDER_PATH || folder.key.relativePath == editedRelativePath
+        }
+
+        targetFolders.flatMap { folder ->
+            val previousTags = previousConfig.effectiveAutoTags(folder.key.relativePath)
+            val updatedTags = updatedConfig.effectiveAutoTags(folder.key.relativePath)
+            if (previousTags == updatedTags) return@flatMap emptyList()
+
+            listProjectFiles(folder).mapNotNull { projectFile ->
+                val noteFile = readMarkdown(projectFile.platformFile)
+                val mergedTags = mergeManagedTags(noteFile.tags, previousTags, updatedTags)
+                val projectTag = normalizeTag(project.name)
+                val requiredTags = (listOf(projectTag) + mergedTags.filterNot { it == projectTag }).distinct()
+                if (requiredTags == noteFile.tags) return@mapNotNull null
+
+                val updatedNoteFile = noteFile.withTags(requiredTags)
+                writeMarkdown(projectFile.platformFile, updatedNoteFile)
+                AutoTagSyncUpdate(projectFile, updatedNoteFile)
+            }
+        }
+    }
+
+    /** PLOT 순서 초안을 frontmatter와 정확한 파일명에 일괄 반영한다. */
+    suspend fun applyPlotOrder(
+        folder: ProjectFolder,
+        assignments: List<PlotOrderAssignment>,
+    ): List<PlotOrderUpdate>? = withContext(Dispatchers.IO) {
+        if (assignments.isEmpty()) return@withContext emptyList()
+        if (assignments.map { it.fileKey }.toSet().size != assignments.size) return@withContext null
+
+        val filesByKey = listProjectFiles(folder).associateBy(ProjectFile::key)
+        val assignmentKeys = assignments.mapTo(mutableSetOf()) { it.fileKey }
+        val untouchedNames = filesByKey.values
+            .filterNot { it.key in assignmentKeys }
+            .mapTo(mutableSetOf()) { it.platformFile.name.lowercase() }
+
+        val works = assignments.mapIndexed { index, assignment ->
+            val source = filesByKey[assignment.fileKey] ?: return@withContext null
+            val noteFile = readMarkdown(source.platformFile)
+            val title = source.plotTitle()
+            val finalBaseName = assignment.stage.fileName(assignment.order, title)
+            val finalFileName = "$finalBaseName.md"
+            if (finalFileName.lowercase() in untouchedNames) return@withContext null
+            PlotRenameWork(
+                oldKey = source.key,
+                originalBaseName = source.platformFile.nameWithoutExtension,
+                originalNoteFile = noteFile,
+                updatedNoteFile = noteFile.withPlotStage(assignment.stage),
+                finalBaseName = finalBaseName,
+                temporaryBaseName = ".machum-plot-${noteFile.id ?: index}-$index",
+                currentFile = source.platformFile,
+            )
+        }
+        if (works.map { it.finalBaseName.lowercase() }.toSet().size != works.size) {
+            return@withContext null
+        }
+
+        try {
+            works.forEach { work ->
+                work.currentFile = renameMarkdownExact(
+                    folder.platformFile,
+                    work.currentFile,
+                    work.temporaryBaseName,
+                ) ?: error("temporary plot rename failed")
+            }
+            works.forEach { work ->
+                writeMarkdown(work.currentFile, work.updatedNoteFile)
+            }
+            works.forEach { work ->
+                work.currentFile = renameMarkdownExact(
+                    folder.platformFile,
+                    work.currentFile,
+                    work.finalBaseName,
+                ) ?: error("final plot rename failed")
+            }
+        } catch (error: Exception) {
+            rollbackPlotOrder(folder, works)
+            return@withContext null
+        }
+
+        works.map { work ->
+            PlotOrderUpdate(
+                oldKey = work.oldKey,
+                projectFile = ProjectFile(folder.key.file(work.currentFile.name), work.currentFile),
+                noteFile = work.updatedNoteFile,
+            )
+        }
+    }
+
+    /** 현재 Project 바로 아래에 디렉터리를 만들고 대응하는 설정을 함께 저장한다. */
+    suspend fun createProjectFolder(
+        name: String,
+        folderConfig: FolderConfig,
+    ): ProjectFolder? = withContext(Dispatchers.IO) {
+        val project = _bookmarks.value.projectData ?: return@withContext null
+        val directoryName = name.trim()
+        if (!isValidProjectFolderName(directoryName)) return@withContext null
+        if (project.list().any { it.name.equals(directoryName, ignoreCase = true) }) {
+            return@withContext null
+        }
+
+        val directory = createFolder(project, directoryName) ?: return@withContext null
+        val key = FolderKey.of(directory.name)
+        setFolderConfig(key.relativePath, folderConfig) ?: return@withContext null
+        ProjectFolder(key, directory)
+    }
+
     /**
      * 저장소를 선택
      * @return 저장소
@@ -231,11 +387,13 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * @return 해당 프로젝트 폴더의 마지막 마크다운 파일
      */
     fun pickProject(project: PlatformFile) {
+        projectIndexer.prepare(project)
         scope.launch {
             try {
                 setPreferences(getPreferences().copy(projectData = project, fileData = null))
                 loadProjectConfig(project)
             } catch (e: Exception) {
+                projectIndexer.fail(project, e)
                 println(e)
             }
         }
@@ -262,10 +420,16 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * @param file 선택한 마크다운 파일
      * @return 선택한 마크다운 파일
      */
-    suspend fun pickFile(file: PlatformFile): PlatformFile = withContext(Dispatchers.IO) {
+    suspend fun pickFile(projectFile: ProjectFile): PlatformFile = withContext(Dispatchers.IO) {
+        val file = projectFile.platformFile
         // 포커스 변경 시에만 갱신
         _currentNoteFile.value = readMarkdown(file)
-        setPreferences(getPreferences().copy(fileData = file)).fileData!!
+        setPreferences(
+            getPreferences().copy(
+                fileData = file,
+                fileRelativePath = projectFile.key.relativePath,
+            )
+        ).fileData!!
     }
 
     suspend fun pickFileTest(): PlatformFile? {
@@ -284,7 +448,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
         if (file != null) {
             setPreferences(
-                getPreferences().copy(fileData = file)
+                getPreferences().copy(fileData = file, fileRelativePath = file.name)
             )
         }
         return file
@@ -320,6 +484,8 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                 persistConfig(configFile, normalized)
             }
 
+            projectIndexer.index(project)
+
             if (!sameLocation(_bookmarks.value.projectData, project)) return@withLock null
             _projectConfig.value = normalized
             normalized
@@ -338,14 +504,40 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
     }
 
-    suspend fun readMarkdown(file: PlatformFile): NoteFile = withContext(Dispatchers.IO) {
+    suspend fun readMarkdown(file: PlatformFile): NoteFile = readMarkdown(
+        file = file,
+        requiredProjectTag = _bookmarks.value.projectData?.name?.let(::normalizeTag),
+    )
+
+    internal suspend fun inspectProjectMetadata(
+        file: PlatformFile,
+        requiredProjectTag: String?,
+    ): ProjectMetadataUpdate = withContext(Dispatchers.IO) {
         val raw = NoteFile.parse(file.readString())
         val withId = raw.ensureId()
-        if (raw.id == null) {
-            file.writeString(withId.inject())
-        }
-        withId
+        val normalized = requiredProjectTag
+            ?.takeIf(String::isNotBlank)
+            ?.let { projectTag ->
+                withId.withTags(listOf(projectTag) + withId.tags.filterNot { it == projectTag })
+            }
+            ?: withId
+        val changed = raw.inject() != normalized.inject()
+        ProjectMetadataUpdate(normalized, changed)
     }
+
+    internal suspend fun ensureProjectMetadata(
+        file: PlatformFile,
+        requiredProjectTag: String?,
+    ): ProjectMetadataUpdate = withContext(Dispatchers.IO) {
+        inspectProjectMetadata(file, requiredProjectTag).also { update ->
+            if (update.changed) file.writeString(update.noteFile.inject())
+        }
+    }
+
+    private suspend fun readMarkdown(
+        file: PlatformFile,
+        requiredProjectTag: String?,
+    ): NoteFile = ensureProjectMetadata(file, requiredProjectTag).noteFile
 
     /**
      * 파일 쓰기 (생성 & 수정)
@@ -439,6 +631,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      */
     suspend fun setProject(name: String): PlatformFile? = withContext(Dispatchers.IO) {
         createFolder(_bookmarks.value.vaultData!!, name)?.let{
+            projectIndexer.prepare(it)
             setPreferences(getPreferences().copy(projectData = it, fileData = null))
             loadProjectConfig(it)
             it
@@ -447,16 +640,30 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
 
     suspend fun setFile(project: PlatformFile): PlatformFile = withContext(Dispatchers.IO) {
         try {
-            listFile(project).lastOrNull()
-                ?.let{
-                    setPreferences(getPreferences().copy(fileData = it)).fileData
+            val config = _projectConfig.value ?: loadProjectConfig(project)
+            val folderConfig = config?.folders?.get("") ?: FolderConfig()
+            val baseFolder = ProjectFolder(FolderKey.Base, project)
+            val files = listProjectFiles(baseFolder).sortedFor(folderConfig)
+            files.lastOrNull()
+                ?.let { projectFile ->
+                    setPreferences(
+                        getPreferences().copy(
+                            fileData = projectFile.platformFile,
+                            fileRelativePath = projectFile.key.relativePath,
+                        )
+                    ).fileData
                 }
                 ?:run{
-                    // 빈 프로젝트: 원고 첫 파일 생성 (넘버링 0부터, docs/product-roadmap.md).
-                    // 폴더-존 파일생성 UX 로 추후 정교화 예정 (임시 기본 제목).
-                    val name = "0. 제목"
-                    createFile(project, name)
-                        ?.let { setPreferences(getPreferences().copy(fileData = it)).fileData }
+                    val name = if (folderConfig.type == FolderType.DEFAULT) "0. 제목" else "제목"
+                    createProjectFile(baseFolder, name)
+                        ?.let {
+                            setPreferences(
+                                getPreferences().copy(
+                                    fileData = it.platformFile,
+                                    fileRelativePath = it.key.relativePath,
+                                )
+                            ).fileData
+                        }
                         ?:throw Exception()
                 }
         } catch (e: Exception) {
@@ -476,12 +683,113 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
     }
 
-    suspend fun renameFile(file: PlatformFile, name: String): PlatformFile? = withContext(Dispatchers.IO) {
-        renameMarkdown(_bookmarks.value.projectData!!, file, name)
+    suspend fun renameFile(projectFile: ProjectFile, name: String): PlatformFile? = withContext(Dispatchers.IO) {
+        val project = _bookmarks.value.projectData ?: return@withContext null
+        val parent = resolveFolder(project, projectFile.key.folder) ?: return@withContext null
+        renameMarkdown(parent, projectFile.platformFile, name)
+    }
+
+    private fun resolveFolder(project: PlatformFile, key: FolderKey): PlatformFile? {
+        if (key == FolderKey.Base) return project
+        if ('/' in key.relativePath) return null
+        return project.list().find { it.isDirectory() && it.name == key.relativePath }
+    }
+
+    private fun resolveRelativeFile(project: PlatformFile, relativePath: String): PlatformFile? {
+        val key = runCatching { FileKey.of(relativePath) }.getOrNull() ?: return null
+        val parent = resolveFolder(project, key.folder) ?: return null
+        return parent.list().find { !it.isDirectory() && it.name == key.fileName }
     }
 
     private fun sameLocation(first: PlatformFile?, second: PlatformFile?): Boolean =
         first?.toString() == second?.toString()
+
+    private suspend fun rollbackPlotOrder(
+        folder: ProjectFolder,
+        works: List<PlotRenameWork>,
+    ) {
+        works.forEachIndexed { index, work ->
+            runCatching {
+                work.currentFile = renameMarkdownExact(
+                    folder.platformFile,
+                    work.currentFile,
+                    ".machum-plot-rollback-$index",
+                ) ?: work.currentFile
+            }
+        }
+        works.forEach { work ->
+            runCatching {
+                writeMarkdown(work.currentFile, work.originalNoteFile)
+                work.currentFile = renameMarkdownExact(
+                    folder.platformFile,
+                    work.currentFile,
+                    work.originalBaseName,
+                ) ?: work.currentFile
+            }
+        }
+    }
+}
+
+private data class PlotRenameWork(
+    val oldKey: FileKey,
+    val originalBaseName: String,
+    val originalNoteFile: NoteFile,
+    val updatedNoteFile: NoteFile,
+    val finalBaseName: String,
+    val temporaryBaseName: String,
+    var currentFile: PlatformFile,
+)
+
+data class AutoTagSyncUpdate(
+    val projectFile: ProjectFile,
+    val noteFile: NoteFile,
+)
+
+internal data class ProjectMetadataUpdate(
+    val noteFile: NoteFile,
+    val changed: Boolean,
+)
+
+internal fun mergeManagedTags(
+    existingTags: List<String>,
+    previousManagedTags: List<String>,
+    updatedManagedTags: List<String>,
+): List<String> = buildList {
+    val previousManaged = previousManagedTags.toSet()
+    existingTags.filterNot { it in previousManaged }.forEach { tag ->
+        if (tag !in this) add(tag)
+    }
+    updatedManagedTags.forEach { tag ->
+        if (tag !in this) add(tag)
+    }
+}
+
+internal fun isValidProjectFolderName(name: String): Boolean {
+    return isValidProjectEntryName(name)
+}
+
+internal fun isValidProjectFileTitle(title: String): Boolean {
+    if (title.endsWith(".md", ignoreCase = true)) return false
+    return isValidProjectEntryName(title)
+}
+
+private fun isValidProjectEntryName(name: String): Boolean {
+    if (name.isBlank() || name != name.trim()) return false
+    if (name == "." || name == ".." || name.startsWith('.')) return false
+    if (name.endsWith('.') || name.any { it.isISOControl() }) return false
+    if (name.any { it in PROJECT_FOLDER_INVALID_CHARACTERS }) return false
+
+    val deviceName = name.substringBefore('.').uppercase()
+    return deviceName !in PROJECT_FOLDER_RESERVED_NAMES
+}
+
+private const val PROJECT_FOLDER_INVALID_CHARACTERS = "<>:\"/\\|?*"
+private val PROJECT_FOLDER_RESERVED_NAMES = buildSet {
+    addAll(listOf("CON", "PRN", "AUX", "NUL"))
+    (1..9).forEach { index ->
+        add("COM$index")
+        add("LPT$index")
+    }
 }
 
 /**
@@ -495,6 +803,8 @@ internal expect suspend fun FileManager.createFile(parentDirectory: PlatformFile
 internal expect suspend fun FileManager.createFolder(parentDirectory: PlatformFile, name: String): PlatformFile?
 
 internal expect suspend fun FileManager.renameMarkdown(parentDirectory: PlatformFile, file: PlatformFile, name: String): PlatformFile?
+
+internal expect suspend fun FileManager.renameMarkdownExact(parentDirectory: PlatformFile, file: PlatformFile, name: String): PlatformFile?
 
 internal expect suspend fun FileManager.setConfig(parentDirectory: PlatformFile): PlatformFile?
 
@@ -526,6 +836,7 @@ data class Bookmarks(
     val vaultData: PlatformFile? = null,
     val projectData: PlatformFile? = null,
     val fileData: PlatformFile? = null,
+    val fileRelativePath: String? = null,
 )
 
 data class MarkdownName(val numbering: String, val title: String)

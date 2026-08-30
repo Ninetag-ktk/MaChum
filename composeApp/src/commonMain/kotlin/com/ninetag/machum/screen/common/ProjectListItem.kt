@@ -1,62 +1,71 @@
 package com.ninetag.machum.screen.common
 
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.height
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.ninetag.machum.external.FileManager
 import io.github.vinceglb.filekit.PlatformFile
-import io.github.vinceglb.filekit.nameWithoutExtension
-import org.koin.compose.koinInject
+import io.github.vinceglb.filekit.name
 
 @Composable
 internal fun ProjectListItem(
-    isSelected: Boolean,
-    project: PlatformFile
+    project: PlatformFile,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    val fileManager = koinInject<FileManager>()
-    var showContextMenu by remember { mutableStateOf(false) }
-    var menuPosition by remember { mutableStateOf(Offset.Zero) }
-
-    Box(
-        modifier = Modifier
+    ElevatedCard(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth(),
     ) {
-        CustomListItem(
-            selected = isSelected,
-            isLongPressed = showContextMenu,
-            onClick = { fileManager.pickProject(project = project) },
-            onContextMenu = { offset ->
-                menuPosition = offset
-                showContextMenu = true
-            },
-            modifier = Modifier.height(40.dp)
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Text(project.nameWithoutExtension)
-        }
-
-        DropdownMenu(
-            expanded = showContextMenu,
-            onDismissRequest = { showContextMenu = false },
-            offset = DpOffset(
-                x = with(LocalDensity.current) {menuPosition.x.toDp()},
-                y = with(LocalDensity.current) {menuPosition.y.toDp() - 40.dp}
-                // -20.dp로 작성할 수도 있지만, 로직의 명확성을 위해 위처럼 작성
-            ),
-        ) {
-            DropdownMenuItem(
-                text = { Text("드롭다운") },
-                onClick = {  }
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Folder,
+                    contentDescription = null,
+                    modifier = Modifier.padding(12.dp).size(24.dp),
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = project.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = "프로젝트 열기",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Default.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }

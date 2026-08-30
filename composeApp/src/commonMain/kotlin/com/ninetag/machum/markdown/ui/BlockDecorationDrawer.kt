@@ -7,7 +7,6 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.dp
@@ -35,7 +34,7 @@ internal fun DrawScope.drawBlockDecorations(
         if (rect.bottom < 0f || rect.top > size.height) continue
 
         when (block.type) {
-            BlockType.HORIZONTAL_RULE -> drawHorizontalRule(rect)
+            BlockType.HORIZONTAL_RULE -> drawHorizontalRule(rect, config.horizontalRuleColor)
             BlockType.BLOCKQUOTE -> drawBlockquoteLines(layout, block.textRange, config, scrollOffset, rawZones)
         }
     }
@@ -158,10 +157,10 @@ private fun DrawScope.drawBlockquoteLines(
 
 // ── HorizontalRule: 구분선 ──
 
-private fun DrawScope.drawHorizontalRule(rect: Rect) {
+private fun DrawScope.drawHorizontalRule(rect: Rect, color: androidx.compose.ui.graphics.Color) {
     val y = rect.top + rect.height / 2
     drawLine(
-        color = Color(0x33000000),
+        color = color,
         start = Offset(0f, y),
         end = Offset(size.width, y),
         strokeWidth = 1.dp.toPx(),

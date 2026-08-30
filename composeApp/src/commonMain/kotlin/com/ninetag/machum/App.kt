@@ -12,9 +12,10 @@ import androidx.compose.ui.tooling.preview.Preview
 import com.ninetag.machum.external.FileManager
 import com.ninetag.machum.screen.MainScreen
 import com.ninetag.machum.screen.projectScreen.ProjectSelectionScreen
+import com.ninetag.machum.screen.projectScreen.ProjectIndexingScreen
 import com.ninetag.machum.screen.vaultScreen.VaultSelectionScreen
+import com.ninetag.machum.external.ProjectIndexState
 import com.ninetag.machum.theme.AppTheme
-import kotlinx.coroutines.launch
 
 import org.koin.compose.koinInject
 
@@ -23,6 +24,7 @@ import org.koin.compose.koinInject
 fun App() {
     val fileManager = koinInject<FileManager>()
     val bookmark by fileManager.bookmarks.collectAsState()
+    val projectIndexState by fileManager.projectIndexState.collectAsState()
 
     var showVaultPicker by remember { mutableStateOf(false) }
 
@@ -30,13 +32,21 @@ fun App() {
         Box(Modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier
-                    .background(MaterialTheme.colorScheme.primaryContainer)
+                    .background(MaterialTheme.colorScheme.background)
                     .fillMaxSize(),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 when {
                     bookmark.vaultData == null || showVaultPicker -> { VaultSelectionScreen(reset = { showVaultPicker = false }) }
                     bookmark.projectData == null -> { ProjectSelectionScreen() }
+                    projectIndexState.projectLocation == bookmark.projectData.toString() &&
+                        projectIndexState is ProjectIndexState.Preparing -> {
+                        ProjectSelectionScreen()
+                    }
+                    projectIndexState.projectLocation == bookmark.projectData.toString() &&
+                        projectIndexState is ProjectIndexState.Indexing -> {
+                        ProjectIndexingScreen(projectIndexState as ProjectIndexState.Indexing)
+                    }
                     bookmark.fileData == null -> { LaunchedEffect(bookmark.projectData) { fileManager.setFile(bookmark.projectData!!) } }
                     else -> { MainScreen() }
                 }

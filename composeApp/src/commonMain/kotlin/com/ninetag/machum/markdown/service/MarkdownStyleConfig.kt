@@ -48,6 +48,7 @@ data class MarkdownStyleConfig(
     val bulletPrefix: SpanStyle = SpanStyle(color = Color(0x66000000)),
     val orderedPrefix: SpanStyle = SpanStyle(color = Color(0x66000000), fontFamily = FontFamily.Monospace),
     val blockquoteAccent: Color = Color(0xFF9E9E9E),
+    val horizontalRuleColor: Color = Color(0x33000000),
     // Callout ">" 인디케이터 (들여쓰기 역할, 연한 색으로 표시)
     val calloutIndicator: SpanStyle = SpanStyle(color = Color(0x33000000)),
     // 블록 데코레이션

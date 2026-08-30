@@ -1,11 +1,15 @@
 package com.ninetag.machum.external
 
+import com.ninetag.machum.entity.PlotStage
+import com.ninetag.machum.entity.normalizeTags
+
 /**
  * 마크다운 노트 = YAML 프론트매터 + 본문.
  *
  * ## 프론트매터 정책 (docs/product-roadmap.md)
  *
  * - **관리 키**(`id`/`tags`/`aliases`/`plot`)만 구조적으로 읽고 병합·쓴다.
+ * - 앱이 기록하는 `tags` 항목의 공백은 `_`로 정규화한다.
  * - 그 외 키/주석/키 순서/포맷은 **원형 그대로 보존**한다 (Obsidian 호환의 핵심 계약).
  * - 관리 키는 **실제로 수정될 때만** 표준 형태로 정규화된다:
  *   스칼라 = `key: value`, 리스트 = block `- ` 형태. 수정 전에는 원본 그대로 유지되므로
@@ -26,6 +30,9 @@ class NoteFile private constructor(
     /** 프론트매터 `plot` 선택 필드. 미설정이면 null. */
     val plot: String? get() = scalarOf(KEY_PLOT)
 
+    /** 알려진 고정 단계로 해석된 `plot`. 알 수 없거나 미설정이면 null. */
+    val plotStage: PlotStage? get() = PlotStage.fromFrontmatter(plot)
+
     /** 프론트매터 `tags`. 없으면 빈 리스트. */
     val tags: List<String> get() = listValueOf(KEY_TAGS)
 
@@ -36,7 +43,8 @@ class NoteFile private constructor(
 
     fun withId(id: String): NoteFile = withScalar(KEY_ID, id)
     fun withPlot(plot: String?): NoteFile = withScalar(KEY_PLOT, plot)
-    fun withTags(tags: List<String>): NoteFile = withList(KEY_TAGS, tags)
+    fun withPlotStage(plotStage: PlotStage?): NoteFile = withPlot(plotStage?.frontmatterValue)
+    fun withTags(tags: List<String>): NoteFile = withList(KEY_TAGS, normalizeTags(tags))
     fun withAliases(aliases: List<String>): NoteFile = withList(KEY_ALIASES, aliases)
 
     // --- 기존 API 호환 ---
@@ -131,8 +139,8 @@ class NoteFile private constructor(
         const val KEY_ALIASES = "aliases"
         const val KEY_PLOT = "plot"
 
-        /** 앱 전역 plot 선택 값 (docs/product-roadmap.md). NoteFile 은 저장만 하고 강제하지 않는다. */
-        val PLOT_VALUES = listOf("1) 발단", "2) 전개", "3) 위기", "4) 절정", "5) 결말")
+        /** 앱 전역 plot 선택 값. 기존 호출부 호환을 위해 문자열 목록도 제공한다. */
+        val PLOT_VALUES = PlotStage.entries.map(PlotStage::frontmatterValue)
 
         private val CHARS = ('a'..'z') + ('0'..'9')
         private val MANAGED_KEYS = setOf(KEY_ID, KEY_TAGS, KEY_ALIASES, KEY_PLOT)

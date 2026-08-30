@@ -156,3 +156,28 @@ internal actual fun PlatformFile.getLastModified(): Long? {
         throw e
     }
 }
+
+internal actual suspend fun FileManager.renameMarkdownExact(
+    parentDirectory: PlatformFile,
+    file: PlatformFile,
+    name: String,
+): PlatformFile? = withContext(Dispatchers.IO) {
+    try {
+        val koin = object : KoinComponent {
+            val context: Context by inject()
+        }
+        val parentDoc = DocumentFile.fromTreeUri(
+            koin.context,
+            parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"),
+        ) ?: return@withContext null
+        if (parentDoc.findFile("$name.md") != null) return@withContext null
+        val doc = DocumentFile.fromTreeUri(
+            koin.context,
+            file.toAndroidUri("com.ninetag.machum.fileprovider"),
+        ) ?: return@withContext null
+        if (!doc.renameTo("$name.md")) return@withContext null
+        PlatformFile(doc.uri)
+    } catch (error: Exception) {
+        null
+    }
+}

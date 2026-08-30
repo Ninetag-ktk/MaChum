@@ -100,3 +100,19 @@ internal actual fun PlatformFile.getLastModified(): Long? {
         throw e
     }
 }
+
+internal actual suspend fun FileManager.renameMarkdownExact(
+    parentDirectory: PlatformFile,
+    file: PlatformFile,
+    name: String,
+): PlatformFile? = withContext(Dispatchers.IO) {
+    try {
+        if (!parentDirectory.exists()) return@withContext null
+        val target = File(parentDirectory.file, "$name.md")
+        if (target.exists()) return@withContext null
+        if (!file.file.renameTo(target)) return@withContext null
+        PlatformFile(target)
+    } catch (error: Exception) {
+        null
+    }
+}

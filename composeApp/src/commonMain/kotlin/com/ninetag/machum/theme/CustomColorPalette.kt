@@ -38,6 +38,13 @@ val surfaceContainerLight = Color(0xFFE9EFF0)
 val surfaceContainerHighLight = Color(0xFFE3E9EA)
 val surfaceContainerHighestLight = Color(0xFFDEE3E5)
 
+// Material ColorScheme does not provide positive/success roles.
+// Keep product-specific semantic colors alongside the generated M3 palette.
+val successLight = Color(0xFF356859)
+val onSuccessLight = Color(0xFFFFFFFF)
+val successContainerLight = Color(0xFFB8F1DB)
+val onSuccessContainerLight = Color(0xFF002118)
+
 val primaryLightMediumContrast = Color(0xFF143566)
 val onPrimaryLightMediumContrast = Color(0xFFFFFFFF)
 val primaryContainerLightMediumContrast = Color(0xFF516DA1)
@@ -145,6 +152,11 @@ val surfaceContainerLowDark = Color(0xFF171D1E)
 val surfaceContainerDark = Color(0xFF1B2122)
 val surfaceContainerHighDark = Color(0xFF252B2C)
 val surfaceContainerHighestDark = Color(0xFF303637)
+
+val successDark = Color(0xFF9DD5BF)
+val onSuccessDark = Color(0xFF06382C)
+val successContainerDark = Color(0xFF1C5042)
+val onSuccessContainerDark = Color(0xFFB8F1DB)
 
 val primaryDarkMediumContrast = Color(0xFFCDDCFF)
 val onPrimaryDarkMediumContrast = Color(0xFF002552)

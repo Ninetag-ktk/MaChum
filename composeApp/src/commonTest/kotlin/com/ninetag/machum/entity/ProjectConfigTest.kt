@@ -21,9 +21,9 @@ class ProjectConfigTest {
     fun roundTrip_preservesFoldersAndFileIds() {
         val config = ProjectConfig(
             folders = mapOf(
-                "" to FolderConfig(FolderType.NUMBERED, listOf("당신을_구하던_삶")),
-                "Character" to FolderConfig(FolderType.GENERAL, listOf("캐릭터")),
-                "Scene" to FolderConfig(FolderType.PLOT, listOf("장면구상")),
+                "" to FolderConfig(FolderType.DEFAULT, false, listOf("당신을_구하던_삶")),
+                "Character" to FolderConfig(FolderType.GENERAL, false, listOf("캐릭터")),
+                "Scene" to FolderConfig(FolderType.DEFAULT, true, listOf("장면구상")),
             ),
             fileIds = mapOf("a1b2c3d4" to "0. 프롤로그"),
         )
@@ -34,9 +34,9 @@ class ProjectConfigTest {
     fun folderType_serializesAsLowercase() {
         val out = json.encodeToString(
             ProjectConfig.serializer(),
-            ProjectConfig(folders = mapOf("" to FolderConfig(FolderType.NUMBERED))),
+            ProjectConfig(folders = mapOf("" to FolderConfig(FolderType.DEFAULT))),
         )
-        assertTrue(out.contains("\"numbered\""), "type 는 소문자 numbered 로 직렬화되어야 함: $out")
+        assertTrue(out.contains("\"default\""), "type 는 소문자 numbered 로 직렬화되어야 함: $out")
         assertTrue(!out.contains("NUMBERED"), "enum 상수명이 그대로 새어나오면 안 됨: $out")
     }
 
@@ -64,7 +64,7 @@ class ProjectConfigTest {
             ProjectConfig.serializer(),
             """{ "folders": { "Scene": {} } }""",
         )
-        assertEquals(FolderConfig(FolderType.GENERAL, emptyList()), config.folders["Scene"])
+        assertEquals(FolderConfig(), config.folders["Scene"])
     }
 
     @Test
@@ -72,15 +72,15 @@ class ProjectConfigTest {
         val normalized = ProjectConfig().withDefaultBaseFolder()
 
         assertEquals(DEFAULT_BASE_FOLDER_CONFIG, normalized.folders[BASE_FOLDER_PATH])
-        assertEquals(FolderType.NUMBERED, normalized.folders[BASE_FOLDER_PATH]?.type)
+        assertEquals(FolderType.DEFAULT, normalized.folders[BASE_FOLDER_PATH]?.type)
     }
 
     @Test
     fun withDefaultBaseFolder_preservesExplicitBaseAndOtherData() {
         val original = ProjectConfig(
             folders = mapOf(
-                BASE_FOLDER_PATH to FolderConfig(FolderType.GENERAL, listOf("직접설정")),
-                "Scene" to FolderConfig(FolderType.PLOT),
+                BASE_FOLDER_PATH to FolderConfig(FolderType.GENERAL, false, listOf("직접설정")),
+                "Scene" to FolderConfig(FolderType.DEFAULT, true),
             ),
             fileIds = mapOf("id1" to "Scene/도입"),
         )

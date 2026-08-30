@@ -149,7 +149,7 @@ fun TestScreen(
         OutlinedButton(
             onClick = {
                 scope.launch {
-                    fileManager.clearPreferencesTest()
+                    fileManager.reset()
                     currentDirectory = null
                     currentFile = null
                     content = ""
