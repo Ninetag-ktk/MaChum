@@ -140,7 +140,7 @@ internal fun TableBlockEditor(
                     if (sel.collapsed && sel.start >= cellState.text.length) {
                         if (col < colCount - 1) requestCellFocus(row, col + 1)
                         else if (row < totalRows - 1) requestCellFocus(row + 1, 0)
-                        else navigation.onMoveToNext()
+                        else navigation.focus.onMoveToNext()
                         true
                     } else false
                 }
@@ -148,17 +148,17 @@ internal fun TableBlockEditor(
                     if (sel.collapsed && sel.start == 0) {
                         if (col > 0) requestCellFocus(row, col - 1)
                         else if (row > 0) requestCellFocus(row - 1, colCount - 1)
-                        else navigation.onMoveToPrevious()
+                        else navigation.focus.onMoveToPrevious()
                         true
                     } else false
                 }
                 Key.DirectionUp -> {
                     if (row > 0) { requestCellFocus(row - 1, col); true }
-                    else { navigation.onMoveToPrevious(); true }
+                    else { navigation.focus.onMoveToPrevious(); true }
                 }
                 Key.DirectionDown -> {
                     if (row < totalRows - 1) { requestCellFocus(row + 1, col); true }
-                    else { navigation.onMoveToNext(); true }
+                    else { navigation.focus.onMoveToNext(); true }
                 }
                 Key.Tab -> {
                     if (col < colCount - 1) {

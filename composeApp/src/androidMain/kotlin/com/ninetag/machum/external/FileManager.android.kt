@@ -5,6 +5,7 @@ import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.dialogs.toAndroidUri
+import io.github.vinceglb.filekit.name
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.koin.core.component.KoinComponent
@@ -170,14 +171,62 @@ internal actual suspend fun FileManager.renameMarkdownExact(
             koin.context,
             parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"),
         ) ?: return@withContext null
-        if (parentDoc.findFile("$name.md") != null) return@withContext null
+        val extension = file.name.substringAfterLast('.', missingDelimiterValue = "md")
+        val targetName = "$name.$extension"
+        if (parentDoc.findFile(targetName) != null) return@withContext null
         val doc = DocumentFile.fromTreeUri(
             koin.context,
             file.toAndroidUri("com.ninetag.machum.fileprovider"),
         ) ?: return@withContext null
-        if (!doc.renameTo("$name.md")) return@withContext null
+        if (!doc.renameTo(targetName)) return@withContext null
         PlatformFile(doc.uri)
     } catch (error: Exception) {
         null
+    }
+}
+
+internal actual suspend fun FileManager.renameDirectoryExact(
+    parentDirectory: PlatformFile,
+    directory: PlatformFile,
+    name: String,
+): PlatformFile? = withContext(Dispatchers.IO) {
+    try {
+        val koin = object : KoinComponent {
+            val context: Context by inject()
+        }
+        val parentDoc = DocumentFile.fromTreeUri(
+            koin.context,
+            parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"),
+        ) ?: return@withContext null
+        if (parentDoc.findFile(name) != null) return@withContext null
+        val directoryDoc = DocumentFile.fromTreeUri(
+            koin.context,
+            directory.toAndroidUri("com.ninetag.machum.fileprovider"),
+        ) ?: return@withContext null
+        if (!directoryDoc.isDirectory || !directoryDoc.renameTo(name)) return@withContext null
+        PlatformFile(directoryDoc.uri)
+    } catch (error: Exception) {
+        null
+    }
+}
+
+internal actual suspend fun FileManager.deleteDirectoryExact(
+    directory: PlatformFile,
+): Boolean = withContext(Dispatchers.IO) {
+    try {
+        val koin = object : KoinComponent {
+            val context: Context by inject()
+        }
+        val directoryDoc = DocumentFile.fromTreeUri(
+            koin.context,
+            directory.toAndroidUri("com.ninetag.machum.fileprovider"),
+        ) ?: return@withContext false
+        val children = directoryDoc.listFiles()
+        if (children.any { child -> child.isDirectory || !child.name.orEmpty().endsWith(".md", ignoreCase = true) }) {
+            return@withContext false
+        }
+        children.all(DocumentFile::delete) && directoryDoc.delete()
+    } catch (error: Exception) {
+        false
     }
 }

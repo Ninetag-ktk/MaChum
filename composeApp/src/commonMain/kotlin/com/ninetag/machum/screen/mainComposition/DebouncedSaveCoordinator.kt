@@ -28,14 +28,18 @@ internal class DebouncedSaveCoordinator<K, V>(
         jobs.remove(key)?.cancel()
         pendingValues[key] = value
         val job = scope.launch(start = CoroutineStart.LAZY) {
+            var saved = false
             try {
                 delay(debounceMillis.milliseconds)
                 save(key, value)
+                saved = true
             } finally {
                 val runningJob = currentCoroutineContext().job
                 if (jobs[key] === runningJob) {
                     jobs.remove(key)
-                    pendingValues.remove(key)
+                    if (saved && pendingValues[key] == value) {
+                        pendingValues.remove(key)
+                    }
                 }
             }
         }
@@ -60,7 +64,22 @@ internal class DebouncedSaveCoordinator<K, V>(
         keys.forEach { key ->
             val value = pendingValues.remove(key) ?: return@forEach
             jobs.remove(key)?.cancelAndJoin()
-            save(key, value)
+            try {
+                save(key, value)
+            } catch (error: Throwable) {
+                // 저장 실패 뒤에도 다음 전환 시 다시 시도할 수 있도록 최신 pending 값을 보존한다.
+                if (pendingValues[key] == null) {
+                    pendingValues[key] = value
+                }
+                throw error
+            }
+        }
+    }
+
+    /** 현재 대기 중인 모든 key를 즉시 저장한다. flush 도중 추가된 최신 값도 남지 않을 때까지 처리한다. */
+    suspend fun flushAll() {
+        while (pendingValues.isNotEmpty()) {
+            flush(pendingValues.keys.toSet())
         }
     }
 }

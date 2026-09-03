@@ -5,9 +5,11 @@ import com.ninetag.machum.markdown.service.util.handleEditorKeyEvent
 import com.ninetag.machum.markdown.state.EditorInputTransformation
 import com.ninetag.machum.markdown.state.RawMarkdownOutputTransformation
 import com.ninetag.machum.markdown.state.EditorBlock
+import com.ninetag.machum.markdown.state.CursorHint
 import com.ninetag.machum.markdown.ui.selection.resetDocumentSelectionOnFocus
 
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
@@ -33,6 +35,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.LineHeightStyle
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.isUnspecified
 import kotlinx.coroutines.FlowPreview
@@ -64,7 +67,7 @@ internal fun TextBlockEditor(
      * Callout body 안 TextBlock 에서만 true (CalloutBlockEditor 의 body MarkdownBlockEditor 호출 →
      * BlockItem → TextBlockEditor 체인). 외부 TextBlock 은 false (default) 로 두어 ZWSP/격하 결과물의
      * 의도치 않은 탈출 방지. docs/markdown-editor.md의 Smart Enter 정책.
-     */
+    */
     escapeOnEmptyEnter: Boolean = false,
 ) {
     val normalizedTextStyle = remember(textStyle) {
@@ -125,13 +128,13 @@ internal fun TextBlockEditor(
             .distinctUntilChanged()
             .debounce(150.milliseconds)
             .collectLatest { _ ->
-                navigation.onReparse()
+                navigation.mutation.onReparse()
             }
     }
 
-    // ZWSP 자동 제거 (Block→Block 빈 줄 placeholder 의 격하):
+    // ZWSP 자동 제거 (Block→Block 빈 줄 marker 의 격하):
     // ZWSP(BLANK_LINE_MARKER) 는 빈 줄 표현용 1글자 마커. 사용자가 ZWSP 블록에 입력(텍스트/Enter)하는 순간
-    // 그 블록은 더 이상 "빈 줄 placeholder" 가 아니라 일반 TextBlock 이므로 ZWSP 를 제거해야 한다.
+    // 그 블록은 더 이상 빈 줄 marker가 아니라 일반 TextBlock 이므로 ZWSP 를 제거해야 한다.
     // 제거하지 않으면 ZWSP 가 줄 시작에 박혀 있어 InlineStyleScanner 의 line prefix 매칭(`# `, `> ` 등)이 깨진다.
     LaunchedEffect(block.textFieldState) {
         snapshotFlow { block.textFieldState.text.toString() }
@@ -150,7 +153,7 @@ internal fun TextBlockEditor(
         snapshotFlow { block.textFieldState.text.toString().isEmpty() }
             .distinctUntilChanged()
             .collectLatest { isEmpty ->
-                if (isEmpty) navigation.onClearRawMode()
+                if (isEmpty) navigation.mutation.onClearRawMode()
             }
     }
 
@@ -163,7 +166,7 @@ internal fun TextBlockEditor(
     LaunchedEffect(isFocused, block.rawMode) {
         if (block.rawMode && !isFocused) {
             kotlinx.coroutines.delay(200.milliseconds)
-            navigation.onReparseSilent()
+            navigation.mutation.onReparseSilent()
         }
     }
 
@@ -175,7 +178,7 @@ internal fun TextBlockEditor(
         when (event.key) {
             Key.Backspace -> {
                 if (sel.collapsed && sel.start == 0) {
-                    navigation.onMergeWithPrevious()
+                    navigation.mutation.onMergeWithPrevious()
                     true
                 } else false
             }
@@ -198,7 +201,7 @@ internal fun TextBlockEditor(
                                 replace(lineStart - 1, lineStart, "")
                             }
                         }
-                        navigation.onMoveToNext()
+                        navigation.focus.onMoveToNext()
                         true
                     } else false
                 } else false
@@ -212,10 +215,10 @@ internal fun TextBlockEditor(
                 if (sel.collapsed && layout != null && layout.getLineForOffset(sel.start) == 0) {
                     if (event.isShiftPressed) {
                         // Shift+↑: 블록 단위 selection 확장 (Phase 1 Step B)
-                        navigation.onExtendSelectionToPrevious()
+                        navigation.selection.onExtendSelectionToPrevious()
                     } else {
                         val cursorX = layout.getHorizontalPosition(sel.start, usePrimaryDirection = true)
-                        navigation.onMoveToPreviousWithX(cursorX)
+                        navigation.focus.onMoveToPreviousWithX(cursorX)
                     }
                     true
                 } else false
@@ -226,17 +229,17 @@ internal fun TextBlockEditor(
                 if (sel.collapsed && layout != null && layout.getLineForOffset(sel.start) == layout.lineCount - 1) {
                     if (event.isShiftPressed) {
                         // Shift+↓: 블록 단위 selection 확장 (Phase 1 Step B)
-                        navigation.onExtendSelectionToNext()
+                        navigation.selection.onExtendSelectionToNext()
                     } else {
                         val cursorX = layout.getHorizontalPosition(sel.start, usePrimaryDirection = true)
-                        navigation.onMoveToNextWithX(cursorX)
+                        navigation.focus.onMoveToNextWithX(cursorX)
                     }
                     true
                 } else false
             }
             Key.DirectionLeft -> {
                 if (sel.collapsed && sel.start == 0) {
-                    navigation.onMoveLeft()
+                    navigation.focus.onMoveLeft()
                     true
                 } else false
             }
@@ -246,7 +249,7 @@ internal fun TextBlockEditor(
                 // raw 블록의 multi-line 텍스트(예: dissolve 된 Callout 의 `> [!NOTE] ...\n> body`) 에서
                 // 끝까지 도달 시 다음 블록으로 자연스럽게 넘어가야 하는 케이스를 해결.
                 if (sel.collapsed && sel.start == block.textFieldState.text.length) {
-                    navigation.onMoveToNext()
+                    navigation.focus.onMoveToNext()
                     true
                 } else false
             }
@@ -258,6 +261,7 @@ internal fun TextBlockEditor(
         state = block.textFieldState,
         modifier = modifier
             .fillMaxWidth()
+            .heightIn(min = 24.dp)
             .focusRequester(focusRequester)
             .onFocusChanged { focusState ->
                 isFocused = focusState.isFocused

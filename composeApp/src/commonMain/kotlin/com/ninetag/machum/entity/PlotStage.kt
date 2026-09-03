@@ -18,11 +18,13 @@ enum class PlotStage(
         get() = "$code) $displayName"
 
     fun fileName(order: Int, title: String): String {
-        require(order >= 0) { "plot order must not be negative" }
+        require(order >= FIRST_ORDER) { "plot order must start at $FIRST_ORDER" }
         return "$code-$order. $title"
     }
 
     companion object {
+        const val FIRST_ORDER: Int = 1
+
         fun fromCode(code: Int): PlotStage? = entries.find { it.code == code }
 
         fun fromFrontmatter(value: String?): PlotStage? {

@@ -55,9 +55,20 @@ class ProjectFileOrderingTest {
         )
         assertEquals(3, entries.nextPlotOrder(PlotStage.SETUP))
         assertEquals("1-3. 새 사건", entries.nextPlotFileName(PlotStage.SETUP, "새 사건"))
-        assertEquals(0, entries.nextPlotOrder(PlotStage.CRISIS))
-        assertEquals("3-0. 새 위기", entries.nextPlotFileName(PlotStage.CRISIS, "새 위기"))
-        assertEquals(PlotFilePrefix(stageCode = 1, order = 0), projectFile("1-0. 첫 장면.md").plotPrefix())
+        assertEquals(1, entries.nextPlotOrder(PlotStage.CRISIS))
+        assertEquals("3-1. 새 위기", entries.nextPlotFileName(PlotStage.CRISIS, "새 위기"))
+    }
+
+    @Test
+    fun legacyZeroBasedPlotPrefixStillParses() {
+        val legacyFile = projectFile("1-0. 첫 장면.md")
+        val legacyEntries = listOf(PlotFileEntry(legacyFile, PlotStage.SETUP, legacyFile.plotOrder()))
+
+        assertEquals(PlotFilePrefix(stageCode = 1, order = 0), legacyFile.plotPrefix())
+        assertEquals(0, legacyFile.plotOrder())
+        assertEquals("첫 장면", legacyFile.plotTitle())
+        assertEquals(1, legacyEntries.nextPlotOrder(PlotStage.SETUP))
+        assertEquals("1-1. 다음 장면", legacyEntries.nextPlotFileName(PlotStage.SETUP, "다음 장면"))
     }
 
     private fun projectFile(name: String): ProjectFile =

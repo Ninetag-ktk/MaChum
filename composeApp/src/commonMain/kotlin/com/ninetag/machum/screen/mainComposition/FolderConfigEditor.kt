@@ -5,6 +5,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -17,6 +20,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.ninetag.machum.entity.FolderConfig
 import com.ninetag.machum.entity.FolderType
@@ -64,12 +68,12 @@ internal fun FolderConfigEditor(
     plotDescription: String,
     autoTagsDescription: String,
     modifier: Modifier = Modifier,
+    onSubmit: (() -> Unit)? = null,
 ) {
     Column(modifier = modifier) {
         Text(
             text = "디렉터리 유형",
-            style = MaterialTheme.typography.titleSmall,
-            modifier = Modifier.padding(bottom = 4.dp),
+            style = MaterialTheme.typography.labelLarge,
         )
 
         listOf(FolderType.DEFAULT, FolderType.GENERAL).forEach { option ->
@@ -77,15 +81,15 @@ internal fun FolderConfigEditor(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable { state.selectType(option) }
-                    .padding(vertical = 6.dp),
+                    .padding(vertical = 0.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 RadioButton(
                     selected = state.type == option,
                     onClick = { state.selectType(option) },
                 )
-                Column(modifier = Modifier.padding(start = 8.dp)) {
-                    Text(option.displayName(), style = MaterialTheme.typography.bodyLarge)
+                Column(modifier = Modifier.padding(start = 4.dp)) {
+                    Text(option.displayName(), style = MaterialTheme.typography.bodyMedium)
                     Text(
                         text = option.description(),
                         style = MaterialTheme.typography.bodySmall,
@@ -99,15 +103,15 @@ internal fun FolderConfigEditor(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable { state.updatePlotEnabled(!state.plotEnabled) }
-                        .padding(start = 40.dp, top = 2.dp, bottom = 6.dp),
+                        .padding(start = 32.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Checkbox(
                         checked = state.plotEnabled,
                         onCheckedChange = state::updatePlotEnabled,
                     )
-                    Column(modifier = Modifier.padding(start = 8.dp)) {
-                        Text("Plot", style = MaterialTheme.typography.bodyLarge)
+                    Column(modifier = Modifier.padding(start = 4.dp)) {
+                        Text("Plot", style = MaterialTheme.typography.bodyMedium)
                         Text(
                             text = plotDescription,
                             style = MaterialTheme.typography.bodySmall,
@@ -121,12 +125,20 @@ internal fun FolderConfigEditor(
         OutlinedTextField(
             value = state.autoTagsText,
             onValueChange = { state.autoTagsText = it },
-            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             label = { Text("자동 태그 (선택)") },
             placeholder = { Text("캐릭터, 설정") },
+            shape = RoundedCornerShape(6.dp),
+            textStyle = MaterialTheme.typography.bodyMedium,
             supportingText = {
-                Text(autoTagsDescription)
+                Text(
+                    text = autoTagsDescription,
+                    style = MaterialTheme.typography.bodySmall,
+                )
             },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { onSubmit?.invoke() }),
         )
     }
 }

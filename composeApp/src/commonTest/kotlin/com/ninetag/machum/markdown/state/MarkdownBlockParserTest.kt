@@ -4,6 +4,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.measureTime
 
 class MarkdownBlockParserTest {
 
@@ -93,6 +95,20 @@ class MarkdownBlockParserTest {
         val markdown = "| A | B |\n| 1 | 2 |"
         assertIs<EditorBlock.Text>(MarkdownBlockParser.parse(markdown).single())
         assertEquals(markdown, MarkdownBlockParser.parse(markdown).toMarkdown())
+    }
+
+    @Test
+    fun largeTableLikeRunWithoutSeparator_staysTextWithinLinearBudget() {
+        val markdown = List(30_000) { index -> "| $index | value |" }.joinToString("\n")
+        lateinit var blocks: List<EditorBlock>
+
+        val elapsed = measureTime {
+            blocks = MarkdownBlockParser.parse(markdown)
+        }
+
+        assertIs<EditorBlock.Text>(blocks.single())
+        assertEquals(markdown, blocks.toMarkdown())
+        assertTrue(elapsed < 2.seconds, "Separator-less pipe run took $elapsed")
     }
 
     @Test

@@ -155,14 +155,17 @@ object MarkdownBlockParser {
                 // 구분자 행 강제: dissolve 된 raw Table 에서 사용자가 |---| 행을 지웠을 때
                 // 다시 Table 로 자동 변환되며 toMarkdown() 이 |---| 를 부활시키는 회귀를 막음.
                 isTableLine(line) -> {
-                    // 유효한 테이블(2줄+ + 구분자) 여부를 먼저 확인 — flushText 전에
-                    var j = i + 1
-                    while (j < lines.size && isTableLine(lines[j])) j++
-                    val tableLineCount = j - i
-                    val hasSeparator = i + 1 < lines.size && lines[i + 1].contains("---")
+                    // 바로 다음 줄이 구분자인 경우에만 table run 의 끝을 찾는다.
+                    // 구분자 없는 `| ... |` 연속 줄에서 매 줄마다 나머지 전체를 다시
+                    // 훑는 O(n²) 경로를 피하며, 기존의 "두 번째 줄은 구분자" 계약은 그대로 유지한다.
+                    val hasSeparator = i + 1 < lines.size &&
+                        isTableLine(lines[i + 1]) &&
+                        lines[i + 1].contains("---")
 
-                    if (tableLineCount >= 2 && hasSeparator) {
+                    if (hasSeparator) {
                         // 유효한 테이블 → flushText 후 Table 블록 생성
+                        var j = i + 2
+                        while (j < lines.size && isTableLine(lines[j])) j++
                         flushText()
                         val tableLines = (i until j).map { lines[it] }
                         blocks += parseTable(tableLines)

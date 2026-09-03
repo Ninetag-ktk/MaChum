@@ -81,7 +81,7 @@ fun List<PlotFileEntry>.nextPlotOrder(stage: PlotStage): Int =
         .mapNotNull(PlotFileEntry::order)
         .maxOrNull()
         ?.plus(1)
-        ?: 0
+        ?: PlotStage.FIRST_ORDER
 
 fun List<PlotFileEntry>.nextPlotFileName(stage: PlotStage, title: String): String =
     stage.fileName(nextPlotOrder(stage), title)

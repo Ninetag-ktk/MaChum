@@ -1,6 +1,11 @@
 package com.ninetag.machum.markdown.ui.block
 
 import com.ninetag.machum.markdown.service.MarkdownStyleConfig
+import com.ninetag.machum.markdown.state.CalloutBodyAction
+import com.ninetag.machum.markdown.state.CalloutBodyBoundary
+import com.ninetag.machum.markdown.state.CalloutBodyLayout
+import com.ninetag.machum.markdown.state.CalloutBodyPolicy
+import com.ninetag.machum.markdown.state.CalloutBottomEntryTarget
 import com.ninetag.machum.markdown.state.DocumentSelection
 import com.ninetag.machum.markdown.state.EditorBlock
 import com.ninetag.machum.markdown.ui.BlockNavigation
@@ -87,12 +92,145 @@ internal fun CalloutBlockEditor(
 ) {
     val decoStyle = styleConfig.calloutDecorationStyle(block.calloutType)
     val shape = RoundedCornerShape(8.dp)
-
-    if (block.calloutType.equals("DL", ignoreCase = true)) {
-        DialogueCallout(block, decoStyle, styleConfig, textStyle, cursorBrush, shape, modifier, navigation, focusRequester, onRegisterBottomEntryFR, onBlocksChanged, documentSelection, containerPath)
+    val layout = if (block.calloutType.equals("DL", ignoreCase = true)) {
+        CalloutBodyLayout.Dialogue
     } else {
-        StandardCallout(block, decoStyle, styleConfig, textStyle, cursorBrush, shape, modifier, navigation, focusRequester, onRegisterBottomEntryFR, onBlocksChanged, documentSelection, containerPath)
+        CalloutBodyLayout.Standard
     }
+    val bodyRuntime = rememberCalloutBodyRuntime(
+        block = block,
+        titleFocusRequester = focusRequester,
+        navigation = navigation,
+        onRegisterBottomEntryFR = onRegisterBottomEntryFR,
+        onBlocksChanged = onBlocksChanged,
+    )
+    if (layout == CalloutBodyLayout.Dialogue) {
+        DialogueCallout(
+            block = block,
+            decoStyle = decoStyle,
+            styleConfig = styleConfig,
+            textStyle = textStyle,
+            cursorBrush = cursorBrush,
+            shape = shape,
+            modifier = modifier,
+            navigation = navigation,
+            titleFocusRequester = focusRequester,
+            bodyRuntime = bodyRuntime,
+            documentSelection = documentSelection,
+            containerPath = containerPath,
+        )
+    } else {
+        StandardCallout(
+            block = block,
+            decoStyle = decoStyle,
+            styleConfig = styleConfig,
+            textStyle = textStyle,
+            cursorBrush = cursorBrush,
+            shape = shape,
+            modifier = modifier,
+            navigation = navigation,
+            titleFocusRequester = focusRequester,
+            bodyRuntime = bodyRuntime,
+            documentSelection = documentSelection,
+            containerPath = containerPath,
+        )
+    }
+}
+
+private data class CalloutBodyRuntime(
+    val firstFocusRequester: FocusRequester,
+    val lastFocusRequester: FocusRequester?,
+    val onBlocksChanged: (List<EditorBlock>) -> Unit,
+    val onNestedBottomEntryRegistered: (FocusRequester?) -> Unit,
+    val execute: (CalloutBodyAction) -> Boolean,
+)
+
+@Composable
+private fun rememberCalloutBodyRuntime(
+    block: EditorBlock.Callout,
+    titleFocusRequester: FocusRequester,
+    navigation: BlockNavigation,
+    onRegisterBottomEntryFR: (FocusRequester?) -> Unit,
+    onBlocksChanged: (List<EditorBlock>) -> Unit,
+): CalloutBodyRuntime {
+    val firstFocusRequester = remember { FocusRequester() }
+    val lastFocusRequester = remember { FocusRequester() }
+    var nestedBottomFocusRequester by remember { mutableStateOf<FocusRequester?>(null) }
+
+    val bottomEntryTarget = CalloutBodyPolicy.bottomEntryTarget(
+        bodyBlockCount = block.bodyBlocks.size,
+        hasNestedBottom = nestedBottomFocusRequester != null,
+    )
+    val bottomEntryFocusRequester = when (bottomEntryTarget) {
+        CalloutBottomEntryTarget.Title -> titleFocusRequester
+        CalloutBottomEntryTarget.FirstBodyBlock -> firstFocusRequester
+        CalloutBottomEntryTarget.LastBodyBlock -> lastFocusRequester
+        CalloutBottomEntryTarget.NestedBottom -> nestedBottomFocusRequester!!
+    }
+    LaunchedEffect(bottomEntryFocusRequester) {
+        onRegisterBottomEntryFR(bottomEntryFocusRequester)
+    }
+
+    var pendingBodyFocus by remember { mutableStateOf(0) }
+    LaunchedEffect(pendingBodyFocus) {
+        if (pendingBodyFocus > 0) {
+            kotlinx.coroutines.delay(50.milliseconds)
+            try {
+                firstFocusRequester.requestFocus()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    fun focusBodyStart() {
+        try {
+            firstFocusRequester.requestFocus()
+        } catch (_: Exception) {
+        }
+        (block.bodyBlocks.firstOrNull() as? EditorBlock.Text)?.textFieldState?.edit {
+            selection = androidx.compose.ui.text.TextRange(0)
+        }
+    }
+
+    fun focusTitleEnd() {
+        titleFocusRequester.requestFocus()
+        block.titleState.edit {
+            selection = androidx.compose.ui.text.TextRange(block.titleState.text.length)
+        }
+    }
+
+    return CalloutBodyRuntime(
+        firstFocusRequester = firstFocusRequester,
+        lastFocusRequester = lastFocusRequester.takeIf { block.bodyBlocks.size > 1 },
+        onBlocksChanged = onBlocksChanged,
+        onNestedBottomEntryRegistered = { nestedBottomFocusRequester = it },
+        execute = { action ->
+            when (action) {
+                CalloutBodyAction.CreateBody -> {
+                    onBlocksChanged(listOf(EditorBlock.Text(textFieldState = TextFieldState(""))))
+                    pendingBodyFocus++
+                    true
+                }
+                CalloutBodyAction.FocusBodyStart -> {
+                    focusBodyStart()
+                    true
+                }
+                CalloutBodyAction.FocusTitleEnd -> {
+                    focusTitleEnd()
+                    true
+                }
+                CalloutBodyAction.MovePrevious -> {
+                    navigation.focus.onMoveToPrevious()
+                    true
+                }
+                CalloutBodyAction.MoveNext -> {
+                    navigation.focus.onMoveToNext()
+                    true
+                }
+                CalloutBodyAction.Ignore -> false
+            }
+        },
+    )
 }
 
 @Composable
@@ -106,84 +244,40 @@ private fun StandardCallout(
     modifier: Modifier,
     navigation: BlockNavigation,
     titleFocusRequester: FocusRequester,
-    onRegisterBottomEntryFR: (FocusRequester?) -> Unit,
-    onBlocksChanged: (List<EditorBlock>) -> Unit,
+    bodyRuntime: CalloutBodyRuntime,
     documentSelection: androidx.compose.runtime.MutableState<DocumentSelection>?,
     containerPath: List<String>,
 ) {
-    // body 첫 블록 포커스용
-    val bodyFocusRequester = remember { FocusRequester() }
-    // body 마지막 블록 포커스용 (body 2+블록, 마지막이 Text일 때)
-    val bodyLastFocusRequester = remember { FocusRequester() }
-    // 중첩 Callout이 body 마지막 블록일 때 전파된 bottomFR
-    var nestedLastFR by remember { mutableStateOf<FocusRequester?>(null) }
-
-    // ↑ 진입용 FR을 부모의 bottomEntryFRMap에 등록
-    // 우선순위: nestedLastFR (중첩 Callout) > bodyFocusRequester/bodyLastFocusRequester > titleFR
-    val bottomFR = when {
-        block.bodyBlocks.isEmpty() -> titleFocusRequester
-        nestedLastFR != null -> nestedLastFR!!
-        block.bodyBlocks.size == 1 -> bodyFocusRequester
-        else -> bodyLastFocusRequester
-    }
-    LaunchedEffect(bottomFR) { onRegisterBottomEntryFR(bottomFR) }
-
-    // body 생성 후 지연 포커스
-    var pendingBodyFocus by remember { mutableStateOf(0) }
-    LaunchedEffect(pendingBodyFocus) {
-        if (pendingBodyFocus > 0) {
-            kotlinx.coroutines.delay(50.milliseconds)
-            try { bodyFocusRequester.requestFocus() } catch (_: Exception) {}
-        }
-    }
-
-    // body 첫 블록으로 포커스 + 커서를 맨 앞으로
-    fun focusBodyStart() {
-        try { bodyFocusRequester.requestFocus() } catch (_: Exception) {}
-        (block.bodyBlocks.firstOrNull() as? EditorBlock.Text)?.textFieldState?.edit {
-            selection = androidx.compose.ui.text.TextRange(0)
-        }
-    }
-
     // Title 키 핸들러
     val titleKeyHandler = Modifier.onPreviewKeyEvent { event ->
         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
         when (event.key) {
             Key.Enter -> {
-                if (block.bodyBlocks.isEmpty()) {
-                    onBlocksChanged(listOf(EditorBlock.Text(textFieldState = TextFieldState(""))))
-                    pendingBodyFocus++
-                } else {
-                    focusBodyStart()
-                }
-                true
+                bodyRuntime.execute(CalloutBodyPolicy.activate(block.bodyBlocks.isNotEmpty()))
             }
             Key.Tab -> {
                 // Enter 와 동일 — body 생성/이동. 명시 핸들러로 default focus traversal(SingleLine) 가로채기.
-                if (block.bodyBlocks.isEmpty()) {
-                    onBlocksChanged(listOf(EditorBlock.Text(textFieldState = TextFieldState(""))))
-                    pendingBodyFocus++
-                } else {
-                    focusBodyStart()
-                }
-                true
+                bodyRuntime.execute(CalloutBodyPolicy.activate(block.bodyBlocks.isNotEmpty()))
             }
             Key.DirectionDown -> {
                 if (event.isShiftPressed) {
                     // docs/markdown-editor.md — 항상 Callout 자체만 atomic
-                    navigation.onSelectSelfAsAtomic()
-                } else if (block.bodyBlocks.isNotEmpty()) {
-                    focusBodyStart()
+                    navigation.selection.onSelectSelfAsAtomic()
                 } else {
-                    navigation.onMoveToNext()
+                    bodyRuntime.execute(
+                        CalloutBodyPolicy.titleDown(
+                            layout = CalloutBodyLayout.Standard,
+                            hasBody = block.bodyBlocks.isNotEmpty(),
+                        ),
+                    )
                 }
                 true
             }
             Key.DirectionUp -> {
                 if (event.isShiftPressed) {
-                    navigation.onSelectSelfAsAtomic()
+                    navigation.selection.onSelectSelfAsAtomic()
                 } else {
-                    navigation.onMoveToPrevious()
+                    navigation.focus.onMoveToPrevious()
                 }
                 true
             }
@@ -191,7 +285,7 @@ private fun StandardCallout(
                 // dissolve 트리거 2: Callout 자리에 raw markdown TextBlock(rawMode=true)
                 val sel = block.titleState.selection
                 if (sel.collapsed && sel.start == 0) {
-                    navigation.onDissolveSelf()
+                    navigation.mutation.onDissolveSelf()
                     true
                 } else false
             }
@@ -229,33 +323,17 @@ private fun StandardCallout(
             )
         }
 
-        if (block.bodyBlocks.isNotEmpty()) {
-            MarkdownBlockEditor(
-                blocks = block.bodyBlocks,
-                onBlocksChanged = onBlocksChanged,
-                styleConfig = styleConfig,
-                textStyle = textStyle.merge(TextStyle(fontSize = textStyle.fontSize * 0.9f)),
-                cursorBrush = cursorBrush,
-                isNested = true,
-                firstBlockFocusRequester = bodyFocusRequester,
-                lastBlockFocusRequester = if (block.bodyBlocks.size > 1) bodyLastFocusRequester else null,
-                onLastBlockBottomEntryRegistered = { fr -> nestedLastFR = fr },
-                excludeCalloutTypes = if (block.calloutType.equals("DL", ignoreCase = true)) setOf("DL") else emptySet(),
-                onEscapeToPrevious = {
-                    titleFocusRequester.requestFocus()
-                    block.titleState.edit {
-                        selection = androidx.compose.ui.text.TextRange(block.titleState.text.length)
-                    }
-                },
-                onEscapeToNext = navigation.onMoveToNext,
-                enableEnterEscape = true,  // body 안 TextBlock 에서 빈 마지막 줄 + Enter → 탈출 (#20 v2)
-                // Step B-2c: body 안 cross-selection + 경계 박스 탈출
-                documentSelection = documentSelection,
-                containerPath = containerPath + block.id,
-                onEscapeSelectionToPrevious = { navigation.onSelectSelfAsAtomic() },
-                onEscapeSelectionToNext = { navigation.onSelectSelfAsAtomic() },
-            )
-        }
+        CalloutBodyEditor(
+            block = block,
+            layout = CalloutBodyLayout.Standard,
+            bodyRuntime = bodyRuntime,
+            styleConfig = styleConfig,
+            textStyle = textStyle.merge(TextStyle(fontSize = textStyle.fontSize * 0.9f)),
+            cursorBrush = cursorBrush,
+            navigation = navigation,
+            documentSelection = documentSelection,
+            containerPath = containerPath,
+        )
     }
 }
 
@@ -270,95 +348,63 @@ private fun DialogueCallout(
     modifier: Modifier,
     navigation: BlockNavigation,
     titleFocusRequester: FocusRequester,
-    onRegisterBottomEntryFR: (FocusRequester?) -> Unit,
-    onBlocksChanged: (List<EditorBlock>) -> Unit,
+    bodyRuntime: CalloutBodyRuntime,
     documentSelection: androidx.compose.runtime.MutableState<DocumentSelection>?,
     containerPath: List<String>,
 ) {
-    val bodyFocusRequester = remember { FocusRequester() }
-    val bodyLastFocusRequester = remember { FocusRequester() }
-    var nestedLastFR by remember { mutableStateOf<FocusRequester?>(null) }
-
-    // ↑ 진입용 FR 등록 (중첩 Callout 체인)
-    val bottomFR = when {
-        block.bodyBlocks.isEmpty() -> titleFocusRequester
-        nestedLastFR != null -> nestedLastFR!!
-        block.bodyBlocks.size == 1 -> bodyFocusRequester
-        else -> bodyLastFocusRequester
-    }
-    LaunchedEffect(bottomFR) { onRegisterBottomEntryFR(bottomFR) }
-
-    // body 생성 후 지연 포커스
-    var pendingBodyFocus by remember { mutableStateOf(0) }
-    LaunchedEffect(pendingBodyFocus) {
-        if (pendingBodyFocus > 0) {
-            kotlinx.coroutines.delay(50.milliseconds)
-            try { bodyFocusRequester.requestFocus() } catch (_: Exception) {}
-        }
-    }
-
-    fun focusBodyStart() {
-        try { bodyFocusRequester.requestFocus() } catch (_: Exception) {}
-        (block.bodyBlocks.firstOrNull() as? EditorBlock.Text)?.textFieldState?.edit {
-            selection = androidx.compose.ui.text.TextRange(0)
-        }
-    }
-
     val titleKeyHandler = Modifier.onPreviewKeyEvent { event ->
         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
         val sel = block.titleState.selection
         when (event.key) {
             Key.Enter -> {
-                if (block.bodyBlocks.isEmpty()) {
-                    onBlocksChanged(listOf(EditorBlock.Text(textFieldState = TextFieldState(""))))
-                    pendingBodyFocus++
-                } else {
-                    focusBodyStart()
-                }
-                true
+                bodyRuntime.execute(CalloutBodyPolicy.activate(block.bodyBlocks.isNotEmpty()))
             }
             Key.Tab -> {
                 // Enter 와 동일 — body 생성/이동. 명시 핸들러로 default \t 입력(MultiLine) 가로채기.
-                if (block.bodyBlocks.isEmpty()) {
-                    onBlocksChanged(listOf(EditorBlock.Text(textFieldState = TextFieldState(""))))
-                    pendingBodyFocus++
-                } else {
-                    focusBodyStart()
-                }
-                true
+                bodyRuntime.execute(CalloutBodyPolicy.activate(block.bodyBlocks.isNotEmpty()))
             }
             Key.DirectionRight -> {
                 if (event.isShiftPressed) {
                     // Shift+→ from DL title → Callout 자체만 atomic selection (docs/markdown-editor.md).
                     // DL 은 title 과 body 가 가로 배치라 →가 자연스러운 "박스 탈출" 방향
-                    navigation.onSelectSelfAsAtomic()
+                    navigation.selection.onSelectSelfAsAtomic()
                     true
-                } else if (sel.collapsed && sel.start >= block.titleState.text.length && block.bodyBlocks.isNotEmpty()) {
-                    focusBodyStart()
-                    true
-                } else false
+                } else {
+                    bodyRuntime.execute(
+                        CalloutBodyPolicy.titleRight(
+                            layout = CalloutBodyLayout.Dialogue,
+                            hasBody = block.bodyBlocks.isNotEmpty(),
+                            isAtTitleEnd = sel.collapsed && sel.start >= block.titleState.text.length,
+                        ),
+                    )
+                }
             }
             Key.DirectionDown -> {
                 if (event.isShiftPressed) {
                     // docs/markdown-editor.md — 누적 selection은 최상위 preview handler가 소유
-                    navigation.onSelectSelfAsAtomic()
+                    navigation.selection.onSelectSelfAsAtomic()
                 } else {
-                    navigation.onMoveToNext()
+                    bodyRuntime.execute(
+                        CalloutBodyPolicy.titleDown(
+                            layout = CalloutBodyLayout.Dialogue,
+                            hasBody = block.bodyBlocks.isNotEmpty(),
+                        ),
+                    )
                 }
                 true
             }
             Key.DirectionUp -> {
                 if (event.isShiftPressed) {
-                    navigation.onSelectSelfAsAtomic()
+                    navigation.selection.onSelectSelfAsAtomic()
                 } else {
-                    navigation.onMoveToPrevious()
+                    navigation.focus.onMoveToPrevious()
                 }
                 true
             }
             Key.Backspace -> {
                 // dissolve 트리거 2: Callout 자리에 raw markdown TextBlock(rawMode=true)
                 if (sel.collapsed && sel.start == 0) {
-                    navigation.onDissolveSelf()
+                    navigation.mutation.onDissolveSelf()
                     true
                 } else false
             }
@@ -387,36 +433,63 @@ private fun DialogueCallout(
             lineLimits = TextFieldLineLimits.MultiLine(maxHeightInLines = 2),
             cursorBrush = cursorBrush,
         )
-        if (block.bodyBlocks.isNotEmpty()) {
-            MarkdownBlockEditor(
-                blocks = block.bodyBlocks,
-                onBlocksChanged = onBlocksChanged,
-                modifier = Modifier.weight(1f),
-                styleConfig = styleConfig,
-                textStyle = textStyle,
-                cursorBrush = cursorBrush,
-                isNested = true,
-                onEscapeToPrevious = navigation.onMoveToPrevious,
-                onEscapeToNext = navigation.onMoveToNext,
-                firstBlockFocusRequester = bodyFocusRequester,
-                lastBlockFocusRequester = if (block.bodyBlocks.size > 1) bodyLastFocusRequester else null,
-                onLastBlockBottomEntryRegistered = { fr -> nestedLastFR = fr },
-                excludeCalloutTypes = setOf("DL"),  // DL 내부에서 DL 중첩 금지
-                onEscapeLeft = {
-                    titleFocusRequester.requestFocus()
-                    block.titleState.edit {
-                        selection = androidx.compose.ui.text.TextRange(block.titleState.text.length)
-                    }
-                },
-                enableEnterEscape = true,  // body 안 TextBlock 에서 빈 마지막 줄 + Enter → 탈출 (#20 v2)
-                // Step B-2c: body 안 cross-selection + 경계 박스 탈출
-                documentSelection = documentSelection,
-                containerPath = containerPath + block.id,
-                onEscapeSelectionToPrevious = { navigation.onSelectSelfAsAtomic() },
-                onEscapeSelectionToNext = { navigation.onSelectSelfAsAtomic() },
-            )
-        }
+        CalloutBodyEditor(
+            block = block,
+            layout = CalloutBodyLayout.Dialogue,
+            bodyRuntime = bodyRuntime,
+            modifier = Modifier.weight(1f),
+            styleConfig = styleConfig,
+            textStyle = textStyle,
+            cursorBrush = cursorBrush,
+            navigation = navigation,
+            documentSelection = documentSelection,
+            containerPath = containerPath,
+        )
     }
+}
+
+@Composable
+private fun CalloutBodyEditor(
+    block: EditorBlock.Callout,
+    layout: CalloutBodyLayout,
+    bodyRuntime: CalloutBodyRuntime,
+    styleConfig: MarkdownStyleConfig,
+    textStyle: TextStyle,
+    cursorBrush: Brush,
+    navigation: BlockNavigation,
+    documentSelection: androidx.compose.runtime.MutableState<DocumentSelection>?,
+    containerPath: List<String>,
+    modifier: Modifier = Modifier,
+) {
+    if (block.bodyBlocks.isEmpty()) return
+
+    MarkdownBlockEditor(
+        blocks = block.bodyBlocks,
+        onBlocksChanged = bodyRuntime.onBlocksChanged,
+        modifier = modifier,
+        styleConfig = styleConfig,
+        textStyle = textStyle,
+        cursorBrush = cursorBrush,
+        isNested = true,
+        onEscapeToPrevious = {
+            bodyRuntime.execute(CalloutBodyPolicy.exit(layout, CalloutBodyBoundary.Previous))
+        },
+        onEscapeToNext = {
+            bodyRuntime.execute(CalloutBodyPolicy.exit(layout, CalloutBodyBoundary.Next))
+        },
+        onEscapeLeft = {
+            bodyRuntime.execute(CalloutBodyPolicy.exit(layout, CalloutBodyBoundary.Left))
+        },
+        firstBlockFocusRequester = bodyRuntime.firstFocusRequester,
+        lastBlockFocusRequester = bodyRuntime.lastFocusRequester,
+        onLastBlockBottomEntryRegistered = bodyRuntime.onNestedBottomEntryRegistered,
+        excludeCalloutTypes = if (layout == CalloutBodyLayout.Dialogue) setOf("DL") else emptySet(),
+        enableEnterEscape = true,
+        documentSelection = documentSelection,
+        containerPath = containerPath + block.id,
+        onEscapeSelectionToPrevious = { navigation.selection.onSelectSelfAsAtomic() },
+        onEscapeSelectionToNext = { navigation.selection.onSelectSelfAsAtomic() },
+    )
 }
 
 private fun calloutIcon(type: String) = when (type.uppercase()) {

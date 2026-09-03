@@ -6,23 +6,23 @@ import androidx.datastore.preferences.core.byteArrayPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.ninetag.machum.entity.BASE_FOLDER_PATH
+import com.ninetag.machum.entity.DEFAULT_BASE_FOLDER_CONFIG
 import com.ninetag.machum.entity.DEFAULT_PROJECT_FOLDERS
 import com.ninetag.machum.entity.FolderConfig
 import com.ninetag.machum.entity.FolderType
+import com.ninetag.machum.entity.PlotStage
 import com.ninetag.machum.entity.ProjectConfig
-import com.ninetag.machum.entity.WorkflowStep
 import com.ninetag.machum.entity.defaultProjectConfig
 import com.ninetag.machum.entity.effectiveAutoTags
 import com.ninetag.machum.entity.normalizeTag
+import com.ninetag.machum.entity.renameFolder
+import com.ninetag.machum.entity.removeFolder
 import com.ninetag.machum.entity.withDefaultBaseFolder
 import io.github.vinceglb.filekit.FileKit
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.bookmarkData
 import io.github.vinceglb.filekit.delete
-import io.github.vinceglb.filekit.dialogs.FileKitMode
-import io.github.vinceglb.filekit.dialogs.FileKitType
 import io.github.vinceglb.filekit.dialogs.openDirectoryPicker
-import io.github.vinceglb.filekit.dialogs.openFilePicker
 import io.github.vinceglb.filekit.exists
 import io.github.vinceglb.filekit.fromBookmarkData
 import io.github.vinceglb.filekit.isDirectory
@@ -32,6 +32,8 @@ import io.github.vinceglb.filekit.nameWithoutExtension
 import io.github.vinceglb.filekit.readString
 import io.github.vinceglb.filekit.writeString
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -47,13 +49,10 @@ import kotlin.collections.emptyList
 
 class FileManager(private val dataStore: DataStore<Preferences>) {
 
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val projectConfigMutex = Mutex()
     private val projectIndexer = ProjectIndexer(this)
 
     val projectIndexState: StateFlow<ProjectIndexState> = projectIndexer.state
-
-    val workflowParser = WorkflowParser()
 
     // .machum.json 직렬화: 구 스키마(workflow 필드 등) 무시 + 사람이 읽기 좋게 + 기본값도 기록
     private val configJson = Json {
@@ -114,10 +113,6 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
         _bookmarks.value = Bookmarks()
         _projectConfig.value = null
-        _workflowList.value = emptyList()
-        _workflow.value = emptyList()
-        _needUpdateWorkflow.value = false
-        _currentNoteFile.value = null
         projectIndexer.reset()
     }
 
@@ -127,17 +122,6 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     /** null이면 선택된 프로젝트가 없거나 해당 프로젝트의 설정을 아직 로드하지 못한 상태다. */
     private val _projectConfig = MutableStateFlow<ProjectConfig?>(null)
     val projectConfig: StateFlow<ProjectConfig?> = _projectConfig.asStateFlow()
-
-    private val _workflowList = MutableStateFlow<List<PlatformFile>>(emptyList())
-    val workflowList: StateFlow<List<PlatformFile>> = _workflowList.asStateFlow()
-
-    private val _workflow = MutableStateFlow<List<WorkflowStep>>(emptyList())
-    val workflow: StateFlow<List<WorkflowStep>> = _workflow.asStateFlow()
-
-    private val _needUpdateWorkflow = MutableStateFlow(false)
-    val needUpdateWorkflow = _needUpdateWorkflow.asStateFlow()
-
-    private val _currentNoteFile = MutableStateFlow<NoteFile?>(null)
 
     init {
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
@@ -182,35 +166,6 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             return@withContext null
         }
         project
-    }
-
-    suspend fun createWorkflow(name: String = "New_Workflow"): PlatformFile? = withContext(Dispatchers.IO) {
-        val parentDirectory = _bookmarks.value.vaultData!!.list().find { it.name == ".workflow" }?:return@withContext null
-        createFile(parentDirectory, name)
-    }
-
-    suspend fun createNextFile(name: String): PlatformFile? = withContext(Dispatchers.IO) {
-        createFile(_bookmarks.value.projectData!!, name)
-            ?.also { file ->
-                readMarkdown(file)
-                pickFile(ProjectFile(FolderKey.Base.file(file.name), file))
-            }
-    }
-
-    suspend fun createChildFile(numbering: String, name: String): PlatformFile? = withContext(Dispatchers.IO) {
-        // ToDo 로직 작성 필요
-        null
-    }
-
-    suspend fun getWorkflowList() = withContext(Dispatchers.IO) {
-        val workflowDir = _bookmarks.value.vaultData!!.list().find { it.name == ".workflow" }
-        _workflowList.value = listFile(workflowDir!!)
-    }
-
-    suspend fun getWorkflow(workflow: String): PlatformFile? = withContext(Dispatchers.IO) {
-        val workflowDir = _bookmarks.value.vaultData!!.list().find { it.name == ".workflow" }
-        val file = workflowDir!!.list().find { it.name == "$workflow.md" }
-        file
     }
 
     /**
@@ -268,6 +223,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         previousConfig: ProjectConfig,
         updatedConfig: ProjectConfig,
         editedRelativePath: String,
+        previousRelativePath: String = editedRelativePath,
     ): List<AutoTagSyncUpdate> = withContext(Dispatchers.IO) {
         val project = _bookmarks.value.projectData ?: return@withContext emptyList()
         val targetFolders = listFolders(project).filter { folder ->
@@ -275,7 +231,9 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
 
         targetFolders.flatMap { folder ->
-            val previousTags = previousConfig.effectiveAutoTags(folder.key.relativePath)
+            val previousTags = previousConfig.effectiveAutoTags(
+                if (editedRelativePath == BASE_FOLDER_PATH) folder.key.relativePath else previousRelativePath
+            )
             val updatedTags = updatedConfig.effectiveAutoTags(folder.key.relativePath)
             if (previousTags == updatedTags) return@flatMap emptyList()
 
@@ -293,6 +251,54 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
     }
 
+    /** Default 폴더의 관리 대상(숫자 접두사) 파일만 전달된 순서대로 안전하게 재번호한다. */
+    suspend fun applyDefaultOrder(
+        folder: ProjectFolder,
+        orderedFileKeys: List<FileKey>,
+    ): List<DefaultOrderUpdate>? = withContext(Dispatchers.IO) {
+        if (orderedFileKeys.toSet().size != orderedFileKeys.size) return@withContext null
+
+        val files = listProjectFiles(folder)
+        val filesByKey = files.associateBy(ProjectFile::key)
+        val managedFiles = files.filter { it.numberedPrefix() != null }
+        val managedKeys = managedFiles.mapTo(mutableSetOf(), ProjectFile::key)
+        if (orderedFileKeys.toSet() != managedKeys) return@withContext null
+        if (orderedFileKeys.any { it.folder != folder.key }) return@withContext null
+        if (orderedFileKeys.isEmpty()) return@withContext emptyList()
+
+        val untouchedNames = files
+            .filterNot { it.key in managedKeys }
+            .mapTo(mutableSetOf()) { it.platformFile.name.lowercase() }
+        val startAt = if (folder.key == FolderKey.Base) 0 else 1
+        val works = orderedFileKeys.mapIndexed { index, fileKey ->
+            val source = filesByKey[fileKey] ?: return@withContext null
+            val title = source.defaultOrderTitle().takeIf { it.isNotBlank() }
+                ?: return@withContext null
+            val finalBaseName = "${startAt + index}. $title"
+            if ("$finalBaseName.md".lowercase() in untouchedNames) return@withContext null
+            MarkdownOrderWork(
+                oldKey = source.key,
+                originalBaseName = source.platformFile.nameWithoutExtension,
+                originalNoteFile = null,
+                updatedNoteFile = null,
+                finalBaseName = finalBaseName,
+                temporaryBaseName = ".machum-order-default-$index",
+                currentFile = source.platformFile,
+            )
+        }
+        if (works.map { it.finalBaseName.lowercase() }.toSet().size != works.size) {
+            return@withContext null
+        }
+        if (!applyMarkdownOrderTransaction(folder, works)) return@withContext null
+
+        works.map { work ->
+            DefaultOrderUpdate(
+                oldKey = work.oldKey,
+                projectFile = ProjectFile(folder.key.file(work.currentFile.name), work.currentFile),
+            )
+        }
+    }
+
     /** PLOT 순서 초안을 frontmatter와 정확한 파일명에 일괄 반영한다. */
     suspend fun applyPlotOrder(
         folder: ProjectFolder,
@@ -300,27 +306,44 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     ): List<PlotOrderUpdate>? = withContext(Dispatchers.IO) {
         if (assignments.isEmpty()) return@withContext emptyList()
         if (assignments.map { it.fileKey }.toSet().size != assignments.size) return@withContext null
+        if (assignments.any {
+                it.fileKey.folder != folder.key || it.order < PlotStage.FIRST_ORDER
+            }
+        ) return@withContext null
+        if (assignments.map { it.stage to it.order }.toSet().size != assignments.size) {
+            return@withContext null
+        }
 
-        val filesByKey = listProjectFiles(folder).associateBy(ProjectFile::key)
+        val files = listProjectFiles(folder)
+        val filesByKey = files.associateBy(ProjectFile::key)
         val assignmentKeys = assignments.mapTo(mutableSetOf()) { it.fileKey }
+        val originalNotes = files.associate { projectFile ->
+            projectFile.key to NoteFile.parse(projectFile.platformFile.readString())
+        }
+        val classifiedKeys = originalNotes
+            .filterValues { noteFile -> noteFile.plotStage != null }
+            .keys
+        // 미분류 파일은 drag로 새 단계에 편입할 수 있지만, 이미 Plot 단계가 있는 파일을
+        // 누락한 부분 목록은 기존 논리 순번과 충돌할 수 있으므로 허용하지 않는다.
+        if (!assignmentKeys.containsAll(classifiedKeys)) return@withContext null
         val untouchedNames = filesByKey.values
             .filterNot { it.key in assignmentKeys }
             .mapTo(mutableSetOf()) { it.platformFile.name.lowercase() }
 
         val works = assignments.mapIndexed { index, assignment ->
             val source = filesByKey[assignment.fileKey] ?: return@withContext null
-            val noteFile = readMarkdown(source.platformFile)
+            val noteFile = originalNotes.getValue(source.key)
             val title = source.plotTitle()
             val finalBaseName = assignment.stage.fileName(assignment.order, title)
             val finalFileName = "$finalBaseName.md"
             if (finalFileName.lowercase() in untouchedNames) return@withContext null
-            PlotRenameWork(
+            MarkdownOrderWork(
                 oldKey = source.key,
                 originalBaseName = source.platformFile.nameWithoutExtension,
                 originalNoteFile = noteFile,
                 updatedNoteFile = noteFile.withPlotStage(assignment.stage),
                 finalBaseName = finalBaseName,
-                temporaryBaseName = ".machum-plot-${noteFile.id ?: index}-$index",
+                temporaryBaseName = ".machum-order-plot-$index",
                 currentFile = source.platformFile,
             )
         }
@@ -328,34 +351,13 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             return@withContext null
         }
 
-        try {
-            works.forEach { work ->
-                work.currentFile = renameMarkdownExact(
-                    folder.platformFile,
-                    work.currentFile,
-                    work.temporaryBaseName,
-                ) ?: error("temporary plot rename failed")
-            }
-            works.forEach { work ->
-                writeMarkdown(work.currentFile, work.updatedNoteFile)
-            }
-            works.forEach { work ->
-                work.currentFile = renameMarkdownExact(
-                    folder.platformFile,
-                    work.currentFile,
-                    work.finalBaseName,
-                ) ?: error("final plot rename failed")
-            }
-        } catch (error: Exception) {
-            rollbackPlotOrder(folder, works)
-            return@withContext null
-        }
+        if (!applyMarkdownOrderTransaction(folder, works)) return@withContext null
 
         works.map { work ->
             PlotOrderUpdate(
                 oldKey = work.oldKey,
                 projectFile = ProjectFile(folder.key.file(work.currentFile.name), work.currentFile),
-                noteFile = work.updatedNoteFile,
+                noteFile = work.updatedNoteFile ?: return@withContext null,
             )
         }
     }
@@ -378,6 +380,149 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         ProjectFolder(key, directory)
     }
 
+    /** 직속 Project 폴더와 이에 연결된 설정·ID·선택 경로를 하나의 작업으로 변경한다. */
+    suspend fun renameProjectFolder(
+        folder: ProjectFolder,
+        newName: String,
+        folderConfig: FolderConfig,
+    ): FolderRenameUpdate? = withContext(Dispatchers.IO) {
+        val project = _bookmarks.value.projectData ?: return@withContext null
+        val previousKey = folder.key
+        if (previousKey == FolderKey.Base) return@withContext null
+
+        val directoryName = newName.trim()
+        if (!isValidProjectFolderName(directoryName)) return@withContext null
+        if (directoryName == previousKey.relativePath) return@withContext null
+        if (directoryName.equals(previousKey.relativePath, ignoreCase = true)) return@withContext null
+        if (project.list().any { child ->
+                child.toString() != folder.platformFile.toString() &&
+                    child.name.equals(directoryName, ignoreCase = true)
+            }
+        ) return@withContext null
+
+        projectConfigMutex.withLock {
+            val previousConfig = _projectConfig.value ?: return@withLock null
+            val previousBookmarks = _bookmarks.value
+            val renamedDirectory = renameDirectoryExact(
+                parentDirectory = project,
+                directory = folder.platformFile,
+                name = directoryName,
+            ) ?: return@withLock null
+            val updatedKey = FolderKey.of(renamedDirectory.name)
+            val updatedConfig = previousConfig.renameFolder(
+                previousPath = previousKey.relativePath,
+                updatedPath = updatedKey.relativePath,
+                updatedFolderConfig = folderConfig,
+            )
+
+            try {
+                val persisted = persistProjectConfig(project, updatedConfig) ?: error("config save failed")
+                val previousSelectedPath = previousBookmarks.fileRelativePath
+                val updatedSelectedPath = previousSelectedPath?.replaceFolderPrefix(previousKey, updatedKey)
+                val updatedSelectedFile = if (updatedSelectedPath != previousSelectedPath) {
+                    resolveRelativeFile(project, updatedSelectedPath ?: error("selected path missing"))
+                        ?: error("renamed selected file missing")
+                } else {
+                    previousBookmarks.fileData
+                }
+                if (updatedSelectedPath != previousSelectedPath) {
+                    setPreferences(
+                        previousBookmarks.copy(
+                            fileData = updatedSelectedFile,
+                            fileRelativePath = updatedSelectedPath,
+                        )
+                    )
+                }
+                FolderRenameUpdate(
+                    previousKey = previousKey,
+                    projectFolder = ProjectFolder(updatedKey, renamedDirectory),
+                    projectConfig = persisted,
+                    selectedFileKey = updatedSelectedPath
+                        ?.takeIf { it != previousSelectedPath }
+                        ?.let(FileKey::of),
+                )
+            } catch (error: Exception) {
+                runCatching {
+                    renameDirectoryExact(project, renamedDirectory, previousKey.relativePath)
+                }
+                runCatching { persistProjectConfig(project, previousConfig) }
+                runCatching { setPreferences(previousBookmarks) }
+                null
+            }
+        }
+    }
+
+    /** 삭제 확인 UI에 필요한 직속 Markdown 파일과 앱에서 삭제할 수 없는 항목을 점검한다. */
+    suspend fun inspectProjectFolderDeletion(
+        folderKey: FolderKey,
+    ): ProjectFolderDeletionPreview? = withContext(Dispatchers.IO) {
+        val project = _bookmarks.value.projectData ?: return@withContext null
+        inspectProjectFolderDeletion(project, folderKey)
+    }
+
+    /** 점검 결과가 안전한 경우에만 실제 폴더와 설정·ID·선택 bookmark를 함께 제거한다. */
+    suspend fun deleteProjectFolder(
+        folderKey: FolderKey,
+    ): FolderDeletionUpdate? = withContext(Dispatchers.IO) {
+        val project = _bookmarks.value.projectData ?: return@withContext null
+        if (folderKey == FolderKey.Base) return@withContext null
+
+        projectConfigMutex.withLock {
+            val preview = inspectProjectFolderDeletion(project, folderKey) ?: return@withLock null
+            if (!preview.canDelete) return@withLock null
+            val previousConfig = _projectConfig.value ?: return@withLock null
+            val previousBookmarks = _bookmarks.value
+            val updatedConfig = previousConfig.removeFolder(folderKey.relativePath)
+            val selectedInsideFolder = previousBookmarks.fileRelativePath?.let { path ->
+                path.startsWith("${folderKey.relativePath}/")
+            } == true
+
+            try {
+                persistProjectConfig(project, updatedConfig) ?: error("config save failed")
+                if (selectedInsideFolder) {
+                    setPreferences(
+                        previousBookmarks.copy(
+                            fileData = null,
+                            fileRelativePath = null,
+                        )
+                    )
+                }
+                if (!deleteDirectoryExact(preview.folder.platformFile)) {
+                    error("directory delete failed")
+                }
+                FolderDeletionUpdate(
+                    folderKey = folderKey,
+                    deletedFileKeys = preview.markdownFiles.map(ProjectFile::key),
+                )
+            } catch (error: Exception) {
+                runCatching { persistProjectConfig(project, previousConfig) }
+                runCatching { setPreferences(previousBookmarks) }
+                null
+            }
+        }
+    }
+
+    private fun inspectProjectFolderDeletion(
+        project: PlatformFile,
+        folderKey: FolderKey,
+    ): ProjectFolderDeletionPreview? {
+        if (folderKey == FolderKey.Base) return null
+        val directory = resolveFolder(project, folderKey) ?: return null
+        val entries = directory.list()
+        val markdownFiles = entries
+            .filter { child -> !child.isDirectory() && child.name.endsWith(".md", ignoreCase = true) }
+            .map { file -> ProjectFile(folderKey.file(file.name), file) }
+        val unsupportedEntries = entries
+            .filter { child -> child.isDirectory() || !child.name.endsWith(".md", ignoreCase = true) }
+            .map { it.name }
+            .sorted()
+        return ProjectFolderDeletionPreview(
+            folder = ProjectFolder(folderKey, directory),
+            markdownFiles = markdownFiles,
+            unsupportedEntries = unsupportedEntries,
+        )
+    }
+
     /**
      * 저장소를 선택
      * @return 저장소
@@ -389,7 +534,6 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                 directory = initVault,
             )
             vault?.let{
-                createFolder(vault, ".workflow")
                 setPreferences(Bookmarks(vaultData = it)).vaultData
             }
         } catch (e: Exception) {
@@ -403,31 +547,14 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * @param project 선택한 프로젝트 폴더
      * @return 해당 프로젝트 폴더의 마지막 마크다운 파일
      */
-    fun pickProject(project: PlatformFile) {
+    suspend fun pickProject(project: PlatformFile) = withContext(Dispatchers.IO) {
         projectIndexer.prepare(project)
-        scope.launch {
-            try {
-                setPreferences(getPreferences().copy(projectData = project, fileData = null))
-                loadProjectConfig(project)
-            } catch (e: Exception) {
-                projectIndexer.fail(project, e)
-                println(e)
-            }
-        }
-    }
-
-    /**
-     * 워크플로우 선택시 동작
-     * @param workflow 워크플로우 파일
-     */
-    // workflow 은퇴(dormant). 라이브 흐름 미사용 — WorkflowSelectionScreen(은퇴 화면)만 참조.
-    fun pickWorkflow(workflow: PlatformFile) {
-        scope.launch {
-            try {
-                _workflow.value = workflowParser.parse(workflow.readString())
-            } catch (e: Exception) {
-                throw e
-            }
+        try {
+            setPreferences(getPreferences().copy(projectData = project, fileData = null))
+            loadProjectConfig(project)
+        } catch (e: Exception) {
+            projectIndexer.fail(project, e)
+            throw e
         }
     }
 
@@ -439,45 +566,12 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      */
     suspend fun pickFile(projectFile: ProjectFile): PlatformFile = withContext(Dispatchers.IO) {
         val file = projectFile.platformFile
-        // 포커스 변경 시에만 갱신
-        _currentNoteFile.value = readMarkdown(file)
         setPreferences(
             getPreferences().copy(
                 fileData = file,
                 fileRelativePath = projectFile.key.relativePath,
             )
         ).fileData!!
-    }
-
-    suspend fun pickFileTest(): PlatformFile? {
-        val bookmarks = getPreferences()
-        val initDirectory = bookmarks.projectData
-        val file = FileKit.openFilePicker(
-            type = FileKitType.File("md"),
-            mode = FileKitMode.Single,
-            directory = initDirectory,
-        )
-        try {
-            println("파일: $file")
-            println("파일 parent: ${file?.toString()}")
-        } catch (e: Exception) {
-            println(e.message)
-        }
-        if (file != null) {
-            setPreferences(
-                getPreferences().copy(fileData = file, fileRelativePath = file.name)
-            )
-        }
-        return file
-    }
-
-    /**
-     * 파일 읽기
-     * @param file 읽을 파일
-     * @return 파일 내용 (UTF-8)
-     */
-    suspend fun read(file: PlatformFile): String = withContext(Dispatchers.IO) {
-        file.readString()
     }
 
     private suspend fun readConfig(configFile: PlatformFile): ProjectConfig? = withContext(Dispatchers.IO) {
@@ -573,6 +667,12 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
     }
 
+    /** 외부에서 `.machum.json`이 교체된 뒤 현재 프로젝트 설정과 인덱싱 상태를 다시 읽는다. */
+    suspend fun reloadCurrentProjectConfig(): ProjectConfig? = withContext(Dispatchers.IO) {
+        val project = _bookmarks.value.projectData ?: return@withContext null
+        loadProjectConfig(project)
+    }
+
     /** 현재 설정을 원자적으로 변경하고 저장한다. 설정이 로드되지 않았다면 null을 반환한다. */
     suspend fun updateProjectConfig(
         transform: (ProjectConfig) -> ProjectConfig,
@@ -636,7 +736,6 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      */
     suspend fun setVault(parentDirectory: PlatformFile, name: String): PlatformFile? = withContext(Dispatchers.IO) {
         createFolder(parentDirectory, name)?.let{
-            createFolder(it, ".workflow")
             setPreferences(getPreferences().copy(vaultData = it)).vaultData
         }
     }
@@ -674,9 +773,25 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     suspend fun setFile(project: PlatformFile): PlatformFile = withContext(Dispatchers.IO) {
         try {
             val config = _projectConfig.value ?: loadProjectConfig(project)
-            val folderConfig = config?.folders?.get("") ?: FolderConfig()
+            val folderConfig = config?.folders?.get(BASE_FOLDER_PATH) ?: DEFAULT_BASE_FOLDER_CONFIG
             val baseFolder = ProjectFolder(FolderKey.Base, project)
-            val files = listProjectFiles(baseFolder).sortedFor(folderConfig)
+            val files = listProjectFiles(baseFolder).let { projectFiles ->
+                if (folderConfig.isPlot) {
+                    projectFiles
+                        .map { projectFile ->
+                            val noteFile = NoteFile.parse(projectFile.platformFile.readString())
+                            PlotFileEntry(
+                                projectFile = projectFile,
+                                stage = noteFile.plotStage,
+                                order = projectFile.plotOrder(),
+                            )
+                        }
+                        .sortedForPlot()
+                        .map(PlotFileEntry::projectFile)
+                } else {
+                    projectFiles.sortedFor(folderConfig)
+                }
+            }
             files.lastOrNull()
                 ?.let { projectFile ->
                     setPreferences(
@@ -687,8 +802,19 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                     ).fileData
                 }
                 ?:run{
-                    val name = if (folderConfig.type == FolderType.DEFAULT) "0. 제목" else "제목"
+                    val name = when {
+                        folderConfig.isPlot -> PlotStage.PROLOGUE.fileName(PlotStage.FIRST_ORDER, "제목")
+                        folderConfig.type == FolderType.DEFAULT -> "0. 제목"
+                        else -> "제목"
+                    }
                     createProjectFile(baseFolder, name)
+                        ?.also { created ->
+                            if (folderConfig.isPlot) {
+                                val noteFile = readMarkdown(created.platformFile)
+                                    .withPlotStage(PlotStage.PROLOGUE)
+                                writeMarkdown(created.platformFile, noteFile)
+                            }
+                        }
                         ?.let {
                             setPreferences(
                                 getPreferences().copy(
@@ -704,22 +830,88 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
     }
 
-    // TODO
     suspend fun renameProject(project: PlatformFile, name: String): PlatformFile? = withContext(Dispatchers.IO) {
-        null
+        val vault = _bookmarks.value.vaultData ?: return@withContext null
+        val selectedProject = _bookmarks.value.projectData ?: return@withContext null
+        if (!sameLocation(selectedProject, project)) return@withContext null
+
+        val projectName = name.trim()
+        if (!isValidProjectFolderName(projectName)) return@withContext null
+        if (projectName == project.name) return@withContext project
+        // 플랫폼별 대소문자 처리 차이로 인한 충돌을 피한다.
+        if (projectName.equals(project.name, ignoreCase = true)) return@withContext null
+        if (vault.list().any { child ->
+                !sameLocation(child, project) && child.name.equals(projectName, ignoreCase = true)
+            }
+        ) {
+            return@withContext null
+        }
+
+        val previousName = project.name
+        val previousBookmarks = getPreferences()
+        val renamedProject = renameDirectoryExact(vault, project, projectName)
+            ?: return@withContext null
+        val selectedFile = previousBookmarks.fileRelativePath
+            ?.let { relativePath -> resolveRelativeFile(renamedProject, relativePath) }
+
+        projectIndexer.prepare(renamedProject)
+        val bookmarkUpdated = runCatching {
+            setPreferences(
+                previousBookmarks.copy(
+                    projectData = renamedProject,
+                    fileData = selectedFile,
+                    fileRelativePath = previousBookmarks.fileRelativePath
+                        .takeIf { selectedFile != null },
+                )
+            )
+        }.isSuccess
+        if (!bookmarkUpdated) {
+            renameDirectoryExact(vault, renamedProject, previousName)
+            projectIndexer.reset()
+            return@withContext null
+        }
+
+        // 프로젝트명은 관리 태그이므로 기존 이름은 제거하고 새 이름을 첫 태그로 둔다.
+        synchronizeProjectNameTag(
+            project = renamedProject,
+            previousName = previousName,
+        )
+        runCatching { loadProjectConfig(renamedProject) }
+            .onFailure { error -> projectIndexer.fail(renamedProject, error) }
+        renamedProject
     }
 
-    suspend fun renameWorkflow(file: PlatformFile, name: String): PlatformFile? = withContext(Dispatchers.IO) {
-        val workflowDir = _bookmarks.value.vaultData!!.list().find { it.name == ".workflow" } ?: return@withContext null
-        renameMarkdown(workflowDir, file, name).also{
-            getWorkflowList()
-        }
+    private suspend fun synchronizeProjectNameTag(
+        project: PlatformFile,
+        previousName: String,
+    ) {
+        val previousTag = normalizeTag(previousName)
+        val updatedTag = normalizeTag(project.name)
+        listFolders(project)
+            .flatMap { folder -> listProjectFiles(folder) }
+            .forEach { projectFile ->
+                runCatching {
+                    val original = NoteFile.parse(projectFile.platformFile.readString())
+                    val withId = original.ensureId()
+                    val updatedTags = buildList {
+                        add(updatedTag)
+                        withId.tags
+                            .filterNot { tag -> tag == previousTag || tag == updatedTag }
+                            .forEach { tag -> if (tag !in this) add(tag) }
+                    }
+                    val updated = withId.withTags(updatedTags)
+                    if (updated.inject() != original.inject()) {
+                        projectFile.platformFile.writeString(updated.inject())
+                    }
+                }
+            }
     }
 
     suspend fun renameFile(projectFile: ProjectFile, name: String): PlatformFile? = withContext(Dispatchers.IO) {
+        if (!isValidProjectFileTitle(name)) return@withContext null
         val project = _bookmarks.value.projectData ?: return@withContext null
         val parent = resolveFolder(project, projectFile.key.folder) ?: return@withContext null
-        renameMarkdown(parent, projectFile.platformFile, name)
+        renameMarkdownExact(parent, projectFile.platformFile, name)
     }
 
     private fun resolveFolder(project: PlatformFile, key: FolderKey): PlatformFile? {
@@ -737,22 +929,93 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     private fun sameLocation(first: PlatformFile?, second: PlatformFile?): Boolean =
         first?.toString() == second?.toString()
 
-    private suspend fun rollbackPlotOrder(
+    private suspend fun applyMarkdownOrderTransaction(
         folder: ProjectFolder,
-        works: List<PlotRenameWork>,
+        works: List<MarkdownOrderWork>,
+    ): Boolean = projectConfigMutex.withLock {
+        val project = _bookmarks.value.projectData ?: return@withLock false
+        // fileIds는 문서 identity의 일부다. 설정이 로드되지 않은 상태에서 파일명만
+        // 바뀌는 반쪽 성공을 만들지 않도록 mutation 전에 실패한다.
+        val previousConfig = _projectConfig.value ?: return@withLock false
+        val previousBookmarks = _bookmarks.value
+        val rollbackBaseNames = allocateRollbackBaseNames(folder, works)
+
+        try {
+            works.forEach { work ->
+                work.currentFile = renameMarkdownExact(
+                    folder.platformFile,
+                    work.currentFile,
+                    work.temporaryBaseName,
+                ) ?: error("temporary order rename failed")
+            }
+            works.forEach { work ->
+                work.updatedNoteFile?.let { noteFile ->
+                    writeMarkdown(work.currentFile, noteFile)
+                }
+            }
+            works.forEach { work ->
+                work.currentFile = renameMarkdownExact(
+                    folder.platformFile,
+                    work.currentFile,
+                    work.finalBaseName,
+                ) ?: error("final order rename failed")
+            }
+
+            val pathChanges = works.associate { work ->
+                work.oldKey.relativePath to folder.key.file(work.currentFile.name).relativePath
+            }
+            val updatedConfig = previousConfig.copy(
+                fileIds = previousConfig.fileIds.mapValues { (_, relativePath) ->
+                    pathChanges[relativePath] ?: relativePath
+                },
+            )
+            persistProjectConfig(project, updatedConfig) ?: error("config save failed")
+
+            val selectedPath = previousBookmarks.fileRelativePath
+            val updatedSelectedPath = selectedPath?.let(pathChanges::get)
+            if (updatedSelectedPath != null) {
+                val selectedFile = works
+                    .firstOrNull { work -> work.oldKey.relativePath == selectedPath }
+                    ?.currentFile
+                    ?: error("renamed selected file missing")
+                setPreferences(
+                    previousBookmarks.copy(
+                        fileData = selectedFile,
+                        fileRelativePath = updatedSelectedPath,
+                    ),
+                )
+            }
+            true
+        } catch (error: Exception) {
+            withContext(NonCancellable) {
+                rollbackMarkdownOrder(folder, works, rollbackBaseNames)
+                runCatching { persistProjectConfig(project, previousConfig) }
+                runCatching { setPreferences(previousBookmarks) }
+            }
+            if (error is CancellationException) throw error
+            false
+        }
+    }
+
+    private suspend fun rollbackMarkdownOrder(
+        folder: ProjectFolder,
+        works: List<MarkdownOrderWork>,
+        rollbackBaseNames: List<String>,
     ) {
         works.forEachIndexed { index, work ->
             runCatching {
                 work.currentFile = renameMarkdownExact(
                     folder.platformFile,
                     work.currentFile,
-                    ".machum-plot-rollback-$index",
+                    rollbackBaseNames[index],
                 ) ?: work.currentFile
             }
         }
         works.forEach { work ->
             runCatching {
-                writeMarkdown(work.currentFile, work.originalNoteFile)
+                work.originalNoteFile?.let { noteFile ->
+                    writeMarkdown(work.currentFile, noteFile)
+                }
                 work.currentFile = renameMarkdownExact(
                     folder.platformFile,
                     work.currentFile,
@@ -761,22 +1024,85 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             }
         }
     }
+
+    private fun allocateRollbackBaseNames(
+        folder: ProjectFolder,
+        works: List<MarkdownOrderWork>,
+    ): List<String> {
+        val reservedFileNames = folder.platformFile.list()
+            .mapTo(mutableSetOf()) { file -> file.name.lowercase() }
+        works.forEach { work ->
+            reservedFileNames += "${work.temporaryBaseName}.md".lowercase()
+            reservedFileNames += "${work.finalBaseName}.md".lowercase()
+        }
+        return works.mapIndexed { index, _ ->
+            var attempt = 0
+            var candidate: String
+            do {
+                candidate = buildString {
+                    append(".machum-order-rollback-")
+                    append(index)
+                    if (attempt > 0) append("-").append(attempt)
+                }
+                attempt++
+            } while ("$candidate.md".lowercase() in reservedFileNames)
+            reservedFileNames += "$candidate.md".lowercase()
+            candidate
+        }
+    }
 }
 
-private data class PlotRenameWork(
+private val defaultOrderPrefixRegex = Regex("""^\d+\.\s*""")
+
+private fun ProjectFile.defaultOrderTitle(): String =
+    platformFile.nameWithoutExtension.replace(defaultOrderPrefixRegex, "")
+
+private data class MarkdownOrderWork(
     val oldKey: FileKey,
     val originalBaseName: String,
-    val originalNoteFile: NoteFile,
-    val updatedNoteFile: NoteFile,
+    val originalNoteFile: NoteFile?,
+    val updatedNoteFile: NoteFile?,
     val finalBaseName: String,
     val temporaryBaseName: String,
     var currentFile: PlatformFile,
+)
+
+data class DefaultOrderUpdate(
+    val oldKey: FileKey,
+    val projectFile: ProjectFile,
 )
 
 data class AutoTagSyncUpdate(
     val projectFile: ProjectFile,
     val noteFile: NoteFile,
 )
+
+data class FolderRenameUpdate(
+    val previousKey: FolderKey,
+    val projectFolder: ProjectFolder,
+    val projectConfig: ProjectConfig,
+    val selectedFileKey: FileKey?,
+)
+
+data class ProjectFolderDeletionPreview(
+    val folder: ProjectFolder,
+    val markdownFiles: List<ProjectFile>,
+    val unsupportedEntries: List<String>,
+) {
+    val canDelete: Boolean get() = unsupportedEntries.isEmpty()
+}
+
+data class FolderDeletionUpdate(
+    val folderKey: FolderKey,
+    val deletedFileKeys: List<FileKey>,
+)
+
+private fun String.replaceFolderPrefix(previousKey: FolderKey, updatedKey: FolderKey): String = when {
+    this == previousKey.relativePath -> updatedKey.relativePath
+    startsWith("${previousKey.relativePath}/") ->
+        updatedKey.relativePath + removePrefix(previousKey.relativePath)
+    else -> this
+}
 
 internal data class ProjectMetadataUpdate(
     val noteFile: NoteFile,
@@ -838,6 +1164,14 @@ internal expect suspend fun FileManager.createFolder(parentDirectory: PlatformFi
 internal expect suspend fun FileManager.renameMarkdown(parentDirectory: PlatformFile, file: PlatformFile, name: String): PlatformFile?
 
 internal expect suspend fun FileManager.renameMarkdownExact(parentDirectory: PlatformFile, file: PlatformFile, name: String): PlatformFile?
+
+internal expect suspend fun FileManager.renameDirectoryExact(
+    parentDirectory: PlatformFile,
+    directory: PlatformFile,
+    name: String,
+): PlatformFile?
+
+internal expect suspend fun FileManager.deleteDirectoryExact(directory: PlatformFile): Boolean
 
 internal expect suspend fun FileManager.setConfig(parentDirectory: PlatformFile): PlatformFile?
 

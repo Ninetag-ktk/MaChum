@@ -4,6 +4,13 @@ import com.ninetag.machum.markdown.service.*
 
 import androidx.compose.ui.text.SpanStyle
 
+/** Inline scanner가 분기할 때만 사용하는 경량 블록 타입. */
+internal sealed interface MarkdownBlock {
+    data class Heading(val level: Int) : MarkdownBlock
+    data object TextBlock : MarkdownBlock
+    data object HorizontalRule : MarkdownBlock
+}
+
 /**
  * 비활성 블록의 raw 텍스트에 적용할 SpanStyle 범위 리스트를 계산한다.
  *

@@ -4,6 +4,7 @@ import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.createDirectories
 import io.github.vinceglb.filekit.div
 import io.github.vinceglb.filekit.exists
+import io.github.vinceglb.filekit.name
 import io.github.vinceglb.filekit.writeString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -108,11 +109,42 @@ internal actual suspend fun FileManager.renameMarkdownExact(
 ): PlatformFile? = withContext(Dispatchers.IO) {
     try {
         if (!parentDirectory.exists()) return@withContext null
-        val target = File(parentDirectory.file, "$name.md")
+        val extension = file.name.substringAfterLast('.', missingDelimiterValue = "md")
+        val target = File(parentDirectory.file, "$name.$extension")
         if (target.exists()) return@withContext null
         if (!file.file.renameTo(target)) return@withContext null
         PlatformFile(target)
     } catch (error: Exception) {
         null
+    }
+}
+
+internal actual suspend fun FileManager.renameDirectoryExact(
+    parentDirectory: PlatformFile,
+    directory: PlatformFile,
+    name: String,
+): PlatformFile? = withContext(Dispatchers.IO) {
+    try {
+        if (!parentDirectory.exists() || !directory.exists()) return@withContext null
+        val target = File(parentDirectory.file, name)
+        if (target.exists()) return@withContext null
+        if (!directory.file.renameTo(target)) return@withContext null
+        PlatformFile(target)
+    } catch (error: Exception) {
+        null
+    }
+}
+
+internal actual suspend fun FileManager.deleteDirectoryExact(
+    directory: PlatformFile,
+): Boolean = withContext(Dispatchers.IO) {
+    try {
+        val children = directory.file.listFiles() ?: return@withContext false
+        if (children.any { child -> child.isDirectory || !child.name.endsWith(".md", ignoreCase = true) }) {
+            return@withContext false
+        }
+        children.all(File::delete) && directory.file.delete()
+    } catch (error: Exception) {
+        false
     }
 }

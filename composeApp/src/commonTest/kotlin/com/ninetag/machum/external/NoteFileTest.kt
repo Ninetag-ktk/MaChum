@@ -87,6 +87,74 @@ class NoteFileTest {
     }
 
     @Test
+    fun crlfFrontMatter_preservesLineEndingsUnknownKeysAndBody_whenMetadataChanges() {
+        val raw = "---\r\nid: abc12345\r\ncustom: 값\r\ntags: [old]\r\n---\r\n\r\n첫 줄\r\n둘째 줄"
+
+        val updated = NoteFile.parse(raw).withTags(listOf("old", "새 태그"))
+        val injected = updated.inject()
+
+        assertEquals("abc12345", updated.id)
+        assertEquals("첫 줄\r\n둘째 줄", updated.body)
+        assertTrue(injected.contains("custom: 값\r\n"))
+        assertTrue(injected.contains("tags:\r\n  - old\r\n  - 새_태그"))
+        assertEquals(injected, NoteFile.parse(injected).inject())
+    }
+
+    @Test
+    fun utf8BomCrLfFrontMatter_isRecognizedWithoutCreatingSecondFrontMatter() {
+        val raw = "\uFEFF---\r\ncustom: keep\r\n---\r\n\r\n본문"
+
+        val indexed = NoteFile.parse(raw)
+            .ensureId()
+            .withTags(listOf("프로젝트 태그"))
+        val injected = indexed.inject()
+        val fenceLines = injected.removePrefix("\uFEFF").split("\r\n").count { it == "---" }
+
+        assertTrue(injected.startsWith("\uFEFF---\r\n"))
+        assertEquals(2, fenceLines)
+        assertTrue(injected.contains("custom: keep\r\n"))
+        assertEquals("본문", indexed.body)
+        assertEquals("본문", NoteFile.parse(injected).body)
+    }
+
+    @Test
+    fun utf8BomLfFrontMatter_roundTripsVerbatim() {
+        val raw = "\uFEFF---\nid: abc12345\ncustom: keep\n---\n\n본문"
+
+        assertEquals(raw, NoteFile.parse(raw).inject())
+    }
+
+    @Test
+    fun utf8BomLfBodyWithoutFrontMatter_keepsBomAtAbsoluteStartWhenIndexed() {
+        val raw = "\uFEFF# 제목\n본문"
+
+        val indexed = NoteFile.parse(raw)
+            .ensureId()
+            .withTags(listOf("프로젝트 태그"))
+        val injected = indexed.inject()
+
+        assertTrue(injected.startsWith("\uFEFF---\n"))
+        assertTrue(!injected.substring(1).contains('\uFEFF'))
+        assertEquals("# 제목\n본문", indexed.body)
+        assertEquals(indexed.body, NoteFile.parse(injected).body)
+    }
+
+    @Test
+    fun utf8BomCrLfBodyWithoutFrontMatter_usesCrLfAndKeepsBomAtAbsoluteStartWhenIndexed() {
+        val raw = "\uFEFF# 제목\r\n본문"
+
+        val indexed = NoteFile.parse(raw)
+            .ensureId()
+            .withTags(listOf("프로젝트 태그"))
+        val injected = indexed.inject()
+
+        assertTrue(injected.startsWith("\uFEFF---\r\n"))
+        assertTrue(!injected.substring(1).contains('\uFEFF'))
+        assertTrue(injected.contains("tags:\r\n  - 프로젝트_태그\r\n---\r\n\r\n# 제목\r\n본문"))
+        assertEquals("# 제목\r\n본문", NoteFile.parse(injected).body)
+    }
+
+    @Test
     fun inject_isStable_acrossReparse() {
         val raw = "---\nid: abc12345\nfoo: bar\ntags:\n  - a\n---\n\n본문"
         val once = NoteFile.parse(raw).inject()

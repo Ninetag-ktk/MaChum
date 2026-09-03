@@ -1,12 +1,16 @@
 package com.ninetag.machum.screen
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -24,21 +28,26 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.unit.dp
+import com.ninetag.machum.entity.DEFAULT_BASE_FOLDER_CONFIG
 import com.ninetag.machum.entity.FolderConfig
+import com.ninetag.machum.entity.PlotStage
 import com.ninetag.machum.external.FolderKey
-import com.ninetag.machum.external.markdownName
 import com.ninetag.machum.screen.mainComposition.CreateProjectFileDialog
+import com.ninetag.machum.screen.mainComposition.CommitDialog
 import com.ninetag.machum.screen.mainComposition.EditorNavigationMenu
 import com.ninetag.machum.screen.mainComposition.EditorPage
 import com.ninetag.machum.screen.mainComposition.EditorTopBar
+import com.ninetag.machum.screen.mainComposition.HierarchyFolderContent
 import com.ninetag.machum.screen.mainComposition.MainViewModel
-import com.ninetag.machum.screen.mainComposition.PlotOrderEditorDialog
 import com.ninetag.machum.screen.mainComposition.ProjectNavigationDrawer
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import org.koin.compose.viewmodel.koinViewModel
 
@@ -50,26 +59,40 @@ fun MainScreen() {
     val currentFolder by viewModel.currentFolder.collectAsState()
     val fileList by viewModel.fileList.collectAsState()
     val currentIndex by viewModel.currentIndex.collectAsState()
+    val fileLoadStates by viewModel.fileLoadStates.collectAsState()
     val bookmarks by viewModel.bookmarks.collectAsState()
     val projectList by viewModel.projectList.collectAsState()
     val projectConfig by viewModel.projectConfig.collectAsState()
     val plotFileEntries by viewModel.plotFileEntries.collectAsState()
+    val hierarchyFolderContents by viewModel.hierarchyFolderContents.collectAsState()
+    val pendingFolderDeletion by viewModel.pendingFolderDeletion.collectAsState()
+    val projectRenameState by viewModel.projectRenameState.collectAsState()
+    val commitUiState by viewModel.commitUiState.collectAsState()
+    val workspaceSaveError by viewModel.workspaceSaveError.collectAsState()
+    val workspaceTransitionError by viewModel.workspaceTransitionError.collectAsState()
     var navigationExpanded by remember { mutableStateOf(false) }
     var showResetConfirmation by remember { mutableStateOf(false) }
     var showCreateFileDialog by remember { mutableStateOf(false) }
-    var showPlotOrderEditor by remember { mutableStateOf(false) }
+    var pendingCreateFileTarget by remember { mutableStateOf<CreateFileTarget?>(null) }
+    var createFileInitialPlotStage by remember { mutableStateOf<PlotStage?>(null) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
     val pagerState = rememberPagerState(
         initialPage = currentIndex,
-        pageCount = { fileList.size.coerceAtLeast(1) }
+        pageCount = { fileList.size }
     )
 
-    LaunchedEffect(pagerState.isScrollInProgress, fileList.size) {
-        if (fileList.isNotEmpty() && !pagerState.isScrollInProgress) {
-            viewModel.onPageChanged(pagerState.currentPage)
-        }
+    val latestFileList by rememberUpdatedState(fileList)
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.settledPage }
+            // 최초 page는 목록·bookmark 복원이 끝나기 전의 임시 값일 수 있다.
+            .drop(1)
+            .collect { page ->
+                if (latestFileList.getOrNull(page) != null) {
+                    viewModel.onPageChanged(page)
+                }
+            }
     }
     LaunchedEffect(currentIndex, fileList.size) {
         if (fileList.isNotEmpty() && pagerState.currentPage != currentIndex) {
@@ -85,19 +108,44 @@ fun MainScreen() {
             .collect { focused -> viewModel.setActive(focused) }
     }
 
-    val currentFile = fileList.getOrNull(pagerState.currentPage)
-        ?: fileList.getOrNull(currentIndex)
-    val emptyTitle = currentFolder?.key?.relativePath
-        ?.substringAfterLast('/')
-        ?.ifEmpty { "프로젝트 루트" }
-        ?: "빈 폴더"
+    // ViewModel 선택이 authority다. rename 재정렬 중 pager의 이전 숫자 index를 먼저 읽으면
+    // 잠시 다른 파일을 선택한 것처럼 보일 수 있으므로 pager는 복구용 fallback으로만 사용한다.
+    val currentFile = fileList.getOrNull(currentIndex)
+        ?: fileList.getOrNull(pagerState.currentPage)
     val isProjectRoot = currentFolder?.key?.let { it == FolderKey.Base } != false
     val currentFolderConfig = currentFolder?.key?.relativePath
         ?.let { projectConfig?.folders?.get(it) }
-        ?: FolderConfig()
+        ?: if (isProjectRoot) DEFAULT_BASE_FOLDER_CONFIG else FolderConfig()
+    // 현재 pager 목록은 이미 화면의 authority이므로 drawer 전체 snapshot의 같은 폴더를
+    // 최신 값으로 덮는다. 초기 비동기 수집 순서와 무관하게 선택 폴더 항목이 비어 보이지 않는다.
+    val drawerFolderContents = remember(
+        hierarchyFolderContents,
+        currentFolder?.key,
+        fileList,
+        plotFileEntries,
+    ) {
+        currentFolder?.key?.let { folderKey ->
+            hierarchyFolderContents + (
+                folderKey to HierarchyFolderContent(
+                    files = fileList,
+                    plotEntries = plotFileEntries,
+                )
+            )
+        } ?: hierarchyFolderContents
+    }
 
     LaunchedEffect(drawerState.isOpen) {
         if (drawerState.isOpen) viewModel.refreshProjectList()
+    }
+
+    LaunchedEffect(pendingCreateFileTarget, currentFolder?.key) {
+        val target = pendingCreateFileTarget ?: return@LaunchedEffect
+        if (currentFolder?.key == target.folderKey) {
+            drawerState.close()
+            createFileInitialPlotStage = target.plotStage
+            showCreateFileDialog = true
+            pendingCreateFileTarget = null
+        }
     }
 
     ModalNavigationDrawer(
@@ -110,6 +158,8 @@ fun MainScreen() {
                 folders = folderList,
                 folderConfigs = projectConfig?.folders.orEmpty(),
                 currentFolder = currentFolder,
+                folderContents = drawerFolderContents,
+                currentFile = currentFile,
                 onVaultChange = {
                     scope.launch { drawerState.close() }
                     viewModel.resetFileManager()
@@ -118,12 +168,36 @@ fun MainScreen() {
                     viewModel.selectProject(project)
                     scope.launch { drawerState.close() }
                 },
+                onRenameProject = viewModel::renameCurrentProject,
+                projectRenameState = projectRenameState,
+                onProjectRenameResultConsumed = viewModel::consumeProjectRenameResult,
                 onFolderSelected = { folderKey ->
                     viewModel.selectFolder(folderKey)
+                },
+                onFileSelected = { file ->
+                    viewModel.selectFile(file.key)
                     scope.launch { drawerState.close() }
                 },
+                onCreateFile = { folderKey ->
+                    pendingCreateFileTarget = CreateFileTarget(folderKey)
+                    if (currentFolder?.key != folderKey) {
+                        viewModel.selectFolder(folderKey)
+                    }
+                },
+                onCreatePlotFile = { folderKey, stage ->
+                    pendingCreateFileTarget = CreateFileTarget(folderKey, stage)
+                    if (currentFolder?.key != folderKey) {
+                        viewModel.selectFolder(folderKey)
+                    }
+                },
+                onSaveDefaultOrder = viewModel::saveDefaultOrder,
+                onSavePlotOrder = viewModel::savePlotOrder,
                 onCreateDirectory = viewModel::createDirectory,
-                onUpdateDirectoryConfig = viewModel::updateDirectoryConfig,
+                onUpdateDirectory = viewModel::updateDirectory,
+                pendingFolderDeletion = pendingFolderDeletion,
+                onDeleteDirectoryRequested = viewModel::requestDeleteDirectory,
+                onDeleteDirectoryDismissed = viewModel::dismissDeleteDirectory,
+                onDeleteDirectoryConfirmed = viewModel::confirmDeleteDirectory,
                 onClose = { scope.launch { drawerState.close() } },
             )
         },
@@ -131,19 +205,16 @@ fun MainScreen() {
         Scaffold(
             topBar = {
                 EditorTopBar(
-                    fileName = currentFile?.platformFile?.markdownName(),
-                    emptyTitle = emptyTitle,
+                    projectFile = currentFile,
                     folderName = currentFolder
                         ?.takeUnless { isProjectRoot }
                         ?.key
                         ?.relativePath,
                     onNavigateBack = if (isProjectRoot) null else viewModel::navigateToProjectRoot,
                     onMenuClick = { scope.launch { drawerState.open() } },
-                    onCommitClick = { /*TODO*/ },
+                    onCommitClick = viewModel::openCommitDialog,
                     onFileListClick = { navigationExpanded = true },
-                    onRenameFile = { newName ->
-                        currentFile?.let { viewModel.onRenameFile(it, newName) }
-                    },
+                    onRenameFile = viewModel::renameFile,
                     navigationMenuContent = {
                         EditorNavigationMenu(
                             expanded = navigationExpanded,
@@ -151,10 +222,11 @@ fun MainScreen() {
                             currentFile = currentFile,
                             onDismissRequest = { navigationExpanded = false },
                             onFileSelected = viewModel::selectFile,
-                            onCreateFile = { showCreateFileDialog = true },
-                            onEditPlotOrder = if (currentFolderConfig.isPlot) {
-                                { showPlotOrderEditor = true }
-                            } else null,
+                            onCreateFile = if (currentFolderConfig.isPlot) {
+                                null
+                            } else {
+                                { showCreateFileDialog = true }
+                            },
                         )
                     },
                 )
@@ -179,14 +251,43 @@ fun MainScreen() {
                         .padding(it),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("이 폴더에는 Markdown 파일이 없습니다.\n상단 메뉴에서 새 파일을 만들 수 있습니다.")
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "이 폴더에는 Markdown 파일이 없습니다.",
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "새 파일을 만들어 글쓰기를 시작하세요.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        TextButton(onClick = { showCreateFileDialog = true }) {
+                            Icon(Icons.Default.Add, contentDescription = null)
+                            Text("새 파일", modifier = Modifier.padding(start = 6.dp))
+                        }
+                    }
                 }
             } else {
                 HorizontalPager(
                     state = pagerState,
-                    modifier = Modifier.padding(it)
+                    modifier = Modifier.padding(it),
+                    key = { page ->
+                        fileList.getOrNull(page)
+                            ?.let { viewModel.editorSessionKey(it.key) }
+                            ?: "empty-$page"
+                    },
                 ) { page ->
-                    EditorPage(projectFile = fileList[page])
+                    val projectFile = fileList.getOrNull(page) ?: return@HorizontalPager
+                    EditorPage(
+                        projectFile = projectFile,
+                        documentKey = viewModel.editorSessionKey(projectFile.key),
+                        loadState = fileLoadStates[projectFile.key],
+                        onLoad = viewModel::loadPage,
+                        onRetry = viewModel::retryPage,
+                        onBodyChange = { body -> viewModel.updateBody(projectFile.key, body) },
+                    )
                 }
             }
         }
@@ -198,7 +299,11 @@ fun MainScreen() {
             defaultStartNumber = if (isProjectRoot) 0 else 1,
             files = fileList,
             plotEntries = plotFileEntries,
-            onDismissRequest = { showCreateFileDialog = false },
+            initialPlotStage = createFileInitialPlotStage,
+            onDismissRequest = {
+                showCreateFileDialog = false
+                createFileInitialPlotStage = null
+            },
             onCreate = { title, stage ->
                 if (currentFolderConfig.isPlot) {
                     stage?.let { viewModel.createPlotFile(it, title) }
@@ -209,11 +314,16 @@ fun MainScreen() {
         )
     }
 
-    if (showPlotOrderEditor) {
-        PlotOrderEditorDialog(
-            entries = plotFileEntries,
-            onDismissRequest = { showPlotOrderEditor = false },
-            onSave = viewModel::savePlotOrder,
+    if (commitUiState.isOpen) {
+        CommitDialog(
+            state = commitUiState,
+            onDismissRequest = viewModel::dismissCommitDialog,
+            onCommit = viewModel::createCommit,
+            onDiffRequest = viewModel::openCommitDiff,
+            onDiffDismiss = viewModel::closeCommitDiff,
+            onRestoreRequest = viewModel::requestCommitRestore,
+            onRestoreConfirm = viewModel::confirmCommitRestore,
+            onRestoreDismiss = viewModel::dismissCommitRestore,
         )
     }
 
@@ -241,4 +351,23 @@ fun MainScreen() {
             },
         )
     }
+
+    val workspaceError = workspaceSaveError ?: workspaceTransitionError
+    if (workspaceError != null) {
+        AlertDialog(
+            onDismissRequest = viewModel::dismissWorkspaceTransitionError,
+            title = { Text("작업을 저장하지 못했습니다") },
+            text = { Text(workspaceError) },
+            confirmButton = {
+                TextButton(onClick = viewModel::dismissWorkspaceTransitionError) {
+                    Text("확인")
+                }
+            },
+        )
+    }
 }
+
+private data class CreateFileTarget(
+    val folderKey: FolderKey,
+    val plotStage: PlotStage? = null,
+)

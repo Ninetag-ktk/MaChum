@@ -122,6 +122,21 @@ class DebouncedSaveCoordinatorTest {
         assertEquals(listOf("plot.md" to "edited", "other.md" to "later"), saved)
     }
 
+    @Test
+    fun flushAll_savesEveryPendingValueImmediately() = runTest {
+        val saved = mutableListOf<Pair<String, String>>()
+        val coordinator = coordinator(saved)
+
+        coordinator.schedule("a.md", "A")
+        coordinator.schedule("b.md", "B")
+        coordinator.flushAll()
+
+        assertEquals(listOf("a.md" to "A", "b.md" to "B"), saved)
+        advanceTimeBy(500.milliseconds)
+        runCurrent()
+        assertEquals(listOf("a.md" to "A", "b.md" to "B"), saved)
+    }
+
     private fun kotlinx.coroutines.test.TestScope.coordinator(
         saved: MutableList<Pair<String, String>>,
     ): DebouncedSaveCoordinator<String, String> = DebouncedSaveCoordinator(

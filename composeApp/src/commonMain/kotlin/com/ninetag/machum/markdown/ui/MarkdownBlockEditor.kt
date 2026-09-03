@@ -1,25 +1,33 @@
 package com.ninetag.machum.markdown.ui
 
 import com.ninetag.machum.markdown.service.MarkdownStyleConfig
-import com.ninetag.machum.markdown.state.BlockOperations
-import com.ninetag.machum.markdown.state.DissolveResult
+import com.ninetag.machum.markdown.state.CursorHint
 import com.ninetag.machum.markdown.state.DocumentSelection
 import com.ninetag.machum.markdown.state.EditorBlock
-import com.ninetag.machum.markdown.state.SplitResult
-import com.ninetag.machum.markdown.state.normalize
+import com.ninetag.machum.markdown.state.EditorFocusCoordinator
+import com.ninetag.machum.markdown.state.EditorFocusIntent
+import com.ninetag.machum.markdown.state.EditorFocusRequest
+import com.ninetag.machum.markdown.state.EditorMutation
+import com.ninetag.machum.markdown.state.EditorMutationDispatcher
+import com.ninetag.machum.markdown.state.normalizeForContainer
 import com.ninetag.machum.markdown.ui.block.CalloutBlockEditor
 import com.ninetag.machum.markdown.ui.block.CodeBlockEditor
 import com.ninetag.machum.markdown.ui.block.TableBlockEditor
 import com.ninetag.machum.markdown.ui.selection.extendSelectionToNext
 import com.ninetag.machum.markdown.ui.selection.extendSelectionToPrevious
 import com.ninetag.machum.markdown.ui.selection.isBlockInSelection
+import com.ninetag.machum.markdown.ui.selection.LocalDocumentInputFocusRequest
 import com.ninetag.machum.markdown.ui.selection.selectBlockAsAtomic
+import com.ninetag.machum.markdown.ui.diagnostics.TrackEditorRecomposition
+import com.ninetag.machum.markdown.ui.diagnostics.TrackEditorSelectionRecomposition
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -28,6 +36,7 @@ import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -42,61 +51,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import kotlin.time.Duration.Companion.milliseconds
 
-/**
- * 블록 간 이동 시 커서 위치 힌트.
- */
-sealed class CursorHint {
-    /** 텍스트 맨 처음 (offset 0) */
-    data object Start : CursorHint()
-    /** 텍스트 맨 마지막 (offset = text.length) */
-    data object End : CursorHint()
-    /** 이전 커서의 x 좌표를 유지하여 대상 줄의 같은 위치로 이동 */
-    data class AtX(val x: Float, val lastLine: Boolean) : CursorHint()
-    /** 정확한 offset 으로 커서 이동 (dissolve 결과 적용 시 사용) */
-    data class AtOffset(val offset: Int) : CursorHint()
-}
-
-/**
- * 블록 간 내비게이션 및 분할/병합 콜백.
- */
-data class BlockNavigation(
-    val onMoveToPrevious: () -> Unit = {},
-    val onMoveToNext: () -> Unit = {},
-    /** x 좌표 힌트 포함 이전 블록 이동 (Text→Text) */
-    val onMoveToPreviousWithX: (cursorX: Float) -> Unit = {},
-    /** x 좌표 힌트 포함 다음 블록 이동 (Text→Text) */
-    val onMoveToNextWithX: (cursorX: Float) -> Unit = {},
-    val onMoveLeft: () -> Unit = {},
-    val onMergeWithPrevious: () -> Unit = {},
-    val onSplitBlock: () -> Unit = {},
-    val onSplitByEmptyLine: () -> Unit = {},
-    val onReparse: () -> Unit = {},
-    /** focus-out 트리거 reparse: 블록 교체만 하고 새 블록으로 focus 를 이동시키지 않는다.
-     *  사용자가 이미 다른 블록으로 포커스를 옮긴 상태이므로 그 포커스를 보존해야 함 (dissolve v3) */
-    val onReparseSilent: () -> Unit = {},
-    /** Callout title 위치 0 Backspace 등 자기 자신을 dissolve 하는 트리거. docs/markdown-editor.md 참조. */
-    val onDissolveSelf: () -> Unit = {},
-    /** raw 블록(rawMode=true) 의 텍스트가 빈 상태가 되면 즉시 rawMode 해제.
-     *  block.id/textFieldState 유지하므로 cursor/focus 보존 (transient 상태 정리) */
-    val onClearRawMode: () -> Unit = {},
-    /**
-     * Shift+↑ 등으로 현재 블록의 첫 위치에서 위쪽으로 selection 확장 요청.
-     * Phase 1 Step B: 현재 블록을 atomic 으로 selection 에 포함 + anchor 가 없으면 anchor=현재 끝,
-     * 그 다음 focus 를 이전 블록으로 확장. docs/markdown-editor.md 참조
-     */
-    val onExtendSelectionToPrevious: () -> Unit = {},
-    /** Shift+↓ 등으로 현재 블록의 끝 위치에서 아래쪽으로 selection 확장 요청 */
-    val onExtendSelectionToNext: () -> Unit = {},
-    /**
-     * Callout 의 title/body 경계에서 외부로 "박스 탈출" 시 호출.
-     * 현재 블록 (Callout) 자체만 atomic selection 으로 documentSelection 갱신.
-     * 외부 다른 블록은 selection 에 포함 X. docs/markdown-editor.md의 atomic 정책.
-     */
-    val onSelectSelfAsAtomic: () -> Unit = {},
+private data class PendingDocumentFocus(
+    val documentRequestId: Long,
+    val coordinatorRequestId: Long,
 )
 
 /**
@@ -139,15 +101,53 @@ internal fun MarkdownBlockEditor(
     containerPath: List<String> = emptyList(),
     /**
      * 컨테이너 (body) 의 첫 블록에서 Shift+↑ → 외부 컨테이너로 escape.
-     * Callout body 가 호출 시 `{ navigation.onSelectSelfAsAtomic() }` 으로 연결되어 부모 Callout 자체가
+     * Callout body 가 호출 시 `{ navigation.selection.onSelectSelfAsAtomic() }` 으로 연결되어 부모 Callout 자체가
      * atomic 으로 selected 됨. B-2c 의 "박스 탈출" 메커니즘.
      */
     onEscapeSelectionToPrevious: () -> Unit = {},
     /** 컨테이너 (body) 의 마지막 블록에서 Shift+↓ → 외부 컨테이너로 escape. */
     onEscapeSelectionToNext: () -> Unit = {},
+    /** 외부 문서 교체 시 이전 문서의 대기 중 포커스 요청을 폐기하는 수명 세대. */
+    focusEpoch: Long = 0L,
 ) {
+    TrackEditorRecomposition(
+        scope = "container",
+        key = containerPath.lastOrNull() ?: "root",
+    )
+    TrackEditorSelectionRecomposition(
+        documentSelection = documentSelection,
+        key = containerPath.lastOrNull() ?: "root",
+    )
     // LazyColumn 스크롤 상태 (화면 밖 블록에 포커스 시 스크롤 필요)
     val lazyListState = rememberLazyListState()
+    val showTrailingTextInput = shouldShowTrailingTextInput(blocks, isNested)
+    val expandEmptyRootInput = shouldExpandEmptyRootInput(blocks, isNested)
+    val trailingTextBlock = remember(blocks.lastOrNull()?.id, showTrailingTextInput) {
+        if (showTrailingTextInput) {
+            EditorBlock.Text(textFieldState = TextFieldState(""))
+        } else {
+            null
+        }
+    }
+    val lastRealBlockId = blocks.lastOrNull()?.id
+    val trailingInputHeightPx by remember(lazyListState, lastRealBlockId) {
+        derivedStateOf {
+            val layoutInfo = lazyListState.layoutInfo
+            val lastRealItem = layoutInfo.visibleItemsInfo
+                .firstOrNull { it.key == lastRealBlockId }
+            if (lastRealItem == null) {
+                0
+            } else {
+                remainingTrailingInputHeightPx(
+                    viewportEndOffset = layoutInfo.viewportEndOffset,
+                    lastRealItemEndOffset = lastRealItem.offset + lastRealItem.size,
+                )
+            }
+        }
+    }
+    val density = LocalDensity.current
+    val trailingInputHeight = with(density) { trailingInputHeightPx.toDp() }
+        .coerceAtLeast(24.dp)
 
     // 블록 id → FocusRequester 맵 (↓ 진입 / 기본)
     val focusRequesterMap = remember { mutableMapOf<String, FocusRequester>() }
@@ -161,6 +161,7 @@ internal fun MarkdownBlockEditor(
     for (block in blocks) {
         focusRequesterMap.getOrPut(block.id) { FocusRequester() }
     }
+
     // 외부에서 첫/마지막 블록의 FocusRequester를 지정한 경우 (Callout body 등)
     // last를 먼저 등록하고 first를 나중에 등록: first == last (1블록)일 때 first가 우선
     if (lastBlockFocusRequester != null && blocks.isNotEmpty()) {
@@ -170,13 +171,80 @@ internal fun MarkdownBlockEditor(
         focusRequesterMap[blocks.first().id] = firstBlockFocusRequester
     }
 
-    // 포커스 지연 요청: 블록 분할/병합/이동 후 대상 블록에 포커스
-    var pendingFocusBlockId by remember { mutableStateOf<String?>(null) }
-    var pendingCursorHint by remember { mutableStateOf<CursorHint?>(null) }
-    var pendingUseBottomEntry by remember { mutableStateOf(false) }
-    var focusRequestCounter by remember { mutableStateOf(0) }
-    LaunchedEffect(focusRequestCounter) {
-        val id = pendingFocusBlockId ?: return@LaunchedEffect
+    // 포커스 의도는 UI 비의존 coordinator가 단일 소유하고, Compose는 실행과 화면 갱신만 담당한다.
+    val focusCoordinator = remember(focusEpoch) { EditorFocusCoordinator() }
+    var focusCoordinatorVersion by remember(focusCoordinator) {
+        mutableStateOf(focusCoordinator.version)
+    }
+    fun enqueueFocus(
+        blockId: String,
+        cursorHint: CursorHint? = null,
+        preferBottomEntry: Boolean = false,
+    ): EditorFocusRequest {
+        val request = focusCoordinator.request(blockId, cursorHint, preferBottomEntry)
+        focusCoordinatorVersion = focusCoordinator.version
+        return request
+    }
+    fun enqueueFocus(intent: EditorFocusIntent): EditorFocusRequest {
+        val request = focusCoordinator.request(intent)
+        focusCoordinatorVersion = focusCoordinator.version
+        return request
+    }
+
+    // Multi selection 입력 치환이나 selection 해제 뒤의 일회성 위치만 받는다.
+    // 과거 문서 focus/cursor를 snapshot으로 추적하지 않는다.
+    val documentInputFocusRequest = LocalDocumentInputFocusRequest.current
+    val latestDocumentInputFocusRequest by rememberUpdatedState(documentInputFocusRequest)
+    var pendingDocumentFocus by remember(focusCoordinator) {
+        mutableStateOf<PendingDocumentFocus?>(null)
+    }
+
+    fun completeDocumentFocus(coordinatorRequestId: Long) {
+        val pending = pendingDocumentFocus
+            ?.takeIf { it.coordinatorRequestId == coordinatorRequestId }
+            ?: return
+        val currentRequest = latestDocumentInputFocusRequest
+        if (currentRequest?.id == pending.documentRequestId) {
+            currentRequest.onFocusTransferCompleted(currentRequest.id)
+        }
+        pendingDocumentFocus = null
+    }
+
+    LaunchedEffect(documentInputFocusRequest?.id) {
+        val request = documentInputFocusRequest ?: return@LaunchedEffect
+        val endpoint = request.endpoint
+        if (endpoint.containerPath != containerPath || endpoint.blockId !in currentIds) {
+            return@LaunchedEffect
+        }
+        val coordinatorRequest = enqueueFocus(
+            EditorFocusIntent(
+                targetBlockId = endpoint.blockId,
+                // Text replacement handoff 중에는 새 TextFieldState가 이미 정확한 cursor를 가진다.
+                // focus 이후 AtOffset을 다시 적용하면 그 사이 실제 field가 받은 입력의 cursor를 되돌릴 수 있다.
+                cursorHint = if (request.isTextReplacementHandoff) {
+                    null
+                } else {
+                    CursorHint.AtOffset(endpoint.offset)
+                },
+            ),
+        )
+        pendingDocumentFocus = PendingDocumentFocus(
+            documentRequestId = request.id,
+            coordinatorRequestId = coordinatorRequest.id,
+        )
+    }
+
+    val pendingFocusRequest = focusCoordinator.currentRequest()
+    LaunchedEffect(focusCoordinatorVersion, currentIds) {
+        val request = focusCoordinator.currentRequest() ?: return@LaunchedEffect
+        val id = request.targetBlockId
+        if (id !in currentIds) {
+            if (focusCoordinator.cancel(request)) {
+                focusCoordinatorVersion = focusCoordinator.version
+            }
+            completeDocumentFocus(request.id)
+            return@LaunchedEffect
+        }
         // 대상 블록이 화면 밖이면 스크롤
         if (!isNested) {
             val targetIndex = blocks.indexOfFirst { it.id == id }
@@ -188,6 +256,7 @@ internal fun MarkdownBlockEditor(
                     val scrollAmount = if (targetIndex < firstVisible) -80f else 80f
                     lazyListState.animateScrollBy(scrollAmount)
                     kotlinx.coroutines.delay(50.milliseconds)
+                    if (!focusCoordinator.isCurrent(request)) return@LaunchedEffect
                     val stillVisible = lazyListState.layoutInfo.visibleItemsInfo.map { it.index }.toSet()
                     if (targetIndex !in stillVisible) {
                         lazyListState.animateScrollToItem(targetIndex)
@@ -196,23 +265,26 @@ internal fun MarkdownBlockEditor(
             }
         }
         // ↑ 진입 시 bottomEntryFRMap 우선, 없으면 focusRequesterMap fallback
-        val targetFR = if (pendingUseBottomEntry) {
+        val targetFR = if (request.preferBottomEntry) {
             bottomEntryFRMap[id] ?: focusRequesterMap[id]
         } else {
             focusRequesterMap[id]
         }
         kotlinx.coroutines.delay(50.milliseconds)
+        if (!focusCoordinator.isCurrent(request)) return@LaunchedEffect
         try {
             targetFR?.requestFocus()
         } catch (_: IllegalStateException) {
             kotlinx.coroutines.delay(100.milliseconds)
+            if (!focusCoordinator.isCurrent(request)) return@LaunchedEffect
             try { targetFR?.requestFocus() } catch (_: Exception) {}
         }
         // 포커스 후 커서 위치 설정
-        val hint = pendingCursorHint
+        val hint = request.cursorHint
         val targetBlock = blocks.find { it.id == id }
         if (hint != null) {
             kotlinx.coroutines.delay(10.milliseconds)
+            if (!focusCoordinator.isCurrent(request)) return@LaunchedEffect
             // AtX 힌트: 대상이 Text가 아니면 Start/End로 변환
             val effectiveHint = if (hint is CursorHint.AtX && targetBlock !is EditorBlock.Text) {
                 if (hint.lastLine) CursorHint.End else CursorHint.Start
@@ -221,7 +293,7 @@ internal fun MarkdownBlockEditor(
             if (effectiveHint is CursorHint.Start || effectiveHint is CursorHint.End) {
                 // bottomEntry로 포커스한 경우 → Callout body의 TextBlock에 도달했으므로 커서 설정 불필요
                 // (focusRequesterMap의 Text/Code에만 적용)
-                if (!pendingUseBottomEntry) {
+                if (!request.preferBottomEntry) {
                     val state = when (targetBlock) {
                         is EditorBlock.Text -> targetBlock.textFieldState
                         is EditorBlock.Code -> targetBlock.codeState
@@ -240,7 +312,7 @@ internal fun MarkdownBlockEditor(
             }
             // bottomEntry + Callout + End → body 가장 깊은 마지막 Text 의 cursor 를 End 로 강제 설정.
             // (FocusRequester 만 호출하면 그 블록의 이전 selection 이 복원되어 사용자 의도와 어긋남)
-            if (effectiveHint is CursorHint.End && pendingUseBottomEntry && targetBlock is EditorBlock.Callout) {
+            if (effectiveHint is CursorHint.End && request.preferBottomEntry && targetBlock is EditorBlock.Callout) {
                 val lastText = findDeepestLastText(targetBlock.bodyBlocks)
                 if (lastText != null) {
                     val len = lastText.textFieldState.text.length
@@ -258,26 +330,23 @@ internal fun MarkdownBlockEditor(
             }
             // AtX + Text 대상은 TextBlockEditor 내부에서 정밀 처리
         }
-        pendingCursorHint = null
-        pendingUseBottomEntry = false
+        if (focusCoordinator.complete(request)) {
+            focusCoordinatorVersion = focusCoordinator.version
+        }
+        completeDocumentFocus(request.id)
     }
 
-    fun applyResult(result: SplitResult?, requestFocus: Boolean = true) {
-        if (result == null) return
-        onBlocksChanged(result.newBlocks)
-        if (!requestFocus) return
-        // 새 블록의 id로 포커스 예약
-        val targetBlock = result.newBlocks.getOrNull(result.focusBlockIndex)
-        if (targetBlock != null) {
-            focusRequesterMap.getOrPut(targetBlock.id) { FocusRequester() }
-            pendingFocusBlockId = targetBlock.id
-            focusRequestCounter++
+    fun applyMutation(mutation: EditorMutation?) {
+        if (mutation == null) return
+        onBlocksChanged(mutation.blocks)
+        mutation.focusIntent?.let { intent ->
+            focusRequesterMap.getOrPut(intent.targetBlockId) { FocusRequester() }
+            enqueueFocus(intent)
         }
     }
 
-    // Cross-block selection 이 Multi 로 갱신될 때마다 focus 를 selection 의 focus endpoint 블록으로 이동.
-    // Shift+↑/↓ 확장 시 cursor 가 selection 의 끝으로 따라가도록. focus 이동 시 onFocusChanged 에서
-    // resetDocumentSelectionOnFocus 가 발동하지만 endpoint 블록 매칭으로 reset 안 됨 (selection 보존).
+    // Cross-block selection 이 Multi 로 갱신될 때마다 focus endpoint가 보이도록 스크롤한다.
+    // 실제 키보드/IME focus는 문서 단위 input capture가 소유하므로 독립 TextField 사이를 오가지 않는다.
     val multiSelection = documentSelection?.value as? DocumentSelection.Multi
     if (multiSelection != null && multiSelection.focus.containerPath == containerPath) {
         val focusTargetId = multiSelection.focus.blockId
@@ -307,31 +376,22 @@ internal fun MarkdownBlockEditor(
                     }
                 }
             }
-            val fr = focusRequesterMap[focusTargetId] ?: return@LaunchedEffect
-            try { fr.requestFocus() } catch (_: Exception) {}
         }
-    }
-
-    /**
-     * dissolve 결과 적용. 새 raw TextBlock 으로 포커스 + 커서 위치 = raw 끝.
-     * (docs/markdown-editor.md의 dissolve 정책)
-     */
-    fun applyDissolveResult(result: DissolveResult?) {
-        if (result == null) return
-        onBlocksChanged(result.newBlocks)
-        focusRequesterMap.getOrPut(result.targetBlockId) { FocusRequester() }
-        pendingFocusBlockId = result.targetBlockId
-        pendingCursorHint = CursorHint.AtOffset(result.cursorOffset)
-        pendingUseBottomEntry = false
-        focusRequestCounter++
     }
 
     // Cross-block selection 시각화 (Phase 1) — 정규화는 한 번만 계산 후 isBlockInSelection 헬퍼에 전달.
     // 재귀 Callout body 안 selection 은 Step B 의 path 전파 완료 후 자연스럽게 동작.
-    val normalizedSelection = (documentSelection?.value as? DocumentSelection.Multi)?.normalize(blocks)
+    val normalizedSelection = (documentSelection?.value as? DocumentSelection.Multi)
+        ?.normalizeForContainer(blocks, containerPath)
 
     @Composable
-    fun BlockWithNav(index: Int, block: EditorBlock) {
+    fun BlockWithNav(
+        index: Int,
+        block: EditorBlock,
+        modifier: Modifier = Modifier,
+        expandTextToParent: Boolean = false,
+    ) {
+        TrackEditorRecomposition(scope = "block-row", key = block.id)
         val fr = focusRequesterMap[block.id] ?: remember { FocusRequester() }
 
         // LazyColumn이 아이템 recomposition을 skip해도 콜백이 최신 blocks/index를 참조하도록 보장
@@ -339,126 +399,126 @@ internal fun MarkdownBlockEditor(
         val currentIndex by rememberUpdatedState(index)
 
         val nav = BlockNavigation(
-            onMoveToPrevious = {
-                if (currentIndex > 0) {
-                    pendingFocusBlockId = currentBlocks[currentIndex - 1].id
-                    pendingCursorHint = CursorHint.End
-                    pendingUseBottomEntry = true  // ↑ 진입: bottomEntryFRMap 우선
-                    focusRequestCounter++
-                } else {
-                    onEscapeToPrevious()
-                }
-            },
-            onMoveToNext = {
-                if (currentIndex < currentBlocks.lastIndex) {
-                    pendingFocusBlockId = currentBlocks[currentIndex + 1].id
-                    pendingCursorHint = CursorHint.Start
-                    pendingUseBottomEntry = false  // ↓ 진입: focusRequesterMap
-                    focusRequestCounter++
-                } else {
-                    onEscapeToNext()
-                }
-            },
-            onMoveToPreviousWithX = { cursorX ->
-                if (currentIndex > 0) {
-                    pendingFocusBlockId = currentBlocks[currentIndex - 1].id
-                    pendingCursorHint = CursorHint.AtX(cursorX, lastLine = true)
-                    pendingUseBottomEntry = true
-                    focusRequestCounter++
-                } else {
-                    onEscapeToPrevious()
-                }
-            },
-            onMoveToNextWithX = { cursorX ->
-                if (currentIndex < currentBlocks.lastIndex) {
-                    pendingFocusBlockId = currentBlocks[currentIndex + 1].id
-                    pendingCursorHint = CursorHint.AtX(cursorX, lastLine = false)
-                    pendingUseBottomEntry = false
-                    focusRequestCounter++
-                } else {
-                    onEscapeToNext()
-                }
-            },
-            onMoveLeft = {
-                if (currentIndex > 0) {
-                    pendingFocusBlockId = currentBlocks[currentIndex - 1].id
-                    // ↑ 와 동일한 진입 의미: 이전 블록의 마지막 위치(body 끝, 없으면 title 끝)
-                    pendingCursorHint = CursorHint.End
-                    pendingUseBottomEntry = true
-                    focusRequestCounter++
-                } else {
-                    onEscapeLeft()
-                }
-            },
-            onMergeWithPrevious = {
-                val merged = BlockOperations.mergeWithPrevious(currentBlocks, currentIndex)
-                if (merged != null) {
-                    applyResult(merged)
-                } else {
-                    // 기존 merge 룰이 적용되지 않을 때 직전이 특수 블록(Code/Callout/Table)이면
-                    // dissolve 정책으로 라우팅 (docs/markdown-editor.md)
-                    val prev = currentBlocks.getOrNull(currentIndex - 1)
-                    if (prev != null && prev !is EditorBlock.Text && prev !is EditorBlock.HorizontalRule) {
-                        applyDissolveResult(BlockOperations.dissolveSpecial(currentBlocks, currentIndex - 1))
+            focus = BlockFocusActions(
+                onMoveToPrevious = {
+                    if (currentIndex > 0) {
+                        enqueueFocus(
+                            currentBlocks[currentIndex - 1].id,
+                            CursorHint.End,
+                            preferBottomEntry = true,
+                        )
+                    } else {
+                        onEscapeToPrevious()
                     }
-                }
-            },
-            onSplitBlock = {
-                applyResult(BlockOperations.trySplitTextBlock(currentBlocks, currentIndex))
-            },
-            onSplitByEmptyLine = {
-                applyResult(BlockOperations.trySplitByEmptyLine(currentBlocks, currentIndex))
-            },
-            onReparse = {
-                applyResult(BlockOperations.tryReparse(currentBlocks, currentIndex, excludeCalloutTypes))
-            },
-            onReparseSilent = {
-                // focus-out 트리거 reparse — 블록 교체만, focus 는 사용자가 옮긴 곳 그대로 유지
-                applyResult(
-                    BlockOperations.tryReparse(currentBlocks, currentIndex, excludeCalloutTypes),
-                    requestFocus = false,
-                )
-            },
-            onDissolveSelf = {
-                // 모든 특수 블록(Code/Callout/Table/Embed) 자기 자신 dissolve 통합 라우팅
-                applyDissolveResult(BlockOperations.dissolveSpecial(currentBlocks, currentIndex))
-            },
-            onClearRawMode = {
-                val cur = currentBlocks.getOrNull(currentIndex) as? EditorBlock.Text
-                if (cur != null && cur.rawMode) {
-                    val newBlocks = currentBlocks.toMutableList()
-                    // id/textFieldState 유지, 플래그만 해제 → cursor/focus 보존
-                    newBlocks[currentIndex] = cur.copy(rawMode = false, rawOrigin = null)
-                    onBlocksChanged(newBlocks)
-                }
-            },
-            onExtendSelectionToPrevious = {
-                extendSelectionToPrevious(
-                    currentBlock = currentBlocks[currentIndex],
-                    currentIndex = currentIndex,
-                    blocksInContainer = currentBlocks,
-                    containerPath = containerPath,
-                    documentSelection = documentSelection,
-                    onEscapeToParent = onEscapeSelectionToPrevious,
-                )
-            },
-            onExtendSelectionToNext = {
-                extendSelectionToNext(
-                    currentBlock = currentBlocks[currentIndex],
-                    currentIndex = currentIndex,
-                    blocksInContainer = currentBlocks,
-                    containerPath = containerPath,
-                    documentSelection = documentSelection,
-                    onEscapeToParent = onEscapeSelectionToNext,
-                )
-            },
-            onSelectSelfAsAtomic = {
-                selectBlockAsAtomic(
-                    block = currentBlocks[currentIndex],
-                    containerPath = containerPath,
-                    documentSelection = documentSelection,
-                )
-            },
+                },
+                onMoveToNext = {
+                    if (currentIndex < currentBlocks.lastIndex) {
+                        enqueueFocus(currentBlocks[currentIndex + 1].id, CursorHint.Start)
+                    } else {
+                        onEscapeToNext()
+                    }
+                },
+                onMoveToPreviousWithX = { cursorX ->
+                    if (currentIndex > 0) {
+                        enqueueFocus(
+                            currentBlocks[currentIndex - 1].id,
+                            CursorHint.AtX(cursorX, lastLine = true),
+                            preferBottomEntry = true,
+                        )
+                    } else {
+                        onEscapeToPrevious()
+                    }
+                },
+                onMoveToNextWithX = { cursorX ->
+                    if (currentIndex < currentBlocks.lastIndex) {
+                        enqueueFocus(
+                            currentBlocks[currentIndex + 1].id,
+                            CursorHint.AtX(cursorX, lastLine = false),
+                        )
+                    } else {
+                        onEscapeToNext()
+                    }
+                },
+                onMoveLeft = {
+                    if (currentIndex > 0) {
+                        // ↑ 와 동일한 진입 의미: 이전 블록의 마지막 위치(body 끝, 없으면 title 끝)
+                        enqueueFocus(
+                            currentBlocks[currentIndex - 1].id,
+                            CursorHint.End,
+                            preferBottomEntry = true,
+                        )
+                    } else {
+                        onEscapeLeft()
+                    }
+                },
+            ),
+            mutation = BlockMutationActions(
+                onMergeWithPrevious = {
+                    applyMutation(EditorMutationDispatcher.mergeWithPrevious(currentBlocks, currentIndex))
+                },
+                onSplitBlock = {
+                    applyMutation(EditorMutationDispatcher.splitTextBlock(currentBlocks, currentIndex))
+                },
+                onSplitByEmptyLine = {
+                    applyMutation(EditorMutationDispatcher.splitByEmptyLine(currentBlocks, currentIndex))
+                },
+                onReparse = {
+                    applyMutation(
+                        EditorMutationDispatcher.reparse(
+                            currentBlocks,
+                            currentIndex,
+                            excludeCalloutTypes,
+                        )
+                    )
+                },
+                onReparseSilent = {
+                    // focus-out 트리거 reparse — 블록 교체만, focus 는 사용자가 옮긴 곳 그대로 유지
+                    applyMutation(
+                        EditorMutationDispatcher.reparse(
+                            currentBlocks,
+                            currentIndex,
+                            excludeCalloutTypes,
+                            requestFocus = false,
+                        ),
+                    )
+                },
+                onDissolveSelf = {
+                    // 모든 특수 블록(Code/Callout/Table/Embed) 자기 자신 dissolve 통합 라우팅
+                    applyMutation(EditorMutationDispatcher.dissolve(currentBlocks, currentIndex))
+                },
+                onClearRawMode = {
+                    applyMutation(EditorMutationDispatcher.clearRawMode(currentBlocks, currentIndex))
+                },
+            ),
+            selection = BlockSelectionActions(
+                onExtendSelectionToPrevious = {
+                    extendSelectionToPrevious(
+                        currentBlock = currentBlocks[currentIndex],
+                        currentIndex = currentIndex,
+                        blocksInContainer = currentBlocks,
+                        containerPath = containerPath,
+                        documentSelection = documentSelection,
+                        onEscapeToParent = onEscapeSelectionToPrevious,
+                    )
+                },
+                onExtendSelectionToNext = {
+                    extendSelectionToNext(
+                        currentBlock = currentBlocks[currentIndex],
+                        currentIndex = currentIndex,
+                        blocksInContainer = currentBlocks,
+                        containerPath = containerPath,
+                        documentSelection = documentSelection,
+                        onEscapeToParent = onEscapeSelectionToNext,
+                    )
+                },
+                onSelectSelfAsAtomic = {
+                    selectBlockAsAtomic(
+                        block = currentBlocks[currentIndex],
+                        containerPath = containerPath,
+                        documentSelection = documentSelection,
+                    )
+                },
+            ),
         )
 
         val selected = isBlockInSelection(
@@ -471,15 +531,18 @@ internal fun MarkdownBlockEditor(
             Modifier.background(styleConfig.selectionAccent)
         } else Modifier
 
-        Box(modifier = itemBackground) {
+        Box(modifier = modifier.then(itemBackground)) {
         BlockItem(
             block = block,
+            modifier = if (expandTextToParent) Modifier.fillMaxHeight() else Modifier,
             styleConfig = styleConfig,
             textStyle = textStyle,
             cursorBrush = cursorBrush,
             focusRequester = fr,
             navigation = nav,
-            cursorHint = if (pendingFocusBlockId == block.id) pendingCursorHint else null,
+            cursorHint = pendingFocusRequest
+                ?.takeIf { it.targetBlockId == block.id }
+                ?.cursorHint,
             onBlocksChanged = onBlocksChanged,
             allBlocks = blocks,
             blockIndex = index,
@@ -513,16 +576,144 @@ internal fun MarkdownBlockEditor(
     } else {
         LazyColumn(modifier = modifier, state = lazyListState) {
             itemsIndexed(blocks, key = { _, block -> block.id }) { index, block ->
-                BlockWithNav(index, block)
-                Spacer(Modifier.height(4.dp))
+                BlockWithNav(
+                    index = index,
+                    block = block,
+                    modifier = if (expandEmptyRootInput) {
+                        Modifier.fillParentMaxHeight()
+                    } else {
+                        Modifier
+                    },
+                    expandTextToParent = expandEmptyRootInput,
+                )
+                if (!expandEmptyRootInput) {
+                    Spacer(Modifier.height(4.dp))
+                }
+            }
+            if (trailingTextBlock != null) {
+                item(key = trailingTextBlock.id) {
+                    TrailingTextInput(
+                        block = trailingTextBlock,
+                        modifier = Modifier.heightIn(min = trailingInputHeight),
+                        blocks = blocks,
+                        styleConfig = styleConfig,
+                        textStyle = textStyle,
+                        cursorBrush = cursorBrush,
+                        onMoveToPrevious = {
+                            val previous = blocks.lastOrNull() ?: return@TrailingTextInput
+                            enqueueFocus(
+                                blockId = previous.id,
+                                cursorHint = CursorHint.End,
+                                preferBottomEntry = previous is EditorBlock.Callout ||
+                                    previous is EditorBlock.Table,
+                            )
+                        },
+                        onMaterialized = { updatedBlocks, materialized ->
+                            onBlocksChanged(updatedBlocks)
+                            focusRequesterMap.getOrPut(materialized.id) { FocusRequester() }
+                            enqueueFocus(
+                                blockId = materialized.id,
+                                cursorHint = CursorHint.AtOffset(
+                                    materialized.textFieldState.selection.start,
+                                ),
+                            )
+                        },
+                    )
+                }
             }
         }
     }
 }
 
+/** 최상위 문서가 특수 블록으로 끝날 때만 저장되지 않는 빈 입력면을 추가한다. */
+internal fun shouldShowTrailingTextInput(
+    blocks: List<EditorBlock>,
+    isNested: Boolean = false,
+): Boolean = !isNested && blocks.isNotEmpty() && blocks.last() !is EditorBlock.Text
+
+/** 빈 최상위 문서의 유일한 입력면만 viewport 높이를 사용한다. */
+internal fun shouldExpandEmptyRootInput(
+    blocks: List<EditorBlock>,
+    isNested: Boolean = false,
+): Boolean {
+    if (isNested || blocks.size != 1) return false
+    val text = blocks.single() as? EditorBlock.Text ?: return false
+    return text.textFieldState.text.isEmpty() && !text.rawMode
+}
+
+/** 마지막 실제 아이템 아래에서 viewport 끝까지 남은 세로 공간을 계산한다. */
+internal fun remainingTrailingInputHeightPx(
+    viewportEndOffset: Int,
+    lastRealItemEndOffset: Int,
+): Int = (viewportEndOffset - lastRealItemEndOffset).coerceAtLeast(0)
+
+/** IME 조합 중간값은 문서 블록으로 승격하지 않고 확정된 첫 편집만 받는다. */
+internal fun shouldMaterializeTrailingTextInput(
+    text: String,
+    hasComposition: Boolean,
+): Boolean = text.isNotEmpty() && !hasComposition
+
+/** 가상 입력면을 같은 ID와 TextFieldState를 가진 실제 마지막 TextBlock으로 승격한다. */
+internal fun materializeTrailingTextInput(
+    blocks: List<EditorBlock>,
+    trailingBlock: EditorBlock.Text,
+): List<EditorBlock>? {
+    if (!shouldShowTrailingTextInput(blocks)) return null
+    if (trailingBlock.textFieldState.text.isEmpty()) return null
+    return blocks + trailingBlock
+}
+
+@Composable
+private fun TrailingTextInput(
+    block: EditorBlock.Text,
+    modifier: Modifier = Modifier,
+    blocks: List<EditorBlock>,
+    styleConfig: MarkdownStyleConfig,
+    textStyle: TextStyle,
+    cursorBrush: Brush,
+    onMoveToPrevious: () -> Unit,
+    onMaterialized: (List<EditorBlock>, EditorBlock.Text) -> Unit,
+) {
+    val latestBlocks by rememberUpdatedState(blocks)
+    val latestOnMaterialized by rememberUpdatedState(onMaterialized)
+
+    LaunchedEffect(block.textFieldState) {
+        snapshotFlow {
+            block.textFieldState.text.toString() to (block.textFieldState.composition != null)
+        }
+            .filter { (text, hasComposition) ->
+                shouldMaterializeTrailingTextInput(text, hasComposition)
+            }
+            .first()
+
+        val updated = materializeTrailingTextInput(latestBlocks, block)
+            ?: return@LaunchedEffect
+        latestOnMaterialized(updated, block)
+    }
+
+    TextBlockEditor(
+        block = block,
+        modifier = modifier,
+        styleConfig = styleConfig,
+        textStyle = textStyle,
+        cursorBrush = cursorBrush,
+        navigation = BlockNavigation(
+            focus = BlockFocusActions(
+                onMoveToPrevious = onMoveToPrevious,
+                onMoveToPreviousWithX = { onMoveToPrevious() },
+                onMoveLeft = onMoveToPrevious,
+            ),
+            mutation = BlockMutationActions(
+                onMergeWithPrevious = onMoveToPrevious,
+            ),
+        ),
+    )
+}
+
 @Composable
 private fun BlockItem(
     block: EditorBlock,
+    modifier: Modifier = Modifier,
     styleConfig: MarkdownStyleConfig,
     textStyle: TextStyle,
     cursorBrush: Brush,
@@ -538,6 +729,7 @@ private fun BlockItem(
     containerPath: List<String> = emptyList(),
     onRegisterBottomEntryFR: (FocusRequester?) -> Unit = {},
 ) {
+    TrackEditorRecomposition(scope = "block", key = block.id)
     // LazyColumn이 아이템 recomposition을 skip해도 클로저가 최신 값을 참조하도록 보장
     val latestAllBlocks by rememberUpdatedState(allBlocks)
     val latestBlockIndex by rememberUpdatedState(blockIndex)
@@ -550,6 +742,7 @@ private fun BlockItem(
     when (block) {
         is EditorBlock.Text -> TextBlockEditor(
             block = block,
+            modifier = modifier,
             styleConfig = styleConfig,
             textStyle = textStyle,
             cursorBrush = cursorBrush,

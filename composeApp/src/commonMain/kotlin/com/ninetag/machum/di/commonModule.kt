@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import com.ninetag.machum.external.FileManager
 import com.ninetag.machum.screen.mainComposition.MainViewModel
+import com.ninetag.machum.screen.mainComposition.WorkspaceSaveCoordinator
 import io.github.vinceglb.filekit.FileKit
 import io.github.vinceglb.filekit.databasesDir
 import io.github.vinceglb.filekit.path
@@ -20,5 +21,6 @@ val commonModule = module {
         }
     }
     single { FileManager(dataStore = get()) }
-    viewModel { MainViewModel(fileManager = get()) }
+    single { WorkspaceSaveCoordinator() }
+    viewModel { MainViewModel(fileManager = get(), workspaceSaveCoordinator = get()) }
 }

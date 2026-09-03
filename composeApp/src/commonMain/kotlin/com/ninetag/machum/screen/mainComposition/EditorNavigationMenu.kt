@@ -4,7 +4,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.Reorder
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -23,8 +22,7 @@ internal fun EditorNavigationMenu(
     currentFile: ProjectFile?,
     onDismissRequest: () -> Unit,
     onFileSelected: (FileKey) -> Unit,
-    onCreateFile: () -> Unit,
-    onEditPlotOrder: (() -> Unit)? = null,
+    onCreateFile: (() -> Unit)?,
 ) {
     DropdownMenu(
         expanded = expanded,
@@ -50,24 +48,16 @@ internal fun EditorNavigationMenu(
             )
         }
 
-        HorizontalDivider()
-        if (onEditPlotOrder != null) {
+        if (onCreateFile != null) {
+            HorizontalDivider()
             DropdownMenuItem(
-                text = { Text("플롯 순서 편집") },
-                leadingIcon = { Icon(Icons.Default.Reorder, contentDescription = null) },
+                text = { Text("새 파일") },
+                leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
                 onClick = {
-                    onEditPlotOrder()
+                    onCreateFile()
                     onDismissRequest()
                 },
             )
         }
-        DropdownMenuItem(
-            text = { Text("새 파일") },
-            leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
-            onClick = {
-                onCreateFile()
-                onDismissRequest()
-            },
-        )
     }
 }

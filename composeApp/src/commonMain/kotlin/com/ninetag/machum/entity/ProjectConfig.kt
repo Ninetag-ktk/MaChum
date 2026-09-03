@@ -13,7 +13,8 @@ import kotlinx.serialization.encoding.Encoder
  *
  * 폴더-존 모델 (docs/product-roadmap.md):
  * - `folders`: 폴더 경로(프로젝트 디렉토리 기준 상대) → 폴더별 동작 선언. 키 `""` = 프로젝트 디렉토리(base) = 원고 스코프.
- *   미지정 폴더는 [FolderConfig] 기본값(`default`, Plot 꺼짐, autoTags 없음)으로 간주.
+ *   프로젝트 루트는 `default + Plot`, 그 밖의 미지정 폴더는 [FolderConfig] 기본값
+ *   (`default`, Plot 꺼짐, autoTags 없음)으로 간주.
  * - `fileIds`: 커밋 정체성용 파일 ID 맵 (rename/이동 추적). 향후 커밋 기능에서 사용.
  *
  * 구 스키마의 `workflow`/`workflowLastModified` 필드는 제거됨(workflow 은퇴, §1.2, §7).
@@ -29,7 +30,10 @@ data class ProjectConfig(
 const val BASE_FOLDER_PATH = ""
 
 /** 제품 정책상 프로젝트 디렉토리(base)의 초기 폴더 설정. */
-val DEFAULT_BASE_FOLDER_CONFIG = FolderConfig(type = FolderType.DEFAULT)
+val DEFAULT_BASE_FOLDER_CONFIG = FolderConfig(
+    type = FolderType.DEFAULT,
+    plotEnabled = true,
+)
 
 /** 새 프로젝트에 순서대로 생성하는 기본 작업 영역. */
 val DEFAULT_PROJECT_FOLDERS = listOf(
@@ -78,6 +82,51 @@ fun ProjectConfig.withDefaultBaseFolder(): ProjectConfig = copy(
         folders.forEach { (path, config) -> put(path, config.normalized()) }
     },
 )
+
+/** 직속 폴더 이름 변경에 맞춰 설정 key와 파일 ID 상대 경로를 함께 옮긴다. */
+fun ProjectConfig.renameFolder(
+    previousPath: String,
+    updatedPath: String,
+    updatedFolderConfig: FolderConfig,
+): ProjectConfig {
+    require(previousPath.isNotEmpty()) { "base folder cannot be renamed" }
+    require(updatedPath.isNotEmpty()) { "updatedPath must not be empty" }
+
+    return copy(
+        folders = buildMap {
+            var inserted = false
+            folders.forEach { (path, config) ->
+                if (path == previousPath) {
+                    put(updatedPath, updatedFolderConfig.normalized())
+                    inserted = true
+                } else {
+                    put(path, config)
+                }
+            }
+            if (!inserted) put(updatedPath, updatedFolderConfig.normalized())
+        },
+        fileIds = fileIds.mapValues { (_, relativePath) ->
+            relativePath.renameFolderPrefix(previousPath, updatedPath)
+        },
+    )
+}
+
+/** 직속 폴더 삭제에 맞춰 설정과 해당 폴더 파일의 ID 경로를 제거한다. */
+fun ProjectConfig.removeFolder(relativePath: String): ProjectConfig {
+    require(relativePath.isNotEmpty()) { "base folder cannot be removed" }
+    return copy(
+        folders = folders - relativePath,
+        fileIds = fileIds.filterValues { path ->
+            path != relativePath && !path.startsWith("$relativePath/")
+        },
+    )
+}
+
+private fun String.renameFolderPrefix(previousPath: String, updatedPath: String): String = when {
+    this == previousPath -> updatedPath
+    startsWith("$previousPath/") -> updatedPath + removePrefix(previousPath)
+    else -> this
+}
 
 /** base 자동 태그와 대상 폴더 자동 태그를 합친 실제 관리 태그 목록. */
 fun ProjectConfig.effectiveAutoTags(relativePath: String): List<String> {

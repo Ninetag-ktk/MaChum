@@ -18,6 +18,7 @@ internal class FolderSettingsService(
         project: PlatformFile,
         previousConfig: ProjectConfig,
         folderKey: FolderKey,
+        updatedName: String,
         folderConfig: FolderConfig,
     ): FolderSettingsUpdate? {
         val targetFiles = fileManager.listFolders(project)
@@ -26,19 +27,34 @@ internal class FolderSettingsService(
 
         flushPendingWrites(targetFiles.mapTo(mutableSetOf(), ProjectFile::key))
 
-        val updatedConfig = fileManager.setFolderConfig(
-            relativePath = folderKey.relativePath,
+        val currentFolder = fileManager.listFolders(project).find { it.key == folderKey } ?: return null
+        val isRename = folderKey != FolderKey.Base && updatedName != folderKey.relativePath
+        val renameUpdate = if (isRename) {
+            fileManager.renameProjectFolder(currentFolder, updatedName, folderConfig) ?: return null
+        } else {
+            null
+        }
+        val updatedFolderKey = renameUpdate?.projectFolder?.key ?: folderKey
+        val updatedConfig = renameUpdate?.projectConfig ?: fileManager.setFolderConfig(
+            relativePath = updatedFolderKey.relativePath,
             folderConfig = folderConfig,
         ) ?: return null
         val autoTagUpdates = fileManager.synchronizeAutoTags(
             previousConfig = previousConfig,
             updatedConfig = updatedConfig,
-            editedRelativePath = folderKey.relativePath,
+            editedRelativePath = updatedFolderKey.relativePath,
+            previousRelativePath = folderKey.relativePath,
         )
-        return FolderSettingsUpdate(autoTagUpdates)
+        return FolderSettingsUpdate(
+            autoTagUpdates = autoTagUpdates,
+            folderKey = updatedFolderKey,
+            selectedFileKey = renameUpdate?.selectedFileKey,
+        )
     }
 }
 
 internal data class FolderSettingsUpdate(
     val autoTagUpdates: List<AutoTagSyncUpdate>,
+    val folderKey: FolderKey,
+    val selectedFileKey: FileKey?,
 )

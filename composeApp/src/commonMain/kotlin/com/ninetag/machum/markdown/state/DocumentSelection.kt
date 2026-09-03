@@ -1,5 +1,8 @@
 package com.ninetag.machum.markdown.state
 
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.ui.text.TextRange
+
 /**
  * 문서 레벨 selection 모델.
  *
@@ -74,6 +77,17 @@ fun isAtomic(block: EditorBlock): Boolean = when (block) {
 data class NormalizedSelection(
     val start: SelectionEndpoint,
     val end: SelectionEndpoint,
+)
+
+/**
+ * 일반 문자/IME 입력으로 Multi selection을 치환한 결과.
+ *
+ * [focus]는 이전 focus를 복원하기 위한 snapshot이 아니다. 새로 삽입한 문자열 바로 뒤에서 입력을
+ * 계속하기 위한 일회성 위치만 표현한다.
+ */
+data class TextSelectionReplacement(
+    val blocks: List<EditorBlock>,
+    val focus: SelectionEndpoint,
 )
 
 /**
@@ -228,6 +242,198 @@ private fun partialMarkdown(block: EditorBlock, startOffset: Int, endOffset: Int
     val s = startOffset.coerceIn(0, text.length)
     val e = if (endOffset == ATOMIC_END_OFFSET) text.length else endOffset.coerceIn(s, text.length)
     return text.substring(s, e).replace(EditorBlock.BLANK_LINE_MARKER, "")
+}
+
+/**
+ * 현재 editor가 렌더링하는 [containerPath]를 기준으로 absolute endpoint를 local endpoint로 바꾼 뒤
+ * [normalize]한다. 반환값은 다시 absolute path로 복원한다.
+ *
+ * 중첩 Callout body는 root에서 누적한 `containerPath`를 endpoint에 보관하지만, 재귀 editor에는 해당
+ * body의 로컬 [blocks]만 전달된다. 이 경계에서 prefix를 제거하지 않으면 정상 endpoint도 stale로
+ * 판정되어 selection 배경이 사라진다. 반대로 현재 컨테이너 밖 endpoint가 하나라도 있으면 null을
+ * 반환하여 상위 editor가 Callout을 atomic 블록으로 표시하게 한다.
+ */
+fun DocumentSelection.Multi.normalizeForContainer(
+    blocks: List<EditorBlock>,
+    containerPath: List<String>,
+): NormalizedSelection? {
+    fun SelectionEndpoint.toLocal(): SelectionEndpoint? {
+        if (this.containerPath.size < containerPath.size) return null
+        if (this.containerPath.take(containerPath.size) != containerPath) return null
+        return copy(containerPath = this.containerPath.drop(containerPath.size))
+    }
+
+    fun SelectionEndpoint.toAbsolute(): SelectionEndpoint =
+        copy(containerPath = containerPath + this.containerPath)
+
+    val localSelection = DocumentSelection.Multi(
+        anchor = anchor.toLocal() ?: return null,
+        focus = focus.toLocal() ?: return null,
+    )
+    val normalized = localSelection.normalize(blocks) ?: return null
+    return NormalizedSelection(
+        start = normalized.start.toAbsolute(),
+        end = normalized.end.toAbsolute(),
+    )
+}
+
+/**
+ * Cross-block selection을 [replacement] Markdown으로 치환한다.
+ *
+ * 선택 시작 Text의 앞부분과 끝 Text의 뒷부분만 이어 붙여 영향받은 구간만 다시 parse한다. 선택 밖 블록과
+ * 상위 Callout ID는 그대로 보존한다. 최상위 문서를 전부 지운 경우에는 다시 입력할 수 있도록 빈 Text 하나를 남긴다.
+ * stale endpoint처럼 selection을 적용할 수 없으면 null을 반환한다.
+ */
+fun replaceSelectedMarkdown(
+    blocks: List<EditorBlock>,
+    selection: DocumentSelection.Multi,
+    replacement: String,
+): List<EditorBlock>? {
+    val normalized = selection.normalize(blocks) ?: return null
+    val start = normalized.start
+    val end = normalized.end
+    if (start.containerPath != end.containerPath) return null
+
+    val containerBlocks = resolveContainerBlocks(blocks, start.containerPath) ?: return null
+    val startIndex = containerBlocks.indexOfFirst { it.id == start.blockId }
+    val endIndex = containerBlocks.indexOfFirst { it.id == end.blockId }
+    if (startIndex < 0 || endIndex < startIndex) return null
+
+    val prefix = textBefore(containerBlocks[startIndex], start.offset)
+    val suffix = textAfter(containerBlocks[endIndex], end.offset)
+    val replacementSegment = prefix + replacement + suffix
+    val replacementBlocks = if (replacementSegment.isEmpty()) {
+        emptyList()
+    } else {
+        MarkdownBlockParser.parse(replacementSegment)
+    }
+    val updatedContainer = buildList {
+        addAll(containerBlocks.take(startIndex))
+        addAll(replacementBlocks)
+        addAll(containerBlocks.drop(endIndex + 1))
+    }
+    val updatedRoot = replaceContainerBlocks(
+        blocks = blocks,
+        containerPath = start.containerPath,
+        replacement = updatedContainer,
+    ) ?: return null
+    return updatedRoot.ifEmpty {
+        listOf(EditorBlock.Text(textFieldState = TextFieldState("")))
+    }
+}
+
+/**
+ * Cross-block selection을 사용자가 확정한 일반 텍스트 입력으로 치환한다.
+ *
+ * 키보드/IME 입력은 기존 TextBlock 안에서 입력할 때와 같은 수명을 가져야 하므로 Markdown parser를
+ * 즉시 통과시키지 않고 TextBlock 하나로 만든다. 이후 기존 TextBlockEditor의 지연 reparse가 heading,
+ * list 같은 구조 변환을 동일하게 처리한다. 선택 밖 블록과 상위 Callout ID는 그대로 보존한다.
+ */
+fun replaceSelectedText(
+    blocks: List<EditorBlock>,
+    selection: DocumentSelection.Multi,
+    replacement: String,
+): TextSelectionReplacement? {
+    if (replacement.isEmpty() || '\n' in replacement || '\r' in replacement) return null
+
+    val normalized = selection.normalize(blocks) ?: return null
+    val start = normalized.start
+    val end = normalized.end
+    if (start.containerPath != end.containerPath) return null
+
+    val containerBlocks = resolveContainerBlocks(blocks, start.containerPath) ?: return null
+    val startIndex = containerBlocks.indexOfFirst { it.id == start.blockId }
+    val endIndex = containerBlocks.indexOfFirst { it.id == end.blockId }
+    if (startIndex < 0 || endIndex < startIndex) return null
+
+    val prefix = textBefore(containerBlocks[startIndex], start.offset)
+    val suffix = textAfter(containerBlocks[endIndex], end.offset)
+    val cursorOffset = prefix.length + replacement.length
+    val replacementState = TextFieldState(
+        initialText = prefix + replacement + suffix,
+        initialSelection = TextRange(cursorOffset),
+    )
+    val retainedTextId = (containerBlocks[startIndex] as? EditorBlock.Text)?.id
+        ?: (containerBlocks[endIndex] as? EditorBlock.Text)?.id
+    val replacementBlock = if (retainedTextId == null) {
+        EditorBlock.Text(textFieldState = replacementState)
+    } else {
+        EditorBlock.Text(id = retainedTextId, textFieldState = replacementState)
+    }
+    val updatedContainer = buildList {
+        addAll(containerBlocks.take(startIndex))
+        add(replacementBlock)
+        addAll(containerBlocks.drop(endIndex + 1))
+    }
+    val updatedRoot = replaceContainerBlocks(
+        blocks = blocks,
+        containerPath = start.containerPath,
+        replacement = updatedContainer,
+    ) ?: return null
+
+    return TextSelectionReplacement(
+        blocks = updatedRoot,
+        focus = SelectionEndpoint(
+            containerPath = start.containerPath,
+            blockId = replacementBlock.id,
+            offset = cursorOffset,
+        ),
+    )
+}
+
+/**
+ * Multi selection 치환 후 실제 TextField가 focus를 받기 전까지 들어온 일반 입력을 같은 위치에 잇는다.
+ * 문서 구조나 selection history는 만들지 않고 대상 [TextFieldState]와 일회성 focus endpoint만 전진시킨다.
+ */
+fun continueTextInputAt(
+    blocks: List<EditorBlock>,
+    focus: SelectionEndpoint,
+    text: String,
+): SelectionEndpoint? {
+    if (text.isEmpty() || '\n' in text || '\r' in text) return null
+
+    val containerBlocks = resolveContainerBlocks(blocks, focus.containerPath) ?: return null
+    val target = containerBlocks.firstOrNull { it.id == focus.blockId } as? EditorBlock.Text
+        ?: return null
+    val offset = focus.offset.coerceIn(0, target.textFieldState.text.length)
+    val nextOffset = offset + text.length
+    target.textFieldState.edit {
+        replace(offset, offset, text)
+        selection = TextRange(nextOffset)
+    }
+    return focus.copy(offset = nextOffset)
+}
+
+private fun textBefore(block: EditorBlock, offset: Int): String {
+    val text = (block as? EditorBlock.Text)?.textFieldState?.text?.toString() ?: return ""
+    return text.substring(0, offset.coerceIn(0, text.length))
+        .replace(EditorBlock.BLANK_LINE_MARKER, "")
+}
+
+private fun textAfter(block: EditorBlock, offset: Int): String {
+    val text = (block as? EditorBlock.Text)?.textFieldState?.text?.toString() ?: return ""
+    return text.substring(offset.coerceIn(0, text.length))
+        .replace(EditorBlock.BLANK_LINE_MARKER, "")
+}
+
+private fun replaceContainerBlocks(
+    blocks: List<EditorBlock>,
+    containerPath: List<String>,
+    replacement: List<EditorBlock>,
+): List<EditorBlock>? {
+    if (containerPath.isEmpty()) return replacement
+
+    val containerId = containerPath.first()
+    val containerIndex = blocks.indexOfFirst { it.id == containerId }
+    val callout = blocks.getOrNull(containerIndex) as? EditorBlock.Callout ?: return null
+    val updatedBody = replaceContainerBlocks(
+        blocks = callout.bodyBlocks,
+        containerPath = containerPath.drop(1),
+        replacement = replacement,
+    ) ?: return null
+    return blocks.toMutableList().also { updated ->
+        updated[containerIndex] = callout.copy(bodyBlocks = updatedBody)
+    }
 }
 
 /**

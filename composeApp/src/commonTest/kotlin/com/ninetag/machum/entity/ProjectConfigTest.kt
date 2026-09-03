@@ -68,11 +68,12 @@ class ProjectConfigTest {
     }
 
     @Test
-    fun withDefaultBaseFolder_addsNumberedBaseToEmptyConfig() {
+    fun withDefaultBaseFolder_addsPlotEnabledDefaultBaseToEmptyConfig() {
         val normalized = ProjectConfig().withDefaultBaseFolder()
 
         assertEquals(DEFAULT_BASE_FOLDER_CONFIG, normalized.folders[BASE_FOLDER_PATH])
         assertEquals(FolderType.DEFAULT, normalized.folders[BASE_FOLDER_PATH]?.type)
+        assertTrue(normalized.folders[BASE_FOLDER_PATH]?.isPlot == true)
     }
 
     @Test
@@ -111,6 +112,7 @@ class ProjectConfigTest {
 
         val config = defaultProjectConfig()
         assertEquals(DEFAULT_BASE_FOLDER_CONFIG, config.folders[BASE_FOLDER_PATH])
+        assertTrue(config.folders.getValue(BASE_FOLDER_PATH).isPlot)
         assertEquals(
             FolderConfig(type = FolderType.DEFAULT, autoTags = listOf("구상")),
             config.folders["1. Concept"],
@@ -132,5 +134,55 @@ class ProjectConfigTest {
             config.folders["4. Scene"],
         )
         assertEquals(5, config.folders.size)
+    }
+
+    @Test
+    fun renameFolder_movesConfigAndFileIdPathsWithoutTouchingOtherFolders() {
+        val characterConfig = FolderConfig(type = FolderType.GENERAL, autoTags = listOf("캐릭터"))
+        val original = ProjectConfig(
+            folders = linkedMapOf(
+                BASE_FOLDER_PATH to DEFAULT_BASE_FOLDER_CONFIG,
+                "Character" to characterConfig,
+                "Scene" to FolderConfig(plotEnabled = true),
+            ),
+            fileIds = mapOf(
+                "character" to "Character/Hero.md",
+                "folder" to "Character",
+                "scene" to "Scene/Opening.md",
+            ),
+        )
+
+        val renamed = original.renameFolder(
+            previousPath = "Character",
+            updatedPath = "3. Character",
+            updatedFolderConfig = characterConfig,
+        )
+
+        assertEquals(listOf("", "3. Character", "Scene"), renamed.folders.keys.toList())
+        assertEquals(characterConfig, renamed.folders["3. Character"])
+        assertEquals("3. Character/Hero.md", renamed.fileIds["character"])
+        assertEquals("3. Character", renamed.fileIds["folder"])
+        assertEquals("Scene/Opening.md", renamed.fileIds["scene"])
+    }
+
+    @Test
+    fun removeFolder_removesOnlyItsConfigAndFileIdPaths() {
+        val original = ProjectConfig(
+            folders = mapOf(
+                BASE_FOLDER_PATH to DEFAULT_BASE_FOLDER_CONFIG,
+                "Character" to FolderConfig(type = FolderType.GENERAL),
+                "Scene" to FolderConfig(plotEnabled = true),
+            ),
+            fileIds = mapOf(
+                "hero" to "Character/Hero.md",
+                "character-folder" to "Character",
+                "opening" to "Scene/Opening.md",
+            ),
+        )
+
+        val removed = original.removeFolder("Character")
+
+        assertEquals(setOf(BASE_FOLDER_PATH, "Scene"), removed.folders.keys)
+        assertEquals(mapOf("opening" to "Scene/Opening.md"), removed.fileIds)
     }
 }

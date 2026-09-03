@@ -9,8 +9,9 @@ import androidx.compose.ui.text.SpanStyle
 /**
  * TextBlock 의 OutputTransformation.
  *
- * - 인라인 서식: 비활성 줄에 MARKER(0.01sp 투명) + 내용 SpanStyle 적용
- * - 활성 줄(커서 줄): 변환 없음 → raw 텍스트 그대로 표시
+ * - 비활성 줄: MARKER(0.01sp 투명) + 내용 SpanStyle 적용
+ * - 활성 줄(커서 줄): 문법 마커는 raw로 노출하고 내용 SpanStyle은 즉시 적용
+ * - dissolve rawMode: 마커와 내용 스타일을 모두 적용하지 않는 완전 raw 표시
  *
  * 활성 판별: 커서가 위치한 줄만 raw 표시. 그 외 모든 줄은 서식 적용.
  * 포커스 없으면 모든 줄에 서식 적용 (raw zone 없음).
@@ -26,7 +27,7 @@ internal class RawMarkdownOutputTransformation(
     /** DrawBehind 에서 사용하는 데코레이션 블록 목록 (BLOCKQUOTE, HORIZONTAL_RULE) */
     val blockRanges: List<BlockRange> get() = cachedBlocks
 
-    /** 비활성 줄의 inline code 범위 (DrawBehind 에서 RoundRect 배경 그리기용) */
+    /** rawMode가 아닌 줄의 inline code 범위 (DrawBehind 에서 RoundRect 배경 그리기용) */
     var inlineCodeRanges: List<IntRange> = emptyList()
         private set
 
@@ -84,16 +85,25 @@ internal class RawMarkdownOutputTransformation(
         // 외부 노출 (BlockDecorationDrawer 가 BLOCKQUOTE 좌측 바 클리핑에 사용)
         currentRawZones = rawZones
 
-        // 비활성 줄의 인라인 스팬 적용 + inline code 범위 수집
+        // 일반 focus 상태에서는 활성 줄의 Markdown 문법 마커만 raw로 남기고,
+        // bold/italic/code 같은 내용 스타일은 즉시 적용한다. dissolve rawMode만 완전 raw다.
         val codeRanges = mutableListOf<IntRange>()
         for ((range, style) in cachedSpans) {
-            if (style == config.codeInline) {
-                val inRawZone = rawZones.any { rz -> range.first >= rz.first && range.last <= rz.last }
-                if (!inRawZone) codeRanges += range
+            when (markdownSpanApplication(style, config, isFocused, isRawMode)) {
+                MarkdownSpanApplication.Everywhere -> applySpan(range, style)
+                MarkdownSpanApplication.OutsideRawZones -> {
+                    applySpanOutsideRawZones(range, style, rawZones)
+                }
             }
-            applySpanOutsideRawZones(range, style, rawZones)
+            if (style === config.codeInline && !isRawMode) codeRanges += range
         }
         inlineCodeRanges = codeRanges
+    }
+
+    private fun TextFieldBuffer.applySpan(range: IntRange, style: SpanStyle) {
+        val start = range.first.coerceIn(0, length)
+        val end = (range.last + 1).coerceIn(start, length)
+        if (start < end) addStyle(style, start, end)
     }
 
     /**
@@ -130,5 +140,38 @@ internal class RawMarkdownOutputTransformation(
                 if (start < end) addStyle(style, start, end)
             }
         }
+    }
+}
+
+internal enum class MarkdownSpanApplication {
+    Everywhere,
+    OutsideRawZones,
+}
+
+/**
+ * OutputTransformation의 interaction 상태별 span 적용 정책.
+ *
+ * - unfocused: marker와 content를 모두 preview
+ * - focused: 활성 줄에서는 marker/prefix만 raw, content style은 유지
+ * - rawMode: 전체 raw zone 바깥에만 적용(실제로는 전체가 raw이므로 모든 style 비활성)
+ */
+internal fun markdownSpanApplication(
+    style: SpanStyle,
+    config: MarkdownStyleConfig,
+    isFocused: Boolean,
+    isRawMode: Boolean,
+): MarkdownSpanApplication {
+    if (isRawMode) return MarkdownSpanApplication.OutsideRawZones
+    if (!isFocused) return MarkdownSpanApplication.Everywhere
+
+    val isSyntaxStyle = style === config.marker ||
+        style === config.blockTransparent ||
+        style === config.bulletPrefix ||
+        style === config.orderedPrefix ||
+        style === config.calloutIndicator
+    return if (isSyntaxStyle) {
+        MarkdownSpanApplication.OutsideRawZones
+    } else {
+        MarkdownSpanApplication.Everywhere
     }
 }

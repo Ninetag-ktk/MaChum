@@ -284,7 +284,7 @@ object BlockOperations {
 }
 
 /**
- * dissolve 결과. `BlockNavigation.onDissolveSelf` 라우팅이나
+ * dissolve 결과. `BlockNavigation.mutation.onDissolveSelf` 라우팅이나
  * onMergeWithPrevious 에서 직전 특수블록 dissolve 시 사용.
  */
 data class DissolveResult(
@@ -296,5 +296,6 @@ data class DissolveResult(
 data class SplitResult(
     val newBlocks: List<EditorBlock>,
     val focusBlockIndex: Int,
-    val focusCursorOffset: Int = 0,
+    /** null이면 대상 블록의 기존 cursor/기본 진입 위치를 유지한다. */
+    val focusCursorOffset: Int? = null,
 )

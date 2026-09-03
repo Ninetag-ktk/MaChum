@@ -1,21 +1,40 @@
 package com.ninetag.machum.markdown.ui.selection
 
 import com.ninetag.machum.external.clipEntryOf
+import com.ninetag.machum.external.readClipboardText
 import com.ninetag.machum.markdown.state.DocumentSelection
+import com.ninetag.machum.markdown.state.EditorSelectionCoordinator
 import com.ninetag.machum.markdown.state.EditorBlock
 import com.ninetag.machum.markdown.state.NormalizedSelection
+import com.ninetag.machum.markdown.state.SelectionAdjustment
+import com.ninetag.machum.markdown.state.SelectionDirection
 import com.ninetag.machum.markdown.state.SelectionEndpoint
 import com.ninetag.machum.markdown.state.extractMarkdown
-import com.ninetag.machum.markdown.state.isAtomic
-import com.ninetag.machum.markdown.state.nextFocusEndpoint
+import com.ninetag.machum.markdown.state.normalize
+import com.ninetag.machum.markdown.state.replaceSelectedMarkdown
 import com.ninetag.machum.markdown.ui.MarkdownBlockTextField
 
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
@@ -28,7 +47,11 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.TextStyle
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collectLatest
+import androidx.compose.ui.unit.dp
 
 /**
  * Cross-block selection 의 UI 측 헬퍼들.
@@ -76,9 +99,12 @@ fun isBlockInSelection(
  * - `Ctrl/Cmd + A`: 최상위 블록 전체 selection (Multi)
  * - `Ctrl/Cmd + C`: selection 범위의 markdown 추출 → clipboard write. Multi 일 때만 가로채고,
  *   단일 블록 selection (None) 일 때는 false 반환 → BasicTextField 의 native Ctrl+C 동작
+ * - `Delete` / `Backspace`: Multi selection을 제거
+ * - `Ctrl/Cmd + X`: Multi selection을 clipboard에 쓴 뒤 제거
+ * - `Ctrl/Cmd + V`: Multi selection을 clipboard Markdown으로 치환
  * - `Esc`: Multi 상태일 때 None 으로 리셋
- * - 방향키 / Home / End / PageUp / PageDown: Multi 상태일 때 None 으로 자동 해제 (BasicTextField 의
- *   native cursor 이동 동작은 false 반환으로 그대로 진행)
+ * - 방향키 / Home / End / PageUp / PageDown: Multi를 해제하고 앞 방향 키는 정규화된 시작점,
+ *   뒤 방향 키는 끝점으로 selection을 접는다. 문서 input capture가 focus를 소유하므로 이벤트는 소비한다.
  *
  * @param rootBlocks 최상위 블록 리스트. Ctrl+A 의 first/last 선택 + Ctrl+C 의 extractMarkdown 대상
  * @param documentSelection 호이스팅된 selection state. 본 핸들러가 직접 갱신
@@ -87,28 +113,35 @@ fun isBlockInSelection(
 fun Modifier.documentSelectionShortcuts(
     rootBlocks: List<EditorBlock>,
     documentSelection: MutableState<DocumentSelection>,
+    onBlocksChanged: (List<EditorBlock>) -> Unit,
+    onSelectionFocusRequested: (SelectionEndpoint) -> Unit = {},
+    onUndo: () -> Boolean = { false },
+    onRedo: () -> Boolean = { false },
 ): Modifier {
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
+    val latestBlocks = rememberUpdatedState(rootBlocks)
+    val latestOnBlocksChanged = rememberUpdatedState(onBlocksChanged)
+
+    fun replaceSelection(selection: DocumentSelection.Multi, replacement: String): Boolean {
+        if (documentSelection.value != selection) return false
+        val updated = replaceSelectedMarkdown(latestBlocks.value, selection, replacement) ?: return false
+        documentSelection.value = DocumentSelection.None
+        latestOnBlocksChanged.value(updated)
+        return true
+    }
+
     return this.onPreviewKeyEvent { event ->
         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
         val ctrlOrCmd = event.isCtrlPressed || event.isMetaPressed
         when {
+            ctrlOrCmd && event.key == Key.Z && event.isShiftPressed -> onRedo()
+            ctrlOrCmd && event.key == Key.Y -> onRedo()
+            ctrlOrCmd && event.key == Key.Z -> onUndo()
             ctrlOrCmd && event.key == Key.A -> {
-                val firstBlock = rootBlocks.firstOrNull() ?: return@onPreviewKeyEvent false
-                val lastBlock = rootBlocks.lastOrNull() ?: return@onPreviewKeyEvent false
-                documentSelection.value = DocumentSelection.Multi(
-                    anchor = SelectionEndpoint(
-                        containerPath = emptyList(),
-                        blockId = firstBlock.id,
-                        offset = SelectionEndpoint.ATOMIC_START,
-                    ),
-                    focus = SelectionEndpoint(
-                        containerPath = emptyList(),
-                        blockId = lastBlock.id,
-                        offset = endOffsetFor(lastBlock),
-                    ),
-                )
+                val selection = EditorSelectionCoordinator.selectAll(rootBlocks)
+                    ?: return@onPreviewKeyEvent false
+                documentSelection.value = selection
                 true
             }
             ctrlOrCmd && event.key == Key.C -> {
@@ -121,9 +154,44 @@ fun Modifier.documentSelectionShortcuts(
                     true
                 } else false
             }
+            ctrlOrCmd && event.key == Key.X -> {
+                val selection = documentSelection.value as? DocumentSelection.Multi
+                    ?: return@onPreviewKeyEvent false
+                val markdown = extractMarkdown(rootBlocks, selection)
+                scope.launch {
+                    val copied = try {
+                        clipboard.setClipEntry(clipEntryOf(markdown))
+                        true
+                    } catch (_: Exception) {
+                        false
+                    }
+                    if (copied) replaceSelection(selection, "")
+                }
+                true
+            }
+            ctrlOrCmd && event.key == Key.V -> {
+                val selection = documentSelection.value as? DocumentSelection.Multi
+                    ?: return@onPreviewKeyEvent false
+                scope.launch {
+                    val markdown = try {
+                        readClipboardText(clipboard)
+                    } catch (_: Exception) {
+                        null
+                    }
+                    if (markdown != null) replaceSelection(selection, markdown)
+                }
+                true
+            }
+            event.key == Key.Delete || event.key == Key.Backspace -> {
+                val selection = documentSelection.value as? DocumentSelection.Multi
+                    ?: return@onPreviewKeyEvent false
+                replaceSelection(selection, "")
+            }
             event.key == Key.Escape -> {
-                if (documentSelection.value is DocumentSelection.Multi) {
+                val selection = documentSelection.value as? DocumentSelection.Multi
+                if (selection != null) {
                     documentSelection.value = DocumentSelection.None
+                    onSelectionFocusRequested(selection.focus)
                     true
                 } else false
             }
@@ -133,10 +201,14 @@ fun Modifier.documentSelectionShortcuts(
             (event.key == Key.DirectionUp || event.key == Key.DirectionDown) && event.isShiftPressed -> {
                 val sel = documentSelection.value as? DocumentSelection.Multi
                     ?: return@onPreviewKeyEvent false  // 개시는 블록 핸들러 담당
-                val down = event.key == Key.DirectionDown
-                val newFocus = nextFocusEndpoint(rootBlocks, sel.focus, down)
+                val direction = if (event.key == Key.DirectionDown) {
+                    SelectionDirection.Next
+                } else {
+                    SelectionDirection.Previous
+                }
+                val nextSelection = EditorSelectionCoordinator.extendExisting(rootBlocks, sel, direction)
                     ?: return@onPreviewKeyEvent true  // 컨테이너 경계 — 확장 불가, selection 보존
-                documentSelection.value = DocumentSelection.Multi(sel.anchor, newFocus)
+                documentSelection.value = nextSelection
                 true
             }
             event.key == Key.DirectionUp ||
@@ -147,17 +219,143 @@ fun Modifier.documentSelectionShortcuts(
             event.key == Key.MoveEnd ||
             event.key == Key.PageUp ||
             event.key == Key.PageDown -> {
-                if (documentSelection.value is DocumentSelection.Multi) {
+                val selection = documentSelection.value as? DocumentSelection.Multi
+                if (selection != null) {
+                    val normalized = selection.normalize(latestBlocks.value)
+                    val collapseToStart = event.key == Key.DirectionUp ||
+                        event.key == Key.DirectionLeft ||
+                        event.key == Key.MoveHome ||
+                        event.key == Key.PageUp
                     documentSelection.value = DocumentSelection.None
+                    normalized?.let {
+                        onSelectionFocusRequested(if (collapseToStart) it.start else it.end)
+                    }
+                    true
+                } else {
+                    false
                 }
-                false
             }
             else -> false
         }
     }
 }
 
-// ── 3. Shift+↑/↓ selection 확장 ──
+// ── 3. Multi selection 일반 입력 소유자 ──
+
+/**
+ * Multi selection 치환 뒤 새 TextBlock에서 입력을 계속하기 위한 일회성 요청.
+ * Undo/Redo 시점의 과거 focus나 selection은 저장하지 않는다.
+ */
+internal data class DocumentInputFocusRequest(
+    val id: Long,
+    val endpoint: SelectionEndpoint,
+    /** selection 치환 직후 실제 TextField로 focus가 넘어갈 때까지 capture가 연속 입력을 소유한다. */
+    val isTextReplacementHandoff: Boolean = false,
+    /** focus coordinator가 이 요청의 실행(재시도 포함)을 마쳤을 때 handoff 수명을 닫는다. */
+    val onFocusTransferCompleted: (requestId: Long) -> Unit = {},
+)
+
+internal val LocalDocumentInputFocusRequest =
+    compositionLocalOf<DocumentInputFocusRequest?> { null }
+
+/**
+ * 여러 BasicTextField에 걸친 Multi selection이 활성화된 동안 키보드/IME 입력을 한 곳에서 받는다.
+ * IME composition이 끝난 문자열만 한 번 전달하므로 조합 중인 한글 자모가 문서에 중간 반영되지 않는다.
+ */
+@Composable
+internal fun DocumentSelectionInputCapture(
+    documentSelection: MutableState<DocumentSelection>,
+    inputFocusRequest: DocumentInputFocusRequest?,
+    onTextCommitted: (selection: DocumentSelection.Multi, text: String) -> Unit,
+    onHandoffTextCommitted: (request: DocumentInputFocusRequest, text: String) -> Unit,
+) {
+    val inputState = remember { TextFieldState("") }
+    val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    var armedSelection by remember { mutableStateOf<DocumentSelection.Multi?>(null) }
+    var isCaptureFocused by remember { mutableStateOf(false) }
+    val activeSelection = documentSelection.value as? DocumentSelection.Multi
+    val latestSelection by rememberUpdatedState(activeSelection)
+    val handoffRequest = inputFocusRequest?.takeIf { it.isTextReplacementHandoff }
+    val latestHandoffRequest by rememberUpdatedState(handoffRequest)
+    val latestOnTextCommitted by rememberUpdatedState(onTextCommitted)
+    val latestOnHandoffTextCommitted by rememberUpdatedState(onHandoffTextCommitted)
+
+    LaunchedEffect(activeSelection, handoffRequest?.id) {
+        when {
+            activeSelection != null -> {
+                inputState.edit {
+                    replace(0, length, "")
+                    selection = androidx.compose.ui.text.TextRange.Zero
+                }
+                armedSelection = activeSelection
+                try {
+                    focusRequester.requestFocus()
+                } catch (_: IllegalStateException) {
+                }
+            }
+            handoffRequest != null -> {
+                // 이미 capture가 가진 focus를 유지한다. 새 요청마다 다시 focus를 요구하면 실제 TextField가
+                // 먼저 focus를 얻은 경우 이를 도로 빼앗을 수 있으므로 아무 작업도 하지 않는다.
+                armedSelection = null
+            }
+            else -> {
+                armedSelection = null
+                if (isCaptureFocused) focusManager.clearFocus(force = true)
+            }
+        }
+    }
+
+    LaunchedEffect(inputState) {
+        snapshotFlow {
+            InputCaptureObservation(
+                text = inputState.text.toString(),
+                hasComposition = inputState.composition != null,
+                selection = latestSelection,
+                handoffRequest = latestHandoffRequest,
+            )
+        }.collectLatest { observation ->
+                if (observation.text.isEmpty() || observation.hasComposition) {
+                    return@collectLatest
+                }
+                val selection = armedSelection
+                when {
+                    selection != null && observation.selection == selection -> {
+                        armedSelection = null
+                        inputState.edit { replace(0, length, "") }
+                        latestOnTextCommitted(selection, observation.text)
+                    }
+                    observation.handoffRequest != null -> {
+                        inputState.edit { replace(0, length, "") }
+                        latestOnHandoffTextCommitted(
+                            observation.handoffRequest,
+                            observation.text,
+                        )
+                    }
+                }
+            }
+    }
+
+    BasicTextField(
+        state = inputState,
+        modifier = Modifier
+            .size(1.dp)
+            .focusRequester(focusRequester)
+            .onFocusChanged { isCaptureFocused = it.isFocused },
+        textStyle = TextStyle(color = Color.Transparent),
+        cursorBrush = SolidColor(Color.Transparent),
+        lineLimits = TextFieldLineLimits.SingleLine,
+    )
+}
+
+private data class InputCaptureObservation(
+    val text: String,
+    val hasComposition: Boolean,
+    val selection: DocumentSelection.Multi?,
+    val handoffRequest: DocumentInputFocusRequest?,
+)
+
+// ── 4. Shift+↑/↓ selection 확장 ──
 
 /**
  * 현재 블록의 첫 위치에서 위쪽으로 selection 확장 (Shift+↑ 트리거).
@@ -181,23 +379,18 @@ fun extendSelectionToPrevious(
     onEscapeToParent: () -> Unit = {},
 ) {
     if (documentSelection == null) return
-    if (currentIndex <= 0) {
-        if (containerPath.isNotEmpty()) onEscapeToParent()
-        return
-    }
-    val previousBlock = blocksInContainer[currentIndex - 1]
-
-    // 이전 블록 atomic → atomic 만 selection
-    if (isAtomic(previousBlock)) {
-        selectBlockAsAtomic(previousBlock, containerPath, documentSelection)
-        return
-    }
-
-    // 외부 Text ↔ Text — anchor 보존 fallback + focus 확장
-    val existing = documentSelection.value as? DocumentSelection.Multi
-    val newAnchor = existing?.anchor ?: endEndpointOf(currentBlock, containerPath)
-    val newFocus = startEndpointOf(previousBlock, containerPath)
-    documentSelection.value = DocumentSelection.Multi(newAnchor, newFocus)
+    applySelectionAdjustment(
+        adjustment = EditorSelectionCoordinator.extendFromBlock(
+            currentBlock = currentBlock,
+            currentIndex = currentIndex,
+            blocksInContainer = blocksInContainer,
+            containerPath = containerPath,
+            currentSelection = documentSelection.value,
+            direction = SelectionDirection.Previous,
+        ),
+        documentSelection = documentSelection,
+        onEscapeToParent = onEscapeToParent,
+    )
 }
 
 /** 현재 블록의 끝 위치에서 아래쪽으로 selection 확장 (Shift+↓ 트리거). [extendSelectionToPrevious] 와 대칭. */
@@ -211,23 +404,18 @@ fun extendSelectionToNext(
     onEscapeToParent: () -> Unit = {},
 ) {
     if (documentSelection == null) return
-    if (currentIndex >= blocksInContainer.lastIndex) {
-        if (containerPath.isNotEmpty()) onEscapeToParent()
-        return
-    }
-    val nextBlock = blocksInContainer[currentIndex + 1]
-
-    // 다음 블록 atomic → atomic 만 selection
-    if (isAtomic(nextBlock)) {
-        selectBlockAsAtomic(nextBlock, containerPath, documentSelection)
-        return
-    }
-
-    // 외부 Text ↔ Text — anchor 보존 fallback + focus 확장
-    val existing = documentSelection.value as? DocumentSelection.Multi
-    val newAnchor = existing?.anchor ?: startEndpointOf(currentBlock, containerPath)
-    val newFocus = endEndpointOf(nextBlock, containerPath)
-    documentSelection.value = DocumentSelection.Multi(newAnchor, newFocus)
+    applySelectionAdjustment(
+        adjustment = EditorSelectionCoordinator.extendFromBlock(
+            currentBlock = currentBlock,
+            currentIndex = currentIndex,
+            blocksInContainer = blocksInContainer,
+            containerPath = containerPath,
+            currentSelection = documentSelection.value,
+            direction = SelectionDirection.Next,
+        ),
+        documentSelection = documentSelection,
+        onEscapeToParent = onEscapeToParent,
+    )
 }
 
 /**
@@ -242,13 +430,22 @@ fun selectBlockAsAtomic(
     documentSelection: MutableState<DocumentSelection>?,
 ) {
     if (documentSelection == null) return
-    documentSelection.value = DocumentSelection.Multi(
-        anchor = startEndpointOf(block, containerPath),
-        focus = endEndpointOf(block, containerPath),
-    )
+    documentSelection.value = EditorSelectionCoordinator.selectAtomic(block, containerPath)
 }
 
-// ── 4. focus 이동 시 selection 자동 해제 ──
+private fun applySelectionAdjustment(
+    adjustment: SelectionAdjustment,
+    documentSelection: MutableState<DocumentSelection>,
+    onEscapeToParent: () -> Unit,
+) {
+    when (adjustment) {
+        is SelectionAdjustment.Set -> documentSelection.value = adjustment.selection
+        SelectionAdjustment.EscapeToParent -> onEscapeToParent()
+        SelectionAdjustment.Keep -> Unit
+    }
+}
+
+// ── 5. focus 이동 시 selection 자동 해제 ──
 
 /**
  * Cross-block selection state 를 자식 컴포넌트(BasicTextField 들)에 제공하는 CompositionLocal.
@@ -303,41 +500,8 @@ fun Modifier.resetDocumentSelectionOnFocus(blockId: String): Modifier {
     val selection = LocalDocumentSelection.current ?: return this
     return this.onFocusChanged { focusState ->
         if (!focusState.isFocused) return@onFocusChanged
-        val sel = selection.value as? DocumentSelection.Multi ?: return@onFocusChanged
-        // Shift+↑/↓ 확장 후 endpoint 블록으로 focus 가 이동한 케이스 — selection 보존
-        if (sel.anchor.blockId == blockId || sel.focus.blockId == blockId) return@onFocusChanged
-        selection.value = DocumentSelection.None
+        if (EditorSelectionCoordinator.shouldClearOnFocus(selection.value, blockId)) {
+            selection.value = DocumentSelection.None
+        }
     }
 }
-
-// ── 5. 유틸리티 ──
-
-/** atomic 블록의 끝 offset (sentinel) 또는 Text 의 text.length */
-internal fun endOffsetFor(block: EditorBlock): Int = when (block) {
-    is EditorBlock.Text -> block.textFieldState.text.length
-    else -> SelectionEndpoint.ATOMIC_END
-}
-
-/**
- * 주어진 컨테이너 블록의 선택 가능한 첫 endpoint 를 만든다 (atomic 블록의 시작 위치).
- *
- * Step B 의 Shift+↑/↓ 확장 로직에서 사용 예정.
- */
-internal fun startEndpointOf(block: EditorBlock, containerPath: List<String>): SelectionEndpoint =
-    SelectionEndpoint(
-        containerPath = containerPath,
-        blockId = block.id,
-        offset = SelectionEndpoint.ATOMIC_START,
-    )
-
-/**
- * 주어진 컨테이너 블록의 선택 가능한 마지막 endpoint 를 만든다 (atomic 블록의 끝 위치).
- *
- * Step B 의 Shift+↑/↓ 확장 로직에서 사용 예정.
- */
-internal fun endEndpointOf(block: EditorBlock, containerPath: List<String>): SelectionEndpoint =
-    SelectionEndpoint(
-        containerPath = containerPath,
-        blockId = block.id,
-        offset = endOffsetFor(block),
-    )

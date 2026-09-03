@@ -67,4 +67,37 @@ class FileManagerProjectTagSyncTest {
         }
         Unit
     }
+
+    @Test
+    fun indexingBomCrLfFileWithoutFrontMatterKeepsBomOnlyAtDocumentStart() = runBlocking {
+        val testRoot = Files.createTempDirectory("machum-project-bom").toFile()
+        val projectDirectory = File(testRoot, "프로젝트").apply { mkdirs() }
+        val note = File(projectDirectory, "본문.md").apply {
+            writeText("\uFEFF첫 줄\r\n둘째 줄")
+        }
+        val dataStoreScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val dataStore = PreferenceDataStoreFactory.createWithPath(scope = dataStoreScope) {
+            File(testRoot, "preferences.preferences_pb").absolutePath.toPath()
+        }
+
+        try {
+            val fileManager = FileManager(dataStore)
+            val project = PlatformFile(projectDirectory)
+            fileManager.setPreferences(Bookmarks(projectData = project))
+            val indexer = ProjectIndexer(fileManager)
+            indexer.prepare(project)
+
+            val result = indexer.index(project)
+            val indexed = note.readText()
+
+            assertEquals(1, result.updated)
+            assertTrue(indexed.startsWith("\uFEFF---\r\n"))
+            assertEquals(1, indexed.count { it == '\uFEFF' })
+            assertTrue(indexed.endsWith("---\r\n\r\n첫 줄\r\n둘째 줄"))
+            assertEquals(listOf("프로젝트"), NoteFile.parse(indexed).tags)
+        } finally {
+            dataStoreScope.cancel()
+            testRoot.deleteRecursively()
+        }
+    }
 }

@@ -14,7 +14,8 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CreateNewFolder
@@ -22,10 +23,10 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -38,9 +39,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ninetag.machum.external.FileManager
+import com.ninetag.machum.external.isValidProjectFolderName
+import com.ninetag.machum.screen.common.SingleLineSubmitGate
 import io.github.vinceglb.filekit.FileKit
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.dialogs.openDirectoryPicker
@@ -65,7 +69,7 @@ internal fun VaultPickerContent(reset: () -> Unit) {
             modifier = Modifier
                 .fillMaxSize()
                 .windowInsetsPadding(WindowInsets.safeDrawing)
-                .padding(24.dp),
+                .padding(20.dp),
             contentAlignment = Alignment.Center,
         ) {
             if (isCreating) {
@@ -88,33 +92,32 @@ private fun SelectVaultContent(
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
     Column(
-        modifier = Modifier.fillMaxWidth().widthIn(max = 520.dp),
+        modifier = Modifier.fillMaxWidth().widthIn(max = 400.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.primaryContainer,
-            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Icon(
                 imageVector = Icons.Default.FolderOpen,
                 contentDescription = null,
-                modifier = Modifier.padding(18.dp).size(36.dp),
+                modifier = Modifier.size(24.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                text = "글쓰기 공간을 선택하세요",
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onBackground,
             )
         }
-        Spacer(Modifier.height(24.dp))
-        Text(
-            text = "글쓰기 공간을 선택하세요",
-            style = MaterialTheme.typography.headlineMedium,
-            color = MaterialTheme.colorScheme.onBackground,
-        )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(10.dp))
         Text(
             text = "Vault에는 여러 프로젝트와 Markdown 파일이 저장됩니다.",
-            style = MaterialTheme.typography.bodyLarge,
+            style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Spacer(Modifier.height(40.dp))
+        Spacer(Modifier.height(28.dp))
         Button(
             onClick = {
                 scope.launch {
@@ -127,7 +130,7 @@ private fun SelectVaultContent(
                 }
             },
             enabled = !isOpening,
-            modifier = Modifier.fillMaxWidth().height(56.dp),
+            modifier = Modifier.fillMaxWidth().height(48.dp),
         ) {
             if (isOpening) {
                 CircularProgressIndicator(
@@ -141,18 +144,18 @@ private fun SelectVaultContent(
                 Text("기존 Vault 열기")
             }
         }
-        Spacer(Modifier.height(12.dp))
-        FilledTonalButton(
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
             onClick = onCreate,
             enabled = !isOpening,
-            modifier = Modifier.fillMaxWidth().height(56.dp),
+            modifier = Modifier.fillMaxWidth().height(48.dp),
         ) {
             Icon(Icons.Default.CreateNewFolder, contentDescription = null)
             Spacer(Modifier.size(8.dp))
             Text("새 Vault 만들기")
         }
         errorMessage?.let { message ->
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
             Text(
                 text = message,
                 style = MaterialTheme.typography.bodyMedium,
@@ -173,33 +176,65 @@ private fun CreateVaultContent(
     var vaultName by remember { mutableStateOf("") }
     var isCreating by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    val submitGate = remember { SingleLineSubmitGate() }
+    val trimmedVaultName = vaultName.trim()
+    val nameError = when {
+        vaultName.isBlank() -> null
+        vaultName != trimmedVaultName -> "이름 앞뒤의 공백을 제거해 주세요."
+        !isValidProjectFolderName(vaultName) -> "Vault 이름으로 사용할 수 없는 문자나 예약어가 포함되어 있습니다."
+        else -> null
+    }
+    val canCreate = parentDirectory != null && trimmedVaultName.isNotEmpty() && nameError == null && !isCreating
+    val submit = {
+        submitGate.submitIf(canCreate) {
+            val parent = parentDirectory ?: return@submitIf
+            scope.launch {
+                isCreating = true
+                errorMessage = null
+                val vault = runCatching { fileManager.setVault(parent, trimmedVaultName) }.getOrNull()
+                if (vault != null) {
+                    reset()
+                } else {
+                    errorMessage = "Vault를 만들지 못했습니다. 이름과 위치를 확인해 주세요."
+                    submitGate.reset()
+                }
+                isCreating = false
+            }
+        }
+        Unit
+    }
 
-    Column(modifier = Modifier.fillMaxWidth().widthIn(max = 520.dp)) {
+    Column(modifier = Modifier.fillMaxWidth().widthIn(max = 420.dp)) {
         TextButton(onClick = onBack, enabled = !isCreating) {
             Icon(Icons.AutoMirrored.Default.ArrowBack, contentDescription = null)
             Spacer(Modifier.size(6.dp))
             Text("Vault 선택으로 돌아가기")
         }
-        Spacer(Modifier.height(20.dp))
-        Text(text = "새 Vault 만들기", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(8.dp))
+        Text(text = "새 Vault 만들기", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(6.dp))
         Text(
             text = "이름과 저장할 위치를 선택하세요.",
-            style = MaterialTheme.typography.bodyLarge,
+            style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Spacer(Modifier.height(28.dp))
+        Spacer(Modifier.height(20.dp))
         OutlinedTextField(
             value = vaultName,
             onValueChange = { vaultName = it },
             modifier = Modifier.fillMaxWidth(),
             label = { Text("Vault 이름") },
             placeholder = { Text("예: 나의 소설") },
-            supportingText = { Text("선택한 위치 아래에 같은 이름의 폴더를 만듭니다.") },
+            supportingText = {
+                Text(nameError ?: "선택한 위치 아래에 같은 이름의 폴더를 만듭니다.")
+            },
             singleLine = true,
             enabled = !isCreating,
+            isError = nameError != null,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { submit() }),
         )
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(12.dp))
         OutlinedCard(
             onClick = {
                 scope.launch {
@@ -210,9 +245,9 @@ private fun CreateVaultContent(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(18.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Icon(
                     imageVector = Icons.Default.Folder,
@@ -232,21 +267,11 @@ private fun CreateVaultContent(
                 Text("선택", color = MaterialTheme.colorScheme.primary)
             }
         }
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(16.dp))
         Button(
-            onClick = {
-                val parent = parentDirectory ?: return@Button
-                scope.launch {
-                    isCreating = true
-                    errorMessage = null
-                    runCatching { fileManager.setVault(parent, vaultName.trim()) }
-                        .onSuccess { vault -> if (vault != null) reset() }
-                        .onFailure { errorMessage = "Vault를 만들지 못했습니다. 이름과 위치를 확인해 주세요." }
-                    isCreating = false
-                }
-            },
-            enabled = parentDirectory != null && vaultName.isNotBlank() && !isCreating,
-            modifier = Modifier.fillMaxWidth().height(56.dp),
+            onClick = submit,
+            enabled = canCreate,
+            modifier = Modifier.fillMaxWidth().height(48.dp),
         ) {
             if (isCreating) {
                 CircularProgressIndicator(
@@ -259,7 +284,7 @@ private fun CreateVaultContent(
             }
         }
         errorMessage?.let { message ->
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
             Text(
                 text = message,
                 style = MaterialTheme.typography.bodyMedium,

@@ -21,6 +21,8 @@ import com.ninetag.machum.entity.normalizeTags
 class NoteFile private constructor(
     private val blocks: List<Block>,
     val body: String,
+    private val lineEnding: String = "\n",
+    private val hasUtf8Bom: Boolean = false,
 ) {
     // --- 관리 키 접근자 ---
 
@@ -52,13 +54,14 @@ class NoteFile private constructor(
     fun ensureId(): NoteFile = if (id != null) this else withId(generatedId())
 
     /** 본문만 교체하고 프론트매터(관리/미관리 모두)는 보존한다. id 가 없으면 생성한다. */
-    fun withBody(body: String): NoteFile = NoteFile(blocks, body).ensureId()
+    fun withBody(body: String): NoteFile = NoteFile(blocks, body, lineEnding, hasUtf8Bom).ensureId()
 
     /** 프론트매터 + 본문을 raw markdown 문자열로 직렬화. 같은 내용이면 항상 같은 문자열(diff 안정성). */
     fun inject(): String {
-        if (blocks.isEmpty()) return body
-        val fm = blocks.mapNotNull { it.render() }.joinToString("\n")
-        return "---\n$fm\n---\n\n$body"
+        val bom = if (hasUtf8Bom) UTF8_BOM.toString() else ""
+        if (blocks.isEmpty()) return bom + body
+        val fm = blocks.mapNotNull { it.render(lineEnding) }.joinToString(lineEnding)
+        return "$bom---$lineEnding$fm$lineEnding---$lineEnding$lineEnding$body"
     }
 
     // --- 내부 조회/수정 헬퍼 ---
@@ -71,12 +74,12 @@ class NoteFile private constructor(
 
     private fun withScalar(key: String, value: String?): NoteFile {
         val replacement = Block.Scalar(key, original = null, value = value, dirty = true)
-        return NoteFile(replaceOrAppend(key, replacement), body)
+        return NoteFile(replaceOrAppend(key, replacement), body, lineEnding, hasUtf8Bom)
     }
 
     private fun withList(key: String, items: List<String>): NoteFile {
         val replacement = Block.ListBlock(key, original = null, items = items, dirty = true)
-        return NoteFile(replaceOrAppend(key, replacement), body)
+        return NoteFile(replaceOrAppend(key, replacement), body, lineEnding, hasUtf8Bom)
     }
 
     /** 같은 키 블록이 있으면 위치 유지하며 교체, 없으면 끝에 추가. */
@@ -89,13 +92,13 @@ class NoteFile private constructor(
     /** 프론트매터 top-level 항목. 관리 키는 구조적으로, 나머지는 원형(raw)으로 보존. */
     private sealed class Block {
         /** 직렬화 결과. null 이면 출력하지 않음(관리 키 삭제). */
-        abstract fun render(): String?
+        abstract fun render(lineEnding: String): String?
 
         abstract fun keyOrNull(): String?
 
         /** 미관리 키 / 주석 / preamble — 원형 그대로 보존. */
         class Raw(val text: String) : Block() {
-            override fun render(): String = text
+            override fun render(lineEnding: String): String = text
             override fun keyOrNull(): String? = null
         }
 
@@ -106,7 +109,7 @@ class NoteFile private constructor(
             val value: String?,
             private val dirty: Boolean,
         ) : Block() {
-            override fun render(): String? = when {
+            override fun render(lineEnding: String): String? = when {
                 !dirty -> original
                 value == null -> null
                 else -> "$key: $value"
@@ -121,12 +124,12 @@ class NoteFile private constructor(
             val items: List<String>,
             private val dirty: Boolean,
         ) : Block() {
-            override fun render(): String? = when {
+            override fun render(lineEnding: String): String? = when {
                 !dirty -> original
                 items.isEmpty() -> null
                 else -> buildString {
                     append(key).append(":")
-                    items.forEach { append("\n  - ").append(it) }
+                    items.forEach { append(lineEnding).append("  - ").append(it) }
                 }
             }
             override fun keyOrNull(): String = key
@@ -144,39 +147,60 @@ class NoteFile private constructor(
 
         private val CHARS = ('a'..'z') + ('0'..'9')
         private val MANAGED_KEYS = setOf(KEY_ID, KEY_TAGS, KEY_ALIASES, KEY_PLOT)
+        private const val UTF8_BOM = '\uFEFF'
 
         fun parse(raw: String): NoteFile {
-            // 프론트매터는 반드시 파일 맨 앞 "---\n" 으로 시작
-            if (!raw.startsWith("---\n")) return NoteFile(emptyList(), raw)
+            val hasUtf8Bom = raw.startsWith(UTF8_BOM)
+            val content = if (hasUtf8Bom) raw.drop(1) else raw
+            val fallbackLineEnding = detectLineEnding(content)
+            val lineEnding = when {
+                content.startsWith("---\r\n") -> "\r\n"
+                content.startsWith("---\n") -> "\n"
+                else -> return NoteFile(emptyList(), content, fallbackLineEnding, hasUtf8Bom)
+            }
+            val frontMatterStart = 3 + lineEnding.length
+            val closeMarker = findClosingFence(content, frontMatterStart, lineEnding)
+                ?: return NoteFile(emptyList(), content, fallbackLineEnding, hasUtf8Bom)
 
-            // 닫는 펜스 "\n---" 탐색 (없으면 프론트매터 없는 것으로 간주)
-            val closeIdx = raw.indexOf("\n---", startIndex = 4)
-            if (closeIdx == -1) return NoteFile(emptyList(), raw)
+            val frontMatter = content.substring(frontMatterStart, closeMarker)
+            val fenceEnd = closeMarker + lineEnding.length + 3
+            var bodyStart = fenceEnd
+            if (content.startsWith(lineEnding, bodyStart)) {
+                bodyStart += lineEnding.length
+                // 표준 frontmatter와 본문 사이의 빈 줄 하나만 분리한다. 본문 내부 줄바꿈은 그대로 둔다.
+                if (content.startsWith(lineEnding, bodyStart)) {
+                    bodyStart += lineEnding.length
+                }
+            }
+            val body = content.substring(bodyStart)
 
-            val frontMatter = raw.substring(4, closeIdx)
-            // 닫는 펜스 줄의 끝(다음 개행) 이후가 본문. 기존 동작과 동일하게 선행 개행 정규화.
-            val fenceLineEnd = raw.indexOf('\n', closeIdx + 4)
-            val body = if (fenceLineEnd == -1) "" else raw.substring(fenceLineEnd + 1).trimStart('\n')
-
-            return NoteFile(buildBlocks(frontMatter), body)
+            return NoteFile(
+                blocks = buildBlocks(frontMatter, lineEnding),
+                body = body,
+                lineEnding = lineEnding,
+                hasUtf8Bom = hasUtf8Bom,
+            )
         }
 
         private fun generatedId(): String = (1..8).map { CHARS.random() }.joinToString("")
 
+        private fun detectLineEnding(content: String): String =
+            if ("\r\n" in content) "\r\n" else "\n"
+
         /** 프론트매터 텍스트를 top-level 키 단위 블록으로 분해. */
-        private fun buildBlocks(frontMatter: String): List<Block> {
+        private fun buildBlocks(frontMatter: String, lineEnding: String): List<Block> {
             val blocks = mutableListOf<Block>()
             var curKey: String? = null
             val cur = mutableListOf<String>()
 
             fun flush() {
                 if (cur.isEmpty()) return
-                blocks += makeBlock(curKey, cur.toList())
+                blocks += makeBlock(curKey, cur.toList(), lineEnding)
                 cur.clear()
                 curKey = null
             }
 
-            for (line in frontMatter.split("\n")) {
+            for (line in frontMatter.split(lineEnding)) {
                 val key = topLevelKey(line)
                 if (key != null) {
                     flush()
@@ -188,8 +212,22 @@ class NoteFile private constructor(
             return blocks
         }
 
-        private fun makeBlock(key: String?, lines: List<String>): Block {
-            val raw = lines.joinToString("\n")
+        /** 줄 전체가 `---`인 첫 닫는 fence 앞의 줄바꿈 위치를 반환한다. */
+        private fun findClosingFence(content: String, startIndex: Int, lineEnding: String): Int? {
+            val marker = "$lineEnding---"
+            var markerIndex = content.indexOf(marker, startIndex = startIndex)
+            while (markerIndex >= 0) {
+                val afterFence = markerIndex + marker.length
+                if (afterFence == content.length || content.startsWith(lineEnding, afterFence)) {
+                    return markerIndex
+                }
+                markerIndex = content.indexOf(marker, startIndex = markerIndex + marker.length)
+            }
+            return null
+        }
+
+        private fun makeBlock(key: String?, lines: List<String>, lineEnding: String): Block {
+            val raw = lines.joinToString(lineEnding)
             return when (key) {
                 KEY_ID, KEY_PLOT -> Block.Scalar(key, original = raw, value = parseScalar(lines.first()), dirty = false)
                 KEY_TAGS, KEY_ALIASES -> Block.ListBlock(key, original = raw, items = parseList(lines), dirty = false)

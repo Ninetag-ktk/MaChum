@@ -52,7 +52,7 @@ internal fun CodeBlockEditor(
         when (event.key) {
             Key.Backspace -> {
                 if (sel.collapsed && sel.start == 0 && block.codeState.text.isEmpty()) {
-                    navigation.onMergeWithPrevious()
+                    navigation.mutation.onMergeWithPrevious()
                     true
                 } else false
             }
@@ -73,7 +73,7 @@ internal fun CodeBlockEditor(
                                 replace(lineStart - 1, lineStart, "")
                             }
                         }
-                        navigation.onMoveToNext()
+                        navigation.focus.onMoveToNext()
                         true
                     } else false
                 } else false
@@ -85,9 +85,9 @@ internal fun CodeBlockEditor(
                     if (isFirstLine) {
                         if (event.isShiftPressed) {
                             // docs/markdown-editor.md — 항상 CodeBlock 자체만 atomic
-                            navigation.onSelectSelfAsAtomic()
+                            navigation.selection.onSelectSelfAsAtomic()
                         } else {
-                            navigation.onMoveToPrevious()
+                            navigation.focus.onMoveToPrevious()
                         }
                         true
                     } else false
@@ -99,9 +99,9 @@ internal fun CodeBlockEditor(
                     val isLastLine = text.indexOf('\n', sel.start) == -1
                     if (isLastLine) {
                         if (event.isShiftPressed) {
-                            navigation.onSelectSelfAsAtomic()
+                            navigation.selection.onSelectSelfAsAtomic()
                         } else {
-                            navigation.onMoveToNext()
+                            navigation.focus.onMoveToNext()
                         }
                         true
                     } else false
