@@ -3,7 +3,6 @@ package com.ninetag.machum.screen.commitScreen
 import com.ninetag.machum.screen.mainScreen.CommitDiffUiState
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -20,12 +19,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -40,14 +36,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.ninetag.machum.commit.CommitChange
-import com.ninetag.machum.commit.CommitChangeKind
 import com.ninetag.machum.commit.LineDiffKind
 import com.ninetag.machum.screen.common.PolicyDialog
-import com.ninetag.machum.screen.common.PopupUiMetrics
 import com.ninetag.machum.theme.WorkspaceUiMetrics
 import com.ninetag.machum.theme.semanticColors
 
@@ -220,72 +212,5 @@ internal fun LoadingRow(label: String) {
         CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
         Spacer(Modifier.width(8.dp))
         Text(label, style = MaterialTheme.typography.bodyMedium)
-    }
-}
-
-@Composable
-internal fun CommitChangeRow(
-    modifier: Modifier = Modifier,
-    change: CommitChange,
-    onClick: (() -> Unit)? = null,
-) {
-    val (label, color) = when (change.kind) {
-        CommitChangeKind.ADDED -> "추가" to MaterialTheme.colorScheme.primary
-        CommitChangeKind.MODIFIED -> "수정" to MaterialTheme.colorScheme.tertiary
-        CommitChangeKind.DELETED -> "삭제" to MaterialTheme.colorScheme.error
-        CommitChangeKind.RENAMED -> "이름 변경" to MaterialTheme.colorScheme.secondary
-        CommitChangeKind.RENAMED_AND_MODIFIED -> "이름 변경·수정" to MaterialTheme.colorScheme.tertiary
-    }
-    val interactionModifier = if (onClick == null) {
-        Modifier
-    } else {
-        Modifier.clickable(onClick = onClick)
-    }
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .heightIn(min = PopupUiMetrics.RowMinHeight)
-            .then(interactionModifier)
-            .padding(vertical = 2.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = label,
-                color = color,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = change.displayPath,
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            if (change.addedLines > 0 || change.deletedLines > 0) {
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = "+${change.addedLines}  -${change.deletedLines}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (onClick != null) {
-                Spacer(Modifier.width(4.dp))
-                Icon(
-                    imageVector = Icons.AutoMirrored.Default.KeyboardArrowRight,
-                    contentDescription = "변경 내용 보기",
-                    modifier = Modifier.size(PopupUiMetrics.IconSize),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        if (change.oldPath != null && change.newPath != null && change.oldPath != change.newPath) {
-            Text(
-                text = "${change.oldPath} → ${change.newPath}",
-                modifier = Modifier.padding(start = 4.dp, top = 2.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
     }
 }

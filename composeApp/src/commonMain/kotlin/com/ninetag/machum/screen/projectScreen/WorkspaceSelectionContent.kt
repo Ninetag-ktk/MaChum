@@ -22,6 +22,13 @@ import org.koin.compose.koinInject
 
 internal data class WorkspaceChoice(val directory: PlatformFile, val setup: WorkspaceSetup, val hasSuspendedProject: Boolean = false)
 
+private sealed interface WorkspaceDialog {
+    data object Create : WorkspaceDialog
+    data class Rename(val directory: PlatformFile) : WorkspaceDialog
+    data class Transition(val choice: WorkspaceChoice) : WorkspaceDialog
+    data class Trash(val choice: WorkspaceChoice) : WorkspaceDialog
+}
+
 @Composable
 fun ProjectSelectionScreen(
     operationScope: CoroutineScope,
@@ -42,15 +49,12 @@ fun ProjectSelectionScreen(
     var operationError by remember(vault) { mutableStateOf<String?>(null) }
     var busy by remember(vault) { mutableStateOf(false) }
     var reload by remember(vault) { mutableIntStateOf(0) }
-    var showCreate by remember(vault) { mutableStateOf(false) }
-    var renameTarget by remember(vault) { mutableStateOf<PlatformFile?>(null) }
+    var activeDialog by remember(vault) { mutableStateOf<WorkspaceDialog?>(null) }
     var menuTarget by remember(vault) { mutableStateOf<String?>(null) }
-    var transitionTarget by remember(vault) { mutableStateOf<WorkspaceChoice?>(null) }
-    var trashTarget by remember(vault) { mutableStateOf<WorkspaceChoice?>(null) }
     // Keep a successful creation distinct from an unsuccessful open. Retry never creates twice.
     var createdGeneral by remember(vault) { mutableStateOf<PlatformFile?>(null) }
     var createdProject by remember(vault) { mutableStateOf<PlatformFile?>(null) }
-    val blocked = busy || openRequest != null || trashTarget != null
+    val blocked = busy || openRequest != null || activeDialog is WorkspaceDialog.Trash
 
     LaunchedEffect(vault, reload) {
         choices = null
@@ -117,12 +121,12 @@ fun ProjectSelectionScreen(
                 }
                 choices!!.isEmpty() -> ProjectMessage("아직 작업 공간이 없습니다", "프로젝트나 일반 폴더를 만들어 시작하세요.", Modifier.weight(1f))
                 else -> WorkspaceChoiceList(
-                    choices = choices.orEmpty(), blocked = blocked || transitionTarget != null,
+                    choices = choices.orEmpty(), blocked = blocked || activeDialog is WorkspaceDialog.Transition,
                     menuTarget = menuTarget, onMenuTargetChange = { menuTarget = it },
                     onOpen = { execute { open(it.directory) } },
-                    onRename = { operationError = null; renameTarget = it.directory },
-                    onTransition = { operationError = null; transitionTarget = it },
-                    onTrash = { operationError = null; trashTarget = it },
+                    onRename = { operationError = null; activeDialog = WorkspaceDialog.Rename(it.directory) },
+                    onTransition = { operationError = null; activeDialog = WorkspaceDialog.Transition(it) },
+                    onTrash = { operationError = null; activeDialog = WorkspaceDialog.Trash(it) },
                     modifier = Modifier.fillMaxWidth().weight(1f),
                 )
             }
@@ -131,7 +135,7 @@ fun ProjectSelectionScreen(
                 Button(onClick = {
                     val existing = createdProject
                     if (existing != null) execute { open(existing) }
-                    else { operationError = null; showCreate = true }
+                    else { operationError = null; activeDialog = WorkspaceDialog.Create }
                 }, enabled = !blocked && vault != null,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                     Text(if (createdProject == null) "새 프로젝트" else "생성한 프로젝트 다시 열기")
@@ -151,63 +155,71 @@ fun ProjectSelectionScreen(
             }
         }
     }
-    trashTarget?.let { target ->
-        WorkspaceTrashDialog(
-            target = target, busy = busy, errorMessage = operationError,
-            onDismiss = { if (!busy) { trashTarget = null; operationError = null } },
-            onConfirm = { execute {
-                val result = fileManager.moveWorkspaceToTrash(vault ?: error("Vault가 없습니다."), target.directory)
-                val originalPath = target.directory.toString()
-                if (createdProject?.toString() == originalPath) createdProject = null
-                if (createdGeneral?.toString() == originalPath) createdGeneral = null
-                choices = choices?.filterNot { it.directory.toString() == originalPath }
-                trashTarget = null
-                operationError = result.cleanupWarning
-                reload++
+    when (val dialog = activeDialog) {
+        is WorkspaceDialog.Trash -> {
+            val target = dialog.choice
+            WorkspaceTrashDialog(
+                target = target, busy = busy, errorMessage = operationError,
+                onDismiss = { if (!busy) { activeDialog = null; operationError = null } },
+                onConfirm = { execute {
+                    val result = fileManager.moveWorkspaceToTrash(vault ?: error("Vault가 없습니다."), target.directory)
+                    val originalPath = target.directory.toString()
+                    if (createdProject?.toString() == originalPath) createdProject = null
+                    if (createdGeneral?.toString() == originalPath) createdGeneral = null
+                    choices = choices?.filterNot { it.directory.toString() == originalPath }
+                    activeDialog = null
+                    operationError = result.cleanupWarning
+                    reload++
+                } },
+            )
+        }
+        is WorkspaceDialog.Transition -> {
+            val target = dialog.choice
+            WorkspaceTransitionDialog(
+                target = target, busy = busy, errorMessage = operationError,
+                onDismiss = { if (!busy) { activeDialog = null; operationError = null } },
+                onConfirm = { execute {
+                    fileManager.transitionWorkspace(
+                        vault ?: error("Vault가 없습니다."), target.directory, target.setup,
+                        if (target.setup == WorkspaceSetup.PROJECT) WorkspaceKind.GENERAL else WorkspaceKind.PROJECT,
+                    )
+                    activeDialog = null
+                    reload++
+                } },
+            )
+        }
+        WorkspaceDialog.Create -> CreateProjectDialog(
+            existingProjectNames = choices.orEmpty().mapTo(mutableSetOf()) { it.directory.name },
+            isCreating = busy, errorMessage = operationError,
+            onDismiss = { if (!busy) { activeDialog = null; operationError = null } },
+            onCreate = { name -> execute {
+                val target = createdProject ?: (fileManager.createProject(name) ?: error("프로젝트를 만들지 못했습니다."))
+                    .also { createdProject = it; reload++ }
+                activeDialog = null
+                open(target)
             } },
         )
+        is WorkspaceDialog.Rename -> {
+            val target = dialog.directory
+            RenameProjectDialog(
+                currentName = target.name,
+                existingProjectNames = choices.orEmpty().mapTo(mutableSetOf()) { it.directory.name },
+                isRenaming = busy, errorMessage = operationError,
+                onDismissRequest = { if (!busy) { activeDialog = null; operationError = null } },
+                onRename = { name -> execute {
+                    val renamed = checkNotNull(fileManager.renameWorkspace(vault ?: error("Vault가 없습니다."), target, name)) {
+                        "이름을 변경하지 못했습니다. 이름과 접근 권한을 확인해 주세요."
+                    }
+                    if (createdProject?.toString() == target.toString()) createdProject = renamed
+                    if (createdGeneral?.toString() == target.toString()) createdGeneral = renamed
+                    activeDialog = null; reload++
+                } },
+                workspaceLabel = "작업 공간",
+                description = "선택한 작업 공간의 이름을 변경합니다. 프로젝트는 관리 태그도 함께 갱신합니다.",
+            )
+        }
+        null -> Unit
     }
-    transitionTarget?.let { target ->
-        WorkspaceTransitionDialog(
-            target = target, busy = busy, errorMessage = operationError,
-            onDismiss = { if (!busy) { transitionTarget = null; operationError = null } },
-            onConfirm = { execute {
-                fileManager.transitionWorkspace(
-                    vault ?: error("Vault가 없습니다."), target.directory, target.setup,
-                    if (target.setup == WorkspaceSetup.PROJECT) WorkspaceKind.GENERAL else WorkspaceKind.PROJECT,
-                )
-                transitionTarget = null
-                reload++
-            } },
-        )
-    }
-    if (showCreate) CreateProjectDialog(
-        existingProjectNames = choices.orEmpty().mapTo(mutableSetOf()) { it.directory.name },
-        isCreating = busy, errorMessage = operationError,
-        onDismiss = { if (!busy) { showCreate = false; operationError = null } },
-        onCreate = { name -> execute {
-            val target = createdProject ?: (fileManager.createProject(name) ?: error("프로젝트를 만들지 못했습니다."))
-                .also { createdProject = it; reload++ }
-            showCreate = false
-            open(target)
-        } },
-    )
-    renameTarget?.let { target -> RenameProjectDialog(
-        currentName = target.name,
-        existingProjectNames = choices.orEmpty().mapTo(mutableSetOf()) { it.directory.name },
-        isRenaming = busy, errorMessage = operationError,
-        onDismissRequest = { if (!busy) { renameTarget = null; operationError = null } },
-        onRename = { name -> execute {
-            val renamed = checkNotNull(fileManager.renameWorkspace(vault ?: error("Vault가 없습니다."), target, name)) {
-                "이름을 변경하지 못했습니다. 이름과 접근 권한을 확인해 주세요."
-            }
-            if (createdProject?.toString() == target.toString()) createdProject = renamed
-            if (createdGeneral?.toString() == target.toString()) createdGeneral = renamed
-            renameTarget = null; reload++
-        } },
-        workspaceLabel = "작업 공간",
-        description = "선택한 작업 공간의 이름을 변경합니다. 프로젝트는 관리 태그도 함께 갱신합니다.",
-    ) }
 }
 
 internal fun WorkspaceSetup.label() = when (this) {

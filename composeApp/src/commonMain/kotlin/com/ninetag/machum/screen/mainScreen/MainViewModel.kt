@@ -29,8 +29,7 @@ import com.ninetag.machum.external.FileCreationIncompleteException
 import com.ninetag.machum.external.NoteFile
 import com.ninetag.machum.external.GeneralSourceState
 import com.ninetag.machum.external.GeneralSourcePlan
-import com.ninetag.machum.external.GeneralSourceProperty
-import com.ninetag.machum.external.documentPropertySource
+import com.ninetag.machum.external.DocumentPropertyProtectionPolicy
 import com.ninetag.machum.external.ProjectFile
 import com.ninetag.machum.external.ProjectFolder
 import com.ninetag.machum.external.ProjectFolderDeletionPreview
@@ -318,6 +317,7 @@ class MainViewModel internal constructor(
         viewModelScope.launch {
             fileManager.bookmarks.collectLatest { bookmarks ->
                 fileReconciliationMutex.withLock {
+                    var workspaceListsRefreshed = false
                     val vault = bookmarks.vaultData
                     if (vault == null) {
                         _projectList.value = emptyList()
@@ -328,6 +328,7 @@ class MainViewModel internal constructor(
                         if (activeVaultLocation != vaultLocation) {
                             activeVaultLocation = vaultLocation
                             refreshWorkspaceLists(vault)
+                            workspaceListsRefreshed = true
                         }
                     }
 
@@ -353,7 +354,9 @@ class MainViewModel internal constructor(
                         clearProjectState(preserveBaseline = preserveBaseline)
                         activeProjectLocation = projectLocation
                         activeWorkspaceKind = bookmarks.workspaceKind
-                        bookmarks.vaultData?.let { refreshWorkspaceLists(it) }
+                        if (!workspaceListsRefreshed) {
+                            bookmarks.vaultData?.let { refreshWorkspaceLists(it) }
+                        }
                     }
                     if (projectChanged || _hierarchyState.value.folderList.isEmpty()) {
                         val preferredKey = bookmarks.fileRelativePath
@@ -1676,18 +1679,15 @@ class MainViewModel internal constructor(
                     check(disk.withBody("", false).inject() == expectedNote.withBody("", false).inject()) {
                         "문서 속성이 변경되었습니다. 최신 속성을 확인한 뒤 다시 시도해 주세요."
                     }
-                    check(updatedNote.id == disk.id && updatedNote.plot == disk.plot) { "id와 plot은 자동 관리 속성입니다." }
-                    check(listOf("id", "plot").all { documentPropertySource(disk.inject(), it) == documentPropertySource(updatedNote.inject(), it) }) {
-                        "id와 plot은 자동 관리 속성입니다."
-                    }
-                    if (context.workspaceKind == WorkspaceKind.PROJECT) {
-                        val managed = com.ninetag.machum.entity.normalizeTags(
+                    val managed = if (context.workspaceKind == WorkspaceKind.PROJECT) {
+                        com.ninetag.machum.entity.normalizeTags(
                             listOfNotNull(bookmarks.value.projectData?.name) + projectConfig.value?.effectiveAutoTags(fileKey.folder.relativePath).orEmpty())
-                        check(updatedNote.tags.containsAll(disk.tags.filter { it in managed })) { "자동 관리 태그는 삭제할 수 없습니다." }
-                    } else if (_generalSourceState.value?.enabled == true &&
-                        documentPropertySource(disk.inject(), "source") != documentPropertySource(updatedNote.inject(), "source")) {
-                        check(GeneralSourceProperty.read(updatedNote.inject()).error == null) { "source는 텍스트 값 하나여야 합니다." }
-                    }
+                    } else emptyList()
+                    val protection = DocumentPropertyProtectionPolicy(
+                        managedTagNames = managed.toSet(),
+                        sourceIsManaged = context.workspaceKind != WorkspaceKind.PROJECT && _generalSourceState.value?.enabled == true,
+                    )
+                    protection.persistedChangeError(disk, updatedNote)?.let { error(it) }
                     val latest = loadedNote(fileKey)
                     val body = when {
                         latest == null || latest.body == expectedNote.body -> disk.body

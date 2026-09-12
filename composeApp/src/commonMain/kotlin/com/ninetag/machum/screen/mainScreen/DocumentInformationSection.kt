@@ -93,7 +93,7 @@ private class PropertyForm {
         ensureEditableRow()
     }
     fun ensureEditableRow() {
-        if (rows.none { it.original == null || (it.original?.readOnly == false && it.original?.key !in setOf("id", "plot")) }) {
+        if (rows.none { it.original == null || (it.original?.readOnly == false && !DocumentPropertyProtectionPolicy.isAutomaticKey(it.original?.key)) }) {
             rows.add(PropertyDraft(nextId++, null))
         }
     }
@@ -116,6 +116,7 @@ internal fun DocumentInformationSection(
     val forms = remember { mutableMapOf<Pair<String, FileKey>, PropertyForm>() }
     val scope = rememberCoroutineScope()
     if (file == null || note == null) return
+    val protection = DocumentPropertyProtectionPolicy(managedTags.keys, sourceIsManaged)
     val raw = note.inject()
     val parsed = remember(raw) { parseDocumentProperties(raw) }
     val form = forms.getOrPut(workspaceIdentity to file.key) { PropertyForm() }
@@ -136,8 +137,8 @@ internal fun DocumentInformationSection(
         val current = parseDocumentProperties(currentRaw).properties
         val original = row.original
         if (deleting && original != null && (
-            original.readOnly || original.key in protectedKeys || original.key in setOf("id", "plot") ||
-                (original.key == "tags" && managedTags.isNotEmpty())
+            original.readOnly || original.key in protectedKeys || DocumentPropertyProtectionPolicy.isAutomaticKey(original.key) ||
+                protection.isManagedTagsKey(original.key)
         )) {
             row.error = "이 속성은 삭제할 수 없습니다."
             row.pendingDelete = false
@@ -155,8 +156,8 @@ internal fun DocumentInformationSection(
         }
         if (!deleting && name.isEmpty() && row.hasValue()) { row.error = "값이 있는 속성에는 이름이 필요합니다."; return }
         if (!deleting && name != original?.key && current.any { it.key == name }) { row.error = "이미 있는 속성 이름입니다."; return }
-        if (!deleting && (name in setOf("id", "plot") || original?.key in setOf("id", "plot"))) { row.error = "자동 관리 속성은 변경할 수 없습니다."; return }
-        if (!deleting && sourceIsManaged && (name == "source" || original?.key == "source") && row.type != DocumentPropertyType.TEXT) {
+        if (!deleting && (DocumentPropertyProtectionPolicy.isAutomaticKey(name) || DocumentPropertyProtectionPolicy.isAutomaticKey(original?.key))) { row.error = "자동 관리 속성은 변경할 수 없습니다."; return }
+        if (!deleting && (protection.isManagedSourceKey(name) || protection.isManagedSourceKey(original?.key)) && row.type != DocumentPropertyType.TEXT) {
             row.error = "source는 텍스트 값 하나만 사용합니다."; return
         }
         if (!deleting && original != null && name == original.key && row.type == original.type && row.value() == original.value) {
@@ -216,12 +217,12 @@ internal fun DocumentInformationSection(
                     ) {
                         parsed.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                         form.rows.forEach { row -> key(workspaceIdentity, fileKey, row.id) {
-                            val locked = row.original?.readOnly == true || row.original?.key in setOf("id", "plot")
+                            val locked = row.original?.readOnly == true || DocumentPropertyProtectionPolicy.isAutomaticKey(row.original?.key)
                             val tagRow = row.name == "tags"
                             val rowManagedTags = managedTags.takeIf { tagRow }.orEmpty()
-                            val keyLocked = row.original?.key in protectedKeys || rowManagedTags.isNotEmpty()
+                            val keyLocked = row.original?.key in protectedKeys || protection.isManagedTagsKey(row.name)
                             PropertyRow(row, locked, keyLocked, rowManagedTags,
-                                sourceIsManaged && row.name == "source", parsed.error == null,
+                                protection.isManagedSourceKey(row.name), parsed.error == null,
                                 onSubmit = { submit(row) }, onDelete = { submit(row, explicitDelete = true) })
                         } }
                         TextButton(onClick = { form.rows.add(PropertyDraft(form.nextId++, null)) }) {

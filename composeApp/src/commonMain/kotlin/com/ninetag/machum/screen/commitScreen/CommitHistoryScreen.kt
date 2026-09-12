@@ -75,7 +75,6 @@ internal fun CommitHistoryListPane(
     onOpenCommitDialog: () -> Unit,
     onCommitSelected: (String) -> Unit,
     modifier: Modifier = Modifier,
-    timeline: Boolean = false,
     showChevron: Boolean = false,
 ) {
     when {
@@ -126,7 +125,6 @@ internal fun CommitHistoryListPane(
                         isHead = entry.commit.id == headCommitId,
                         selected = entry.commit.id == selectedCommitId,
                         onClick = { onCommitSelected(entry.commit.id) },
-                        timeline = timeline,
                         showChevron = showChevron,
                     )
                     if (showChevron) HorizontalDivider()
@@ -142,7 +140,6 @@ private fun CommitHistoryListItem(
     isHead: Boolean,
     selected: Boolean,
     onClick: () -> Unit,
-    timeline: Boolean = false,
     showChevron: Boolean = false,
 ) {
     val timelineColor = MaterialTheme.colorScheme.outlineVariant
@@ -161,12 +158,12 @@ private fun CommitHistoryListItem(
         tonalElevation = if (selected) 1.dp else 0.dp,
     ) {
         Column(
-            modifier = Modifier.then(if (timeline) Modifier.drawBehind {
+            modifier = Modifier.drawBehind {
                 val x = 14.dp.toPx()
                 val y = 22.dp.toPx()
                 drawLine(timelineColor, Offset(x, 0f), Offset(x, size.height), 1.dp.toPx())
                 drawCircle(markerColor, 4.dp.toPx(), Offset(x, y))
-            } else Modifier).padding(start = if (timeline) 32.dp else 12.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
+            }.padding(start = 32.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -214,13 +211,12 @@ internal fun CommitHistoryDetail(
     workingPreview: CommitPreview?,
     canReplaceProjectRestore: Boolean,
     onOpenCommitDialog: () -> Unit,
-    onDiffRequest: (String, CommitChange) -> Unit,
     onProjectRestoreRequest: (CommitHistoryEntry) -> Unit,
     onHeadRevertRequest: (CommitHistoryEntry) -> Unit,
     modifier: Modifier = Modifier,
     fixedRestoreFooter: Boolean = false,
     inlineDiff: (@Composable () -> Unit)? = null,
-    changeContent: (@Composable (CommitChange) -> Unit)? = null,
+    changeContent: @Composable (CommitChange) -> Unit,
 ) {
     val content: @Composable () -> Unit = {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -255,10 +251,7 @@ internal fun CommitHistoryDetail(
             style = MaterialTheme.typography.labelLarge,
         )
         entry.changes.forEach { change ->
-            if (changeContent != null) changeContent(change) else CommitChangeRow(
-                change = change,
-                onClick = { onDiffRequest(entry.commit.id, change) },
-            )
+            changeContent(change)
         }
 
         inlineDiff?.invoke()

@@ -138,7 +138,7 @@ internal fun CommitWorkspaceScreen(
                                 entry = entry, isHead = entry.commit.id == head,
                                 workingPreview = historyState.workingPreview,
                                 canReplaceProjectRestore = historyState.canReplaceProjectRestore,
-                                onOpenCommitDialog = openChanges, onDiffRequest = onHistoryDiffRequest,
+                                onOpenCommitDialog = openChanges,
                                 onProjectRestoreRequest = onProjectRestoreRequest,
                                 onHeadRevertRequest = onHeadRevertRequest,
                                 modifier = Modifier.fillMaxSize(),
@@ -154,7 +154,6 @@ internal fun CommitWorkspaceScreen(
                             CommitHistoryListPane(
                                 historyState.isLoading, historyState.history, head, historyState.selectedCommitId,
                                 historyState.errorMessage, onHistoryRetry, openChanges, onCommitSelected, listModifier,
-                                timeline = true,
                                 showChevron = !wide,
                             )
                         }
