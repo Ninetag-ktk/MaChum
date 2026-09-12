@@ -2,6 +2,7 @@ package com.ninetag.machum.screen.mainScreen
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.foundation.layout.Row
@@ -168,14 +169,38 @@ fun EditorTopBar(
                 editingProgress = 1f - contextAlpha,
                 sideWidthDifference = abs((if (onNavigateBack != null) 96 else 48) - (if (onCommitClick != null) 48 else 0)).dp,
                 endContextWidth = if (projectFile != null) (infoButtonSize + infoButtonGap) * contextAlpha else 0.dp,
-            ) {
+            ) { compactTitleLayout ->
+            BoxWithConstraints {
+            val titleStyle = LocalTextStyle.current.copy(
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.Normal,
+                fontSize = WorkspaceUiMetrics.titleFontSize,
+                lineHeight = WorkspaceUiMetrics.titleLineHeight,
+            )
+            val textMeasurer = rememberTextMeasurer()
+            val measuredTitle = textMeasurer.measure(editingTitle, titleStyle, softWrap = false, maxLines = 1)
+            val entryWidth = if (isEditing) textMeasurer.measure(originalTitle, titleStyle, softWrap = false, maxLines = 1).size.width else 0
+            val titleWidth = with(density) { maxOf(measuredTitle.size.width, entryWidth).toDp() } + 2.dp
+            val numberWidthLimit = maxWidth * 0.2f
+            val numberWidth = if (fileName?.numbering?.isNotEmpty() == true) {
+                (with(density) { textMeasurer.measure("${fileName.numbering}.", titleStyle).size.width.toDp() } + 4.dp)
+                    .coerceAtMost(numberWidthLimit)
+            } else 0.dp
+            val separatorWidth = with(density) { textMeasurer.measure("/", LocalTextStyle.current).size.width.toDp() } + 4.dp
+            // Fixed-width context consumes only what it needs; unused weighted shares must not
+            // leave the document title ellipsized. A narrow bar gives the title first claim.
+            val pathWidthLimit = if (fileName == null) maxWidth else if (compactTitleLayout) {
+                (maxWidth - titleWidth - infoButtonSize - infoButtonGap - numberWidth - separatorWidth)
+                    .coerceIn(0.dp, maxWidth * 0.3f)
+            } else maxWidth * 0.35f
+            val showPath = folderName != null && pathWidthLimit > 0.dp
             Row(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                folderName?.let { name ->
+                folderName?.takeIf { showPath }?.let { name ->
                     Text(
                         text = name,
-                        modifier = Modifier.weight(if (fileName != null) 0.35f else 1f, fill = false)
+                        modifier = Modifier.widthIn(max = pathWidthLimit)
                             .testTag("title-path-context").then(contextVisibility).padding(end = 4.dp),
                         style = WorkspaceUiMetrics.bodyTextStyle,
                         color = MaterialTheme.colorScheme.primary,
@@ -183,7 +208,7 @@ fun EditorTopBar(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                if (folderName != null && fileName != null) {
+                if (showPath && fileName != null) {
                     Text(
                         text = "/",
                         modifier = contextVisibility.padding(end = 4.dp),
@@ -191,21 +216,6 @@ fun EditorTopBar(
                     )
                 }
                 if (fileName != null) {
-                    val titleStyle = LocalTextStyle.current.copy(
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontWeight = FontWeight.Normal,
-                        fontSize = WorkspaceUiMetrics.titleFontSize,
-                        lineHeight = WorkspaceUiMetrics.titleLineHeight,
-                    )
-                    val textMeasurer = rememberTextMeasurer()
-                    val measuredTitle = textMeasurer.measure(
-                        editingTitle, titleStyle, softWrap = false, maxLines = 1,
-                    )
-                    val entryWidth = if (isEditing) textMeasurer.measure(
-                        originalTitle, titleStyle, softWrap = false, maxLines = 1,
-                    ).size.width else 0
-                    // Both states use text width, avoiding the text field's intrinsic minimum.
-                    val titleWidth = with(density) { maxOf(measuredTitle.size.width, entryWidth).toDp() } + 2.dp
                     if (fileName.numbering.isNotEmpty()) {
                         Text(
                             text = "${fileName.numbering}.",
@@ -216,7 +226,7 @@ fun EditorTopBar(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier
                                 // The prefix may be arbitrary text before ". ", not only a short number.
-                                .weight(0.25f, fill = false)
+                                .widthIn(max = numberWidthLimit)
                                 .wrapContentWidth()
                                 .testTag("title-number-context").then(contextVisibility).padding(end = 4.dp)
                                 .heightIn(min = 48.dp)
@@ -399,6 +409,7 @@ fun EditorTopBar(
                 }
             }
             }
+            }
         },
         actions = {
             if (onCommitClick != null) IconButton(onClick = onCommitClick) {
@@ -427,9 +438,12 @@ private fun CenteredEditorTitle(
     editingProgress: Float,
     sideWidthDifference: Dp,
     endContextWidth: Dp,
-    content: @Composable () -> Unit,
+    content: @Composable (Boolean) -> Unit,
 ) {
-    Layout(content = content, modifier = Modifier.clipToBounds()) { measurables, constraints ->
+    BoxWithConstraints {
+    // Classify the original title region, before its trailing context animates the row width.
+    val compactTitleLayout = maxWidth - sideWidthDifference < 320.dp
+    Layout(content = { content(compactTitleLayout) }, modifier = Modifier.clipToBounds()) { measurables, constraints ->
         // Material supplies the gap between navigation/actions. Remove its asymmetry to get a
         // symmetric region around the bar center which cannot overlap either set of controls.
         val safeWidth = (constraints.maxWidth - sideWidthDifference.roundToPx()).coerceAtLeast(0)
@@ -445,6 +459,7 @@ private fun CenteredEditorTitle(
             // Alignment lines are physical x coordinates, including in RTL.
             row.place(x, 0)
         }
+    }
     }
 }
 

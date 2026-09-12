@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
@@ -39,6 +41,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.dp
@@ -101,6 +104,7 @@ fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
+    val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     LaunchedEffect(workspaceSelectionPending) {
         if (workspaceSelectionPending) focusManager.clearFocus(force = true)
     }
@@ -189,17 +193,15 @@ fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
     }
 
 
-    WorkspaceBackHandler(commitWorkspaceOpen && commitHistoryUiState.restore == null) {
-        onCommitBack()
-    }
-    WorkspaceBackHandler(
-        !commitHistoryUiState.isOpen && !commitCreateUiState.isOpen &&
-            workspaceError == null && pendingFolderDeletion == null && pendingFileTrash == null,
-    ) {
+    // Root barrier is registered first; later drawer/dialog/commit handlers retain priority.
+    WorkspaceBackHandler(enabled = true) {
         when {
             drawerState.isOpen -> scope.launch { drawerState.close() }
-            else -> viewModel.openWorkspaceSelection()
+            else -> focusManager.clearFocus(force = true)
         }
+    }
+    WorkspaceBackHandler(commitWorkspaceOpen && commitHistoryUiState.restore == null) {
+        onCommitBack()
     }
 
     WorkspaceDrawerMotionTheme { contentMotionScheme ->
@@ -361,6 +363,7 @@ fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
                                         HorizontalPager(
                                             state = pagerState,
                                             modifier = Modifier.fillMaxSize(),
+                                            userScrollEnabled = !imeVisible,
                                             key = { page ->
                                                 fileList.getOrNull(page)
                                                     ?.let { viewModel.editorSessionKey(it.key) }

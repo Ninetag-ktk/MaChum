@@ -5,6 +5,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ninetag.machum.external.FileManager
@@ -31,6 +32,7 @@ fun ProjectSelectionScreen(
     onErrorDismiss: () -> Unit = {},
 ) {
     val fileManager = koinInject<FileManager>()
+    val focusManager = LocalFocusManager.current
     val bookmark by fileManager.bookmarks.collectAsState()
     val openRequest by fileManager.workspaceOpenRequest.collectAsState()
     val workspaceTrashWarning by fileManager.workspaceTrashWarning.collectAsState()
@@ -82,8 +84,9 @@ fun ProjectSelectionScreen(
         if (openWorkspaceChoice(fileManager, vault ?: error("Vault가 없습니다."), directory, configure)) onOpened()
     }
 
-    WorkspaceBackHandler(!showCreate && renameTarget == null && menuTarget == null && transitionTarget == null && trashTarget == null && openRequest == null) {
-        if (!blocked) onVaultChange()
+    // Screen-root barrier stays active beneath later popup/dialog handlers.
+    WorkspaceBackHandler(enabled = true) {
+        focusManager.clearFocus(force = true)
     }
 
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
