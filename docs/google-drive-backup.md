@@ -1,5 +1,8 @@
 # Google Drive 커밋 백업
 
+범주: 외부 연동의 기술 계약·향후 설계. [작업 목록](planning/backlog.md)이 활성화 우선순위를 담당한다.
+이 문서의 Google Drive는 **앱의 커밋 백업**이며, 사용자가 열람하는 IA Google Sheets와 별개다.
+
 ## 기능 상태: 비활성
 
 Google Drive 백업 코어는 향후 연동을 위해 소스와 테스트만 보존하며, 현재 애플리케이션 실행 경로에는
@@ -74,9 +77,11 @@ Drive 구현에서는 원격 파일의 `appProperties`에 MaChum project/file/ob
 
 ## `.machum.json` 정책
 
-`.machum.json`은 기존 정책대로 새 CommitTree, diff, restore 대상이 아니다. 따라서 `workspace`에도
-포함되지 않는다. 과거 legacy tree가 설정 entry를 이미 포함한다면 그 tree 자체의 무결성을 보존하기 위해
-참조 blob을 history 객체로만 백업할 수 있다.
+`.machum.json`은 기존 정책대로 새 CommitTree, diff, 복원 대상이 아니다. 따라서 `workspace`에도
+포함되지 않는다. `파일 내용 복원`, `단일 파일 전체 복원`, `프로젝트 전체 복원`은 모두 CommitTree가 추적하는
+Markdown에만 적용한다. 여기서 프로젝트 전체는 설정을 포함한 물리 디렉터리 전체가 아니라 추적 Markdown tree 전체다.
+과거 legacy tree가 설정 entry를 이미 포함한다면 그 tree 자체의 무결성을 보존하기 위해 참조 blob을 history 객체로만
+백업할 수 있다.
 
 프로젝트 폴더 유형·Plot·자동 태그 설정은 `metadata/project-config.json` 최신본으로 별도 백업한다.
 이 파일은 mutable recovery metadata이며 commit 이력에는 포함하지 않는다.

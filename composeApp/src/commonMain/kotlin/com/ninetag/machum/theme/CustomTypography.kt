@@ -3,9 +3,17 @@ package com.ninetag.machum.theme
 import androidx.compose.material3.Typography
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.sp
 import machum.composeapp.generated.resources.PretendardVariable
 import machum.composeapp.generated.resources.Res
 import org.jetbrains.compose.resources.Font
+
+/** Desktop UI captions stay readable; editor bodyLarge and Android typography are preserved. */
+internal fun Typography.withPlatformUiSizes(): Typography = if (platformUsesTouchUi) this else copy(
+    bodySmall = bodySmall.copy(fontSize = 14.sp, lineHeight = 20.sp),
+    labelMedium = labelMedium.copy(fontSize = 14.sp, lineHeight = 20.sp),
+    labelSmall = labelSmall.copy(fontSize = 14.sp, lineHeight = 20.sp),
+)
 
 fun Typography.withFontFamily(fontFamily: FontFamily): Typography {
     return Typography().copy(

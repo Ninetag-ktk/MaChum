@@ -1,6 +1,7 @@
 package com.ninetag.machum.external
 
 import com.ninetag.machum.entity.PlotStage
+import com.ninetag.machum.entity.normalizeTag
 import com.ninetag.machum.entity.normalizeTags
 
 /**
@@ -53,8 +54,17 @@ class NoteFile private constructor(
 
     fun ensureId(): NoteFile = if (id != null) this else withId(generatedId())
 
+    /** 관리 Project의 생성·저장·인덱싱에 쓰는 순수 변환. 조회나 디스크 쓰기를 수행하지 않는다. */
+    fun withProjectMetadata(projectName: String?): NoteFile {
+        val withId = ensureId()
+        val projectTag = projectName?.let(::normalizeTag)?.takeIf(String::isNotBlank)
+            ?: return withId
+        return withId.withTags(listOf(projectTag) + withId.tags.filterNot { it == projectTag })
+    }
+
     /** 본문만 교체하고 프론트매터(관리/미관리 모두)는 보존한다. id 가 없으면 생성한다. */
-    fun withBody(body: String): NoteFile = NoteFile(blocks, body, lineEnding, hasUtf8Bom).ensureId()
+    fun withBody(body: String, ensureId: Boolean = true): NoteFile =
+        NoteFile(blocks, body, lineEnding, hasUtf8Bom).let { if (ensureId) it.ensureId() else it }
 
     /** 프론트매터 + 본문을 raw markdown 문자열로 직렬화. 같은 내용이면 항상 같은 문자열(diff 안정성). */
     fun inject(): String {
@@ -145,7 +155,7 @@ class NoteFile private constructor(
         /** 앱 전역 plot 선택 값. 기존 호출부 호환을 위해 문자열 목록도 제공한다. */
         val PLOT_VALUES = PlotStage.entries.map(PlotStage::frontmatterValue)
 
-        private val CHARS = ('a'..'z') + ('0'..'9')
+        private val CHARS = ('a'..'z') + ('0'..'9').toList()
         private val MANAGED_KEYS = setOf(KEY_ID, KEY_TAGS, KEY_ALIASES, KEY_PLOT)
         private const val UTF8_BOM = '\uFEFF'
 

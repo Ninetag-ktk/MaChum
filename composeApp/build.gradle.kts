@@ -42,6 +42,7 @@ kotlin {
         }
         androidMain.dependencies {
             implementation(libs.androidx.documentfile)
+            implementation(libs.androidx.activity.compose)
         }
         commonMain.dependencies {
             implementation(libs.compose.runtime)
@@ -66,6 +67,9 @@ kotlin {
             implementation(libs.kotlinx.coroutines.test)
         }
         jvmMain.dependencies {}
+        jvmTest.dependencies {
+            runtimeOnly(compose.desktop.currentOs)
+        }
     }
 }
 

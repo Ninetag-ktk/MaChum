@@ -90,7 +90,10 @@ class FileManagerProjectConfigTest {
 
         try {
             val fileManager = FileManager(dataStore)
-            fileManager.pickProject(PlatformFile(projectDirectory))
+            fileManager.openProjectThroughWorkspaceFlow(
+                vault = testRoot,
+                project = projectDirectory,
+            )
 
             val loaded = withTimeout(5_000.milliseconds) {
                 fileManager.projectConfig.filterNotNull().first()
@@ -158,7 +161,11 @@ class FileManagerProjectConfigTest {
 
         try {
             val fileManager = FileManager(dataStore)
-            fileManager.pickProject(PlatformFile(projectDirectory))
+            fileManager.openProjectThroughWorkspaceFlow(
+                vault = testRoot,
+                project = projectDirectory,
+                expectConfirmation = false,
+            )
 
             val loaded = withTimeout(5_000.milliseconds) {
                 fileManager.projectConfig.filterNotNull().first()
@@ -190,7 +197,10 @@ class FileManagerProjectConfigTest {
 
         try {
             val fileManager = FileManager(dataStore)
-            fileManager.pickProject(PlatformFile(projectDirectory))
+            fileManager.openProjectThroughWorkspaceFlow(
+                vault = testRoot,
+                project = projectDirectory,
+            )
             withTimeout(5_000.milliseconds) {
                 fileManager.projectConfig.filterNotNull().first()
             }
@@ -225,7 +235,10 @@ class FileManagerProjectConfigTest {
 
         try {
             val fileManager = FileManager(dataStore)
-            fileManager.pickProject(PlatformFile(projectDirectory))
+            fileManager.openProjectThroughWorkspaceFlow(
+                vault = testRoot,
+                project = projectDirectory,
+            )
             withTimeout(5_000.milliseconds) {
                 fileManager.projectConfig.filterNotNull().first()
             }
@@ -251,7 +264,10 @@ class FileManagerProjectConfigTest {
 
         try {
             val fileManager = FileManager(dataStore)
-            fileManager.pickProject(PlatformFile(projectDirectory))
+            fileManager.openProjectThroughWorkspaceFlow(
+                vault = testRoot,
+                project = projectDirectory,
+            )
             withTimeout(5_000.milliseconds) {
                 fileManager.projectConfig.filterNotNull().first()
             }
@@ -281,7 +297,10 @@ class FileManagerProjectConfigTest {
 
         try {
             val fileManager = FileManager(dataStore)
-            fileManager.pickProject(PlatformFile(projectDirectory))
+            fileManager.openProjectThroughWorkspaceFlow(
+                vault = testRoot,
+                project = projectDirectory,
+            )
             withTimeout(5_000.milliseconds) {
                 fileManager.projectConfig.filterNotNull().first()
             }
@@ -297,7 +316,7 @@ class FileManagerProjectConfigTest {
             assertEquals("Scene", created.key.relativePath)
             assertTrue(File(projectDirectory, "Scene").isDirectory)
             assertEquals(folderConfig, fileManager.projectConfig.value?.folders?.get("Scene"))
-            assertNull(fileManager.createProjectFolder("scene", FolderConfig()))
+            assertEquals("scene_1", assertNotNull(fileManager.createProjectFolder("scene", FolderConfig())).key.relativePath)
             assertNull(fileManager.createProjectFolder("../Outside", FolderConfig()))
         } finally {
             dataStoreScope.cancel()
@@ -405,7 +424,10 @@ class FileManagerProjectConfigTest {
 
         try {
             val fileManager = FileManager(dataStore)
-            fileManager.pickProject(PlatformFile(projectDirectory))
+            fileManager.openProjectThroughWorkspaceFlow(
+                vault = testRoot,
+                project = projectDirectory,
+            )
             withTimeout(5_000.milliseconds) {
                 fileManager.projectConfig.filterNotNull().first()
             }
@@ -428,21 +450,21 @@ class FileManagerProjectConfigTest {
 
             val renamed = fileManager.renameProjectFolder(
                 folder = ProjectFolder(FolderKey.of("Character"), PlatformFile(characterDirectory)),
-                newName = "3. Character",
+                newName = "Renamed Character",
                 folderConfig = folderConfig,
             )
 
             assertNotNull(renamed)
-            assertTrue(File(projectDirectory, "3. Character/Hero.md").isFile)
+            assertTrue(File(projectDirectory, "Renamed Character/Hero.md").isFile)
             assertTrue(!characterDirectory.exists())
             assertNull(fileManager.projectConfig.value?.folders?.get("Character"))
-            assertEquals(folderConfig, fileManager.projectConfig.value?.folders?.get("3. Character"))
+            assertEquals(folderConfig, fileManager.projectConfig.value?.folders?.get("Renamed Character"))
             assertEquals(
-                "3. Character/Hero.md",
+                "Renamed Character/Hero.md",
                 fileManager.projectConfig.value?.fileIds?.get("hero-id"),
             )
-            assertEquals("3. Character/Hero.md", fileManager.bookmarks.value.fileRelativePath)
-            assertEquals("3. Character/Hero.md", renamed.selectedFileKey?.relativePath)
+            assertEquals("Renamed Character/Hero.md", fileManager.bookmarks.value.fileRelativePath)
+            assertEquals("Renamed Character/Hero.md", renamed.selectedFileKey?.relativePath)
 
             File(projectDirectory, "Existing").mkdirs()
             assertNull(
@@ -452,7 +474,7 @@ class FileManagerProjectConfigTest {
                     folderConfig = folderConfig,
                 )
             )
-            assertTrue(File(projectDirectory, "3. Character/Hero.md").isFile)
+            assertTrue(File(projectDirectory, "Renamed Character/Hero.md").isFile)
         } finally {
             dataStoreScope.cancel()
             testRoot.deleteRecursively()
@@ -473,7 +495,10 @@ class FileManagerProjectConfigTest {
 
         try {
             val fileManager = FileManager(dataStore)
-            fileManager.pickProject(PlatformFile(projectDirectory))
+            fileManager.openProjectThroughWorkspaceFlow(
+                vault = testRoot,
+                project = projectDirectory,
+            )
             withTimeout(5_000.milliseconds) {
                 fileManager.projectConfig.filterNotNull().first()
             }
@@ -528,7 +553,10 @@ class FileManagerProjectConfigTest {
 
         try {
             val fileManager = FileManager(dataStore)
-            fileManager.pickProject(PlatformFile(projectDirectory))
+            fileManager.openProjectThroughWorkspaceFlow(
+                vault = testRoot,
+                project = projectDirectory,
+            )
             withTimeout(5_000.milliseconds) {
                 fileManager.projectConfig.filterNotNull().first()
             }
@@ -560,7 +588,10 @@ class FileManagerProjectConfigTest {
 
         try {
             val fileManager = FileManager(dataStore)
-            fileManager.pickProject(PlatformFile(projectDirectory))
+            fileManager.openProjectThroughWorkspaceFlow(
+                vault = testRoot,
+                project = projectDirectory,
+            )
             withTimeout(5_000.milliseconds) {
                 fileManager.projectConfig.filterNotNull().first()
             }
@@ -577,5 +608,29 @@ class FileManagerProjectConfigTest {
             dataStoreScope.cancel()
             testRoot.deleteRecursively()
         }
+    }
+
+    private suspend fun FileManager.openProjectThroughWorkspaceFlow(
+        vault: File,
+        project: File,
+        expectConfirmation: Boolean = true,
+    ) {
+        setPreferences(Bookmarks(vaultData = PlatformFile(vault)))
+
+        requestOpenWorkspace(PlatformFile(project))
+
+        if (expectConfirmation) {
+            val request = assertNotNull(workspaceOpenRequest.value)
+            assertEquals(PlatformFile(project).toString(), request.directory.toString())
+            confirmWorkspaceOpen(WorkspaceKind.PROJECT)
+        } else {
+            assertNull(
+                workspaceOpenRequest.value,
+                "a project with a valid legacy config must activate without confirmation",
+            )
+        }
+        assertNull(workspaceOpenRequest.value)
+        assertEquals(PlatformFile(project).toString(), bookmarks.value.projectData?.toString())
+        assertEquals(WorkspaceKind.PROJECT, bookmarks.value.workspaceKind)
     }
 }

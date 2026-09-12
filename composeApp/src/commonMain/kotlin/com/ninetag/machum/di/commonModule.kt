@@ -3,9 +3,10 @@ package com.ninetag.machum.di
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import com.ninetag.machum.external.DocumentInfoPreferences
 import com.ninetag.machum.external.FileManager
-import com.ninetag.machum.screen.mainComposition.MainViewModel
-import com.ninetag.machum.screen.mainComposition.WorkspaceSaveCoordinator
+import com.ninetag.machum.screen.mainScreen.MainViewModel
+import com.ninetag.machum.screen.mainScreen.WorkspaceSaveCoordinator
 import io.github.vinceglb.filekit.FileKit
 import io.github.vinceglb.filekit.databasesDir
 import io.github.vinceglb.filekit.path
@@ -20,6 +21,7 @@ val commonModule = module {
             FileKit.databasesDir.resolve("app.preferences_pb").path.toPath()
         }
     }
+    single { DocumentInfoPreferences(dataStore = get()) }
     single { FileManager(dataStore = get()) }
     single { WorkspaceSaveCoordinator() }
     viewModel { MainViewModel(fileManager = get(), workspaceSaveCoordinator = get()) }

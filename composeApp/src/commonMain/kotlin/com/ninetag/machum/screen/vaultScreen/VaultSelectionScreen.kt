@@ -43,8 +43,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ninetag.machum.external.FileManager
-import com.ninetag.machum.external.isValidProjectFolderName
 import com.ninetag.machum.screen.common.SingleLineSubmitGate
+import com.ninetag.machum.screen.common.directoryNameError
 import io.github.vinceglb.filekit.FileKit
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.dialogs.openDirectoryPicker
@@ -178,13 +178,14 @@ private fun CreateVaultContent(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     val submitGate = remember { SingleLineSubmitGate() }
     val trimmedVaultName = vaultName.trim()
-    val nameError = when {
-        vaultName.isBlank() -> null
-        vaultName != trimmedVaultName -> "이름 앞뒤의 공백을 제거해 주세요."
-        !isValidProjectFolderName(vaultName) -> "Vault 이름으로 사용할 수 없는 문자나 예약어가 포함되어 있습니다."
-        else -> null
-    }
+    val nameError = directoryNameError(
+        name = vaultName,
+        invalidNameMessage = "Vault 이름으로 사용할 수 없는 문자나 예약어가 포함되어 있습니다.",
+    )
     val canCreate = parentDirectory != null && trimmedVaultName.isNotEmpty() && nameError == null && !isCreating
+    com.ninetag.machum.screen.common.WorkspaceBackHandler(enabled = true) {
+        if (!isCreating) onBack()
+    }
     val submit = {
         submitGate.submitIf(canCreate) {
             val parent = parentDirectory ?: return@submitIf

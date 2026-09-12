@@ -25,6 +25,27 @@ internal object CommitObjectCodec {
     fun encodeCommit(commit: ProjectCommit): String =
         json.encodeToString(ProjectCommit.serializer(), commit)
 
+    fun calculateCommitId(
+        parentId: String?,
+        treeHash: String,
+        createdAtEpochMillis: Long,
+        message: String,
+    ): String = sha256Utf8(
+        buildString {
+            append(parentId.orEmpty()).append('\n')
+            append(treeHash).append('\n')
+            append(createdAtEpochMillis).append('\n')
+            append(message.length).append(':').append(message)
+        },
+    )
+
+    fun calculateCommitId(commit: ProjectCommit): String = calculateCommitId(
+        parentId = commit.parentId,
+        treeHash = commit.treeHash,
+        createdAtEpochMillis = commit.createdAtEpochMillis,
+        message = commit.message,
+    )
+
     fun <T> decode(
         serializer: KSerializer<T>,
         content: String,

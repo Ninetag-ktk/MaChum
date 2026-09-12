@@ -1,9 +1,9 @@
 # 블록 기반 마크다운 에디터 설계
 
 > 역할: `composeApp/.../markdown/`의 현행 구현 계약과 검증 기준의 source of truth  
-> 마지막 검토: 2026-08-31
+> 마지막 코드 검토: 2026-08-31. **내부 개발은 보류**이며 아래 다음 단계는 자동 실행 지시가 아니다.
 >
-> 제품 우선순위: [product-roadmap.md](product-roadmap.md)  
+> 제품 우선순위·보류 상태: [작업 목록](planning/backlog.md)
 > 앱 상위 구조: [architecture.md](architecture.md)
 
 ---

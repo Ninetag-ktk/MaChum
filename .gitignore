@@ -18,4 +18,14 @@ captures
 **/xcshareddata/WorkspaceSettings.xcsettings
 node_modules/
 /qodana.yaml
+
 docs/design-audit
+/composeApp/outputs
+.tmp-gradle
+.tmp-ui-policy
+/tmp_extract_topappbar
+.gradle-tmp
+docs/*
+outputs
+**/*test*
+**/*.log

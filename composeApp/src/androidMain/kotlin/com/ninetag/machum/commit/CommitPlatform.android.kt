@@ -31,6 +31,13 @@ internal actual suspend fun FileManager.createCommitStorageFile(
     parent.findFile(name)?.let { existing ->
         return@withContext existing.takeIf(DocumentFile::isFile)?.let { PlatformFile(it.uri) }
     }
-    parent.createFile(mimeType, name)?.let { PlatformFile(it.uri) }
+    val created = parent.createFile(mimeType, name) ?: return@withContext null
+    if (!created.isFile || created.name != name || parent.listFiles().none {
+            it.uri == created.uri && it.name == name && it.isFile
+        }) {
+        throw CommitStorageException(
+            "커밋 저장 파일 이름을 확인할 수 없습니다: 요청=$name, 생성=${created.name}",
+        )
+    }
+    PlatformFile(created.uri)
 }
-

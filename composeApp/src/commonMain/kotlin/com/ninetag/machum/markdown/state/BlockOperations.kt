@@ -256,31 +256,6 @@ object BlockOperations {
         )
     }
 
-    /**
-     * Callout 만 dissolve. (Callout title 위치 0 Backspace 트리거)
-     * 인접 블록과 merge 안 함. 동작은 [dissolveSpecial] 의 Callout 케이스와 동일하지만
-     * 트리거 의미를 명확히 하기 위해 별도 함수로 둔다.
-     */
-    fun dissolveCallout(
-        blocks: List<EditorBlock>,
-        calloutIndex: Int,
-    ): DissolveResult? {
-        val target = blocks.getOrNull(calloutIndex) as? EditorBlock.Callout ?: return null
-        val raw = target.toMarkdown()
-        val newText = EditorBlock.Text(
-            textFieldState = TextFieldState(raw),
-            rawMode = true,
-            rawOrigin = RawOrigin.CALLOUT,
-        )
-        val newBlocks = blocks.toMutableList()
-        newBlocks[calloutIndex] = newText
-        return DissolveResult(
-            newBlocks = newBlocks,
-            targetBlockId = newText.id,
-            cursorOffset = raw.length,
-        )
-    }
-
 }
 
 /**

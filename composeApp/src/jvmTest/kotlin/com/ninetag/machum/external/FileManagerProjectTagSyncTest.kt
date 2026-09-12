@@ -4,18 +4,110 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import io.github.vinceglb.filekit.PlatformFile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import okio.Path.Companion.toPath
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class FileManagerProjectTagSyncTest {
+    @Test
+    fun readMarkdownDoesNotChangeFilesInEitherWorkspaceModeOrAfterSelectionChanges() = runBlocking {
+        val testRoot = Files.createTempDirectory("machum-pure-markdown-read").toFile()
+        val projectDirectory = File(testRoot, "Current Project").apply { mkdirs() }
+        val externalDirectory = File(testRoot, "General Notes").apply { mkdirs() }
+        val nextProject = File(testRoot, "Next Project").apply { mkdirs() }
+        val note = File(externalDirectory, "Idea.md").apply {
+            writeText("\uFEFF---\r\ntags:\r\n  - manual\r\ncustom: keep\r\nplot: 0) 프롤로그\r\n---\r\n\r\nraw idea")
+            check(setLastModified(1_700_000_000_000))
+        }
+        val originalBytes = note.readBytes()
+        val originalModified = note.lastModified()
+        val dataStoreScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val dataStore = PreferenceDataStoreFactory.createWithPath(scope = dataStoreScope) {
+            File(testRoot, "preferences.preferences_pb").absolutePath.toPath()
+        }
+
+        try {
+            val fileManager = FileManager(dataStore)
+            val selections = listOf(
+                Bookmarks(projectData = PlatformFile(projectDirectory)),
+                Bookmarks(projectData = PlatformFile(externalDirectory), workspaceKind = WorkspaceKind.GENERAL),
+                Bookmarks(projectData = PlatformFile(nextProject)),
+            )
+            selections.forEach { selection ->
+                fileManager.setPreferences(selection)
+
+                val loaded = fileManager.readMarkdown(PlatformFile(note))
+
+                assertNull(loaded.id)
+                assertEquals(listOf("manual"), loaded.tags)
+                assertEquals("0) 프롤로그", loaded.plot)
+                assertEquals("raw idea", loaded.body)
+                assertContentEquals(originalBytes, note.readBytes())
+                assertEquals(originalModified, note.lastModified())
+            }
+        } finally {
+            dataStoreScope.coroutineContext[Job]?.cancelAndJoin()
+            testRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun explicitProjectMetadataUsesTheCapturedTagAndPreservesExistingMetadataOnRepeat() = runBlocking {
+        val testRoot = Files.createTempDirectory("machum-explicit-project-metadata").toFile()
+        val originalProject = File(testRoot, "Captured Project").apply { mkdirs() }
+        val nextProject = File(testRoot, "Current Project").apply { mkdirs() }
+        val note = File(originalProject, "Idea.md").apply {
+            writeText("\uFEFF---\r\nid: stable-id\r\ntags:\r\n  - manual\r\ncustom: keep\r\nplot: 0) 프롤로그\r\n---\r\n\r\nraw idea")
+        }
+        val dataStoreScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val dataStore = PreferenceDataStoreFactory.createWithPath(scope = dataStoreScope) {
+            File(testRoot, "preferences.preferences_pb").absolutePath.toPath()
+        }
+
+        try {
+            val fileManager = FileManager(dataStore)
+            fileManager.setPreferences(Bookmarks(projectData = PlatformFile(nextProject)))
+
+            val update = fileManager.ensureProjectMetadata(PlatformFile(note), "Captured_Project")
+
+            assertTrue(update.changed)
+            assertEquals("stable-id", update.noteFile.id)
+            assertEquals(listOf("Captured_Project", "manual"), update.noteFile.tags)
+            assertEquals("0) 프롤로그", update.noteFile.plot)
+            assertEquals("raw idea", update.noteFile.body)
+            val persisted = note.readText()
+            assertTrue(persisted.startsWith("\uFEFF---\r\n"))
+            assertTrue(persisted.contains("custom: keep\r\n"))
+            assertFalse(persisted.contains("Current_Project"))
+            assertEquals(update.noteFile.inject(), persisted)
+            assertTrue(note.setLastModified(1_700_000_000_000))
+            val firstBytes = note.readBytes()
+            val firstModified = note.lastModified()
+
+            val repeated = fileManager.ensureProjectMetadata(PlatformFile(note), "Captured_Project")
+
+            assertFalse(repeated.changed)
+            assertEquals("stable-id", repeated.noteFile.id)
+            assertContentEquals(firstBytes, note.readBytes())
+            assertEquals(firstModified, note.lastModified())
+        } finally {
+            dataStoreScope.coroutineContext[Job]?.cancelAndJoin()
+            testRoot.deleteRecursively()
+        }
+    }
+
     @Test
     fun projectNameIsAddedToRootAndDirectFolderFilesAsNormalizedTag() = runBlocking {
         val testRoot = Files.createTempDirectory("machum-project-tag").toFile()

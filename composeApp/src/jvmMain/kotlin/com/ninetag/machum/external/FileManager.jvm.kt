@@ -9,23 +9,96 @@ import io.github.vinceglb.filekit.writeString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.StandardOpenOption
+
+internal actual suspend fun validateWorkspaceTrashChild(parent: PlatformFile, child: PlatformFile): Unit = withContext(Dispatchers.IO) {
+    validateWorkspaceTrashPath(parent, child, directory = true)
+}
+
+internal actual suspend fun validateWorkspaceTrashFile(parent: PlatformFile, file: PlatformFile): Unit = withContext(Dispatchers.IO) {
+    validateWorkspaceTrashPath(parent, file, directory = false)
+}
+
+private fun validateWorkspaceTrashPath(parent: PlatformFile, child: PlatformFile, directory: Boolean) {
+    val parentPath = parent.file.toPath().toAbsolutePath().normalize()
+    val childPath = child.file.toPath().toAbsolutePath().normalize()
+    check(!Files.isSymbolicLink(parentPath) && parentPath.toRealPath() == parentPath) { "휴지통 경로에 링크가 있습니다." }
+    check(childPath.parent == parentPath && childPath.toRealPath().parent == parentPath) { "Vault 직속 경로가 아닙니다." }
+    check(if (directory) Files.isDirectory(childPath, LinkOption.NOFOLLOW_LINKS)
+        else Files.isRegularFile(childPath, LinkOption.NOFOLLOW_LINKS)) { "요청한 파일 또는 폴더가 아닙니다." }
+    Files.walk(childPath).use { paths ->
+        paths.forEach { path ->
+            check(!Files.isSymbolicLink(path) && path.toRealPath().startsWith(childPath)) { "링크 또는 외부 경로가 포함되어 있습니다." }
+        }
+    }
+}
+
+internal actual suspend fun moveWorkspaceItemNative(vault: PlatformFile, sourceParent: PlatformFile, source: PlatformFile, entry: PlatformFile): PlatformFile = withContext(Dispatchers.IO) {
+    check(sourceParent.file.toPath().toRealPath().startsWith(vault.file.toPath().toRealPath())) { "Vault 밖의 파일은 이동할 수 없습니다." }
+    validateWorkspaceTrashPath(sourceParent, source, directory = source.file.isDirectory)
+    val trash = PlatformFile(entry.file.parentFile)
+    check(trash.name == WORKSPACE_TRASH_NAME)
+    validateWorkspaceTrashChild(vault, trash)
+    validateWorkspaceTrashChild(trash, entry)
+    val target = File(entry.file, source.name).toPath()
+    check(!Files.exists(target, LinkOption.NOFOLLOW_LINKS)) { "휴지통에 같은 이름이 있습니다." }
+    // No copy/delete fallback and no REPLACE_EXISTING: a failed move leaves the source intact.
+    PlatformFile(Files.move(source.file.toPath(), target).toFile())
+}
+
+internal actual suspend fun purgeWorkspaceTrashEntryNative(trash: PlatformFile, entry: PlatformFile): Unit = withContext(Dispatchers.IO) {
+    check(trash.name == WORKSPACE_TRASH_NAME && workspaceTrashIdPattern.matches(entry.name))
+    validateWorkspaceTrashChild(trash, entry)
+    // walk does not follow links; revalidate each path and fail closed if the tree changed.
+    val root = entry.file.toPath().toAbsolutePath().normalize()
+    Files.walk(root).use { paths ->
+        val entries = paths.filter { it != root && it != root.resolve(WORKSPACE_TRASH_RECEIPT) && it != root.resolve(WORKSPACE_TRASH_CONFIG_RECOVERY) }
+            .sorted(Comparator.reverseOrder()).iterator()
+        while (entries.hasNext()) {
+            val path = entries.next()
+            check(!Files.isSymbolicLink(path) && path.toRealPath().startsWith(root)) { "휴지통 항목 경로가 변경되었습니다." }
+            Files.delete(path)
+        }
+    }
+    Files.deleteIfExists(root.resolve(WORKSPACE_TRASH_CONFIG_RECOVERY))
+    Files.delete(root.resolve(WORKSPACE_TRASH_RECEIPT))
+    Files.delete(root)
+}
 
 internal actual suspend fun FileManager.createFile(
     parentDirectory: PlatformFile,
-    name: String
+    name: String,
+    content: String,
+): PlatformFile? = createFileWithContentWriter(parentDirectory, name, content) { output, text ->
+    output.write(text.toByteArray(Charsets.UTF_8))
+}
+
+internal suspend fun FileManager.createFileWithContentWriter(
+    parentDirectory: PlatformFile,
+    name: String,
+    content: String,
+    writeContent: (java.io.OutputStream, String) -> Unit,
 ): PlatformFile? = withContext(Dispatchers.IO) {
-    try {
-        if (!parentDirectory.exists()) return@withContext null
-
-        val fileName = rotateMarkdownFileName(parentDirectory, name)
-        val newFile = parentDirectory / "$fileName.md"
-
-        newFile.writeString("")
-        newFile
-    } catch (e: Exception) {
-        println("파일 생성 실패: $e")
-        null
+    val siblings = parentDirectory.file.listFiles() ?: return@withContext null
+    val names = siblings.map { it.name.lowercase() }.toSet()
+    var fileName = name
+    var index = 1
+    while ("$fileName.md".lowercase() in names) fileName = "${name}_${index++}"
+    val newFile = File(parentDirectory.file, "$fileName.md")
+    // CREATE_NEW prevents a late collision from truncating another writer's file.
+    val output = try {
+        Files.newOutputStream(newFile.toPath(), StandardOpenOption.CREATE_NEW)
+    } catch (_: FileAlreadyExistsException) {
+        return@withContext null
     }
+    try {
+        output.use { writeContent(it, content) }
+    } catch (error: Exception) {
+        throw incompleteFileCreation(PlatformFile(newFile), content, error)
+    }
+    PlatformFile(newFile)
 }
 
 internal actual suspend fun FileManager.createFolder(
@@ -43,45 +116,13 @@ internal actual suspend fun FileManager.createFolder(
     }
 }
 
-internal actual suspend fun FileManager.renameMarkdown(
-    parentDirectory: PlatformFile,
-    file: PlatformFile,
-    name: String
-): PlatformFile? = withContext(Dispatchers.IO) {
-    try {
-        if (!parentDirectory.exists()) return@withContext null
-
-        val fileName = rotateMarkdownFileName(parentDirectory, name)
-        val target = File(parentDirectory.file, "${fileName}.md")
-        if (!file.file.renameTo(target)) return@withContext null
-        PlatformFile(target)
-    } catch(e: Exception) {
-        println("이름변경 실패: $e")
-        throw e
-    }
-}
-
-private fun rotateMarkdownFileName(
-    parent: PlatformFile,
-    name: String,
-): String {
-    var fileName = name
-    var index = 1
-    var newFile = parent / "$fileName.md"
-    while (newFile.exists()) {
-        fileName = "${name}_${index}"
-        newFile = parent / "$fileName.md"
-        index++
-    }
-    return fileName
-}
-
 internal actual suspend fun FileManager.setConfig(
-    parentDirectory: PlatformFile
+    parentDirectory: PlatformFile,
+    fileName: String,
 ): PlatformFile? = withContext(Dispatchers.IO) {
     try {
         if (!parentDirectory.exists()) return@withContext null
-        val newFile = parentDirectory / ".machum.json"
+        val newFile = parentDirectory / fileName
         if (newFile.exists()) return@withContext newFile
         newFile.writeString("")
         newFile
@@ -101,6 +142,30 @@ internal actual fun PlatformFile.getLastModified(): Long? {
         throw e
     }
 }
+
+internal actual suspend fun FileManager.createFolderExclusive(
+    parentDirectory: PlatformFile,
+    name: String,
+): PlatformFile? = withContext(Dispatchers.IO) {
+    val siblings = parentDirectory.file.listFiles() ?: return@withContext null
+    if (siblings.any { it.name.equals(name, ignoreCase = true) }) return@withContext null
+    // createDirectory fails when the target appears concurrently; mkdirs/reuse are inappropriate.
+    try {
+        PlatformFile(Files.createDirectory(File(parentDirectory.file, name).toPath()).toFile())
+    } catch (_: FileAlreadyExistsException) {
+        null
+    }
+}
+
+internal actual suspend fun FileManager.deleteEmptyFolderExclusive(directory: PlatformFile): Boolean =
+    withContext(Dispatchers.IO) {
+        try {
+            Files.delete(directory.file.toPath())
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
 
 internal actual suspend fun FileManager.renameMarkdownExact(
     parentDirectory: PlatformFile,
@@ -140,7 +205,8 @@ internal actual suspend fun FileManager.deleteDirectoryExact(
 ): Boolean = withContext(Dispatchers.IO) {
     try {
         val children = directory.file.listFiles() ?: return@withContext false
-        if (children.any { child -> child.isDirectory || !child.name.endsWith(".md", ignoreCase = true) }) {
+        if (children.any { child -> child.isDirectory ||
+                (!child.name.endsWith(".md", ignoreCase = true) && !isManagedFolderIdentity(PlatformFile(child))) }) {
             return@withContext false
         }
         children.all(File::delete) && directory.file.delete()

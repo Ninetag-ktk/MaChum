@@ -27,11 +27,18 @@ internal class FileCommitStore(
             ?: throw CommitStorageException("커밋 저장소에 commits 디렉터리가 없습니다.")
         val commitFile = findFile(commits, "$commitId.json")
             ?: throw CommitStorageException("커밋을 찾을 수 없습니다: $commitId")
-        return CommitObjectCodec.decode(
+        val commit = CommitObjectCodec.decode(
             ProjectCommit.serializer(),
             commitFile.readString(),
             "커밋 $commitId",
         )
+        if (commit.id != commitId) {
+            throw CommitStorageException("저장된 커밋 ID가 요청한 ID와 일치하지 않습니다: $commitId")
+        }
+        if (CommitObjectCodec.calculateCommitId(commit) != commit.id) {
+            throw CommitStorageException("저장된 커밋 내용과 ID가 일치하지 않습니다: $commitId")
+        }
+        return commit
     }
 
     suspend fun loadTree(treeHash: String): CommitTree {
@@ -41,11 +48,15 @@ internal class FileCommitStore(
             ?: throw CommitStorageException("커밋 저장소에 trees 디렉터리가 없습니다.")
         val treeFile = findFile(trees, "$treeHash.json")
             ?: throw CommitStorageException("커밋 tree를 찾을 수 없습니다: $treeHash")
-        return CommitObjectCodec.decode(
+        val tree = CommitObjectCodec.decode(
             CommitTree.serializer(),
             treeFile.readString(),
             "tree $treeHash",
         )
+        if (sha256Utf8(CommitObjectCodec.encodeTree(tree)) != treeHash) {
+            throw CommitStorageException("저장된 tree 내용의 해시가 일치하지 않습니다: $treeHash")
+        }
+        return tree
     }
 
     suspend fun loadBlob(blobHash: String): String {
@@ -54,6 +65,7 @@ internal class FileCommitStore(
         val blobs = findDirectory(root, BLOBS_DIRECTORY)
             ?: throw CommitStorageException("커밋 저장소에 blobs 디렉터리가 없습니다.")
         val blobFile = findFile(blobs, "$blobHash.blob")
+            ?: findFile(blobs, "$blobHash.blob.txt")
             ?: throw CommitStorageException("파일 내용을 찾을 수 없습니다: $blobHash")
         return blobFile.readString().also { content ->
             if (sha256Utf8(content) != blobHash) {
@@ -65,11 +77,19 @@ internal class FileCommitStore(
     suspend fun writeBlob(blobHash: String, content: String) {
         require(sha256Utf8(content) == blobHash) { "blobHash does not match content" }
         val directories = ensureDirectories()
+        val existing = findFile(directories.blobs, "$blobHash.blob")
+            ?: findFile(directories.blobs, "$blobHash.blob.txt")
+        if (existing != null) {
+            if (existing.readString() != content) {
+                throw CommitStorageException("기존 blob $blobHash 내용이 예상과 다릅니다.")
+            }
+            return
+        }
         writeIfAbsent(
             parent = directories.blobs,
             name = "$blobHash.blob",
             content = content,
-            mimeType = "text/plain",
+            mimeType = "application/octet-stream",
             description = "blob $blobHash",
         )
     }
@@ -89,6 +109,9 @@ internal class FileCommitStore(
     }
 
     suspend fun writeCommit(commit: ProjectCommit) {
+        require(CommitObjectCodec.calculateCommitId(commit) == commit.id) {
+            "commit id does not match commit content"
+        }
         val content = CommitObjectCodec.encodeCommit(commit)
         val directories = ensureDirectories()
         writeIfAbsent(

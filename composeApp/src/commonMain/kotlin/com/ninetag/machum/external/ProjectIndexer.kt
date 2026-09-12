@@ -3,6 +3,7 @@ package com.ninetag.machum.external
 import com.ninetag.machum.entity.normalizeTag
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.name
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -45,6 +46,7 @@ internal class ProjectIndexer(
 
         val folders = runCatching { fileManager.listFolders(project) }
             .getOrElse { error ->
+                if (error is CancellationException) throw error
                 issues += ProjectIndexIssue(location, error.message ?: "디렉터리 목록을 읽지 못했습니다.")
                 return completeIfCurrent(token, project, 0, 0, 0, issues)
             }
@@ -52,6 +54,7 @@ internal class ProjectIndexer(
             runCatching { fileManager.listProjectFiles(folder) }
                 .onSuccess(files::addAll)
                 .onFailure { error ->
+                    if (error is CancellationException) throw error
                     issues += ProjectIndexIssue(
                         relativePath = folder.key.relativePath.ifEmpty { "." },
                         message = error.message ?: "파일 목록을 읽지 못했습니다.",
@@ -68,6 +71,7 @@ internal class ProjectIndexer(
                 if (changed) candidates += projectFile
                 else unchanged += 1
             }.onFailure { error ->
+                if (error is CancellationException) throw error
                 issues += ProjectIndexIssue(
                     relativePath = projectFile.key.relativePath,
                     message = error.message ?: "파일을 인덱싱하지 못했습니다.",
@@ -96,6 +100,7 @@ internal class ProjectIndexer(
             }.onSuccess {
                 updated += 1
             }.onFailure { error ->
+                if (error is CancellationException) throw error
                 issues += ProjectIndexIssue(
                     relativePath = projectFile.key.relativePath,
                     message = error.message ?: "파일을 인덱싱하지 못했습니다.",

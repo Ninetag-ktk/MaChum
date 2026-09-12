@@ -1,10 +1,16 @@
 # MaChum 프로젝트 파일 탐색 수동 테스트
 
+> 2026-09-09 정정: 과거 NAV-01의 루트 파일 미표시와 FOLDER-11의 초기화 FAB는 현행 요구사항이 아니다.
+> 현재는 루트 파일을 표시하며 초기화 FAB는 제거했다. [화면별 기능 요구사항](screen-functional-requirements.md)과 최신 구현 기록을 함께 따른다.
+
+> 이 문서는 현재 구현의 검증 절차·이력이다. [후속 생성 설계](file-folder-creation-design.md)의 `무제` 즉시 생성·General 기본값은
+> 미구현이므로 아래 기존 생성 dialog/Default 기대값을 새 기능 통과 기록으로 해석하지 않는다. 새 수용 기준은 설계 문서에 별도로 둔다.
+
 > 역할: 폴더 전환 UI, 파일 생명주기, Desktop·Android SAF 상호작용의 P1 검증 절차
 >
 > 관련 정책: [product-roadmap.md](product-roadmap.md), [architecture.md](architecture.md)
 >
-> 마지막 갱신: 2026-09-03
+> 마지막 갱신: 2026-09-08
 
 ---
 
@@ -163,95 +169,295 @@ Android DocumentsUI 검증은 2026-08-31 사용자 결정에 따라 완료로 �
 
 ---
 
-## 8. Vault 탐색 위치와 Project 전환 계획 — 미구현·검증 대기
+## 8. Vault 폴더 사용 방식 — 2026-09-07
 
-> 상태: **PENDING (2026-09-03 기준 미구현)**
->
-> 아래 항목은 구현 완료로 간주하거나 기존 PASS 결과에 합산하지 않는다. 구현 후 Desktop과 Android DocumentsUI에서
-> 각각 수행하고, 그때 플랫폼 순서와 종료 기준의 필수 범위에 편입한다. 6~7절의 역사적 결과는 이 계획의 검증 근거가 아니다.
+### 8.1 Desktop 사용자 검증 완료
 
-다음과 같이 Vault 루트의 직속 디렉터리를 준비한다.
+사용자가 실제 화면에서 다음 흐름을 검증했다.
 
-```text
-Vault/
-├── 기존 작품/                 # 유효한 .machum.json이 있는 Project
-├── 레거시 Default 작품/       # 구 schemaVersion, 루트 Default 비-Plot
-├── 레거시 General 작품/       # 구 schemaVersion, 루트 General
-├── 현재 Plot 해제 작품/       # 현재 schemaVersion, 사용자가 Plot을 끈 Project
-├── 소재 정리/                 # .machum.json이 없는 일반 Vault 폴더
-│   ├── 첫 문장.md
-│   └── 인물 메모.md
-├── 필사/                      # .machum.json이 없는 일반 Vault 폴더
-│   └── 문장.md
-├── 전환 대상/
-│   ├── 초안.md
-│   └── 1. Concept/기존 메모.md
-├── 전환 충돌/                 # `2. Outline`이라는 일반 파일이 존재
-└── 설정 충돌/                 # 읽을 수 없는 .machum.json이 존재
-```
+- 미설정 Vault 폴더 선택 시 `프로젝트로 설정`, `일반 폴더로 전환`, `취소` 확인창 표시
+- 취소 시 현재 선택과 실제 폴더 내용 유지
+- 일반 폴더 진입 후 이름순 파일 탐색·본문 편집·파일/직속 디렉터리 생성과 이름 변경
+- 일반 폴더에서 자동 번호·Plot·Project 설정·커밋과 ID/Project 태그 자동 생성 미노출
+- 일반 폴더와 마지막 파일의 앱 재시작 복원, 빈 폴더의 샘플 Markdown 미생성
+- 일반 폴더의 `프로젝트로 설정…` 실행 후 기본 네 디렉터리 생성·재사용과 Project 기능 활성화
+- Project의 pending 본문 저장 후 일반 폴더 전환
 
-### 8.1 Vault 일반 폴더와 상단 탐색 위치 선택기
+사용자가 이미 검증한 Default·Plot 순서 변경 화면도 PASS로 유지한다.
 
-| ID | 절차 | 예정 합격 기준 |
+### 8.2 자동 검증
+
+`FileManagerWorkspaceTest`는 다음을 JVM 임시 디렉터리에서 검증한다.
+
+| 범위 | 합격 기준 |
+|---|---|
+| 미설정 폴더 취소 | bookmark·설정·Markdown과 디렉터리 목록이 변하지 않음 |
+| 일반 폴더 | 읽기·편집·생성·이름 변경에도 `.machum.json`, `.machum/`, ID·Project 태그가 생기지 않음 |
+| 분류와 선택 위치 | 일반 폴더는 상단 목록에만, Project와 미분류 후보는 하단 Project 목록에만 포함 |
+| Vault별 설정 | `.machum-vault.json`에 직속 상대 이름만 기록하고 다른 Vault의 분류와 섞이지 않음 |
+| 이동 가능성 | Vault를 다른 경로로 옮기고 다시 선택해도 일반 폴더와 마지막 Project를 복원 |
+| Project 복귀 | 일반 폴더에서 상단 `프로젝트`를 선택하면 마지막 Project를 즉시 열고, 삭제됐다면 Project 선택 화면으로 이동 |
+| 재시작 | 일반 폴더와 마지막 파일을 확인창·인덱싱 없이 복원 |
+| 프로젝트 설정 | 누락된 기본 네 디렉터리만 생성하고 기존 동명 폴더·본문·비템플릿 폴더를 유지 |
+| 경로 충돌 | 쓰기 전에 중단하고 사용자가 일반 폴더 선택으로 전환 가능 |
+| 저장 전환 | Project pending 저장을 flush한 뒤 일반 폴더 상태로 교체 |
+| 외부 삭제 | 삭제된 현재 탐색 루트의 pending 저장을 취소하고 bookmark·cache를 비워 경로 재생성을 방지 |
+| legacy workflow | 기존 Vault 선택과 새 Vault 생성 모두 `.workflow/`를 만들지 않음 |
+
+### 8.3 추가 화면 확인 대상
+
+| ID | 절차 | 합격 기준 |
 |---|---|---|
-| LOCATION-01 | 위 Vault를 선택하고 상단의 기존 `하이라키` 영역에서 탐색 위치 선택기를 연다 | Vault 루트 직속 디렉터리가 `프로젝트`와 `Vault 폴더`로 구분되어 표시되고, 유효한 `.machum.json`이 있는 디렉터리만 Project로 분류됨 |
-| LOCATION-02 | 선택기에서 `소재 정리`를 선택한다 | 상단 현재 위치가 `소재 정리`로 바뀌고 해당 디렉터리의 파일·하위 폴더만 하이라키에 표시되며, 마지막으로 선택한 Project 상태와 일반 폴더 위치가 서로 덮어쓰이지 않음 |
-| LOCATION-03 | `소재 정리`에서 `필사`, `기존 작품`, 다시 `소재 정리` 순으로 전환한다 | 매번 선택한 탐색 위치로만 하이라키가 전환되고 Project와 일반 Vault 폴더의 파일 목록·선택 상태가 섞이지 않음 |
-| LOCATION-04 | `소재 정리`와 `필사`의 파일 목록을 확인하고 새 문서를 만든다 | 일반 Vault 폴더에서는 Plot 단계와 번호 순서 편집을 표시하지 않고 이름순으로 정렬하며, 새 파일명에도 숫자 접두사를 자동 부여하지 않음 |
-| LOCATION-05 | Project와 일반 Vault 폴더 각각에서 위치 항목의 메뉴를 연다 | `프로젝트로 전환…`은 일반 Vault 폴더에만 표시되고 이미 Project인 위치에는 표시되지 않음 |
+| LOCATION-01 | 일반 폴더에서 사이드바 상단의 폴더 이름/chevron을 누른다 | 첫 행 `프로젝트`와 일반 폴더 목록이 열리고 현재 위치에 check가 표시됨 |
+| LOCATION-02 | 상단 목록에서 다른 일반 폴더를 선택한다 | 해당 폴더의 하이라키와 파일로 전환되고 하단 Project 표시가 일반 폴더 이름으로 바뀌지 않음 |
+| LOCATION-03 | 하단 Project 선택기를 연다 | 지정한 일반 폴더는 제외되고 Project와 아직 분류하지 않은 후보만 표시됨 |
+| LOCATION-04 | 일반 폴더에서 상단 `프로젝트`를 선택한다 | 마지막 작업 Project로 바로 전환되고 상단은 `프로젝트`, 하단은 현재 Project 이름을 표시함 |
+| LOCATION-05 | Project에서 상단 `프로젝트`/chevron을 누른다 | 일반 폴더 목록이 열리고 원하는 일반 폴더로 다시 전환 가능 |
+| LOCATION-06 | 마지막 Project를 앱 밖에서 삭제한 뒤 일반 폴더의 상단 `프로젝트`를 선택한다 | 오류 없이 Project 선택 화면으로 이동하고 stale 기록을 제거함 |
+| VAULT-CONFIG-01 | 새 빈 Vault를 선택만 한다 | `.machum-vault.json`이 생성되지 않음 |
+| VAULT-CONFIG-02 | 일반 폴더를 확정하거나 Project를 연다 | Vault 루트에 `.machum-vault.json`이 생성되고 상대 폴더 이름만 기록됨 |
+| WORKFLOW-01 | 새 빈 Vault를 만들거나 기존 빈 Vault를 선택한다 | 앱이 `.workflow/`를 생성하지 않음. 기존 폴더가 이미 있다면 삭제하거나 변경하지 않음 |
+| EXTERNAL-ROOT-01 | 저장 대기 중인 현재 Vault 직속 폴더를 앱 밖에서 삭제한다 | 앱이 크래시하거나 폴더를 재생성하지 않고 해당 선택을 해제해 선택 화면으로 이동 |
 
-### 8.2 일반 Vault 폴더의 비변경 보장과 Project 전용 기능
+### 8.4 초기화·저장 수명 정비 — 2026-09-08
 
-| ID | 절차 | 예정 합격 기준 |
+자동 검증은 실제 사용자 Vault 대신 임시 디렉터리와 제어 가능한 DataStore를 사용했다.
+
+- FileManager 생성자의 무작업, 최초 복원의 단일 실행·동시 요청 직렬화, 취소·읽기 실패 후 재시도
+- Project와 마지막 파일 복원·ID/태그 인덱싱, General의 비인덱싱 복원
+- 손상된 Project 설정의 오류 전달, 중간 메모리 정리, 저장된 선택 보존과 설정 복구 후 재시도
+- 이전 저장 등록 해제와 새 등록 보존, launch/잠금 대기 중에도 요청 시점의 저장 callback 유지
+- debounce 소유자 취소 후 이미 요청된 flush 완료, 실제 ViewModelStore.clear()의 콜백 해제
+
+전체 JVM 290개를 2회 통과했다(두 번째는 `--rerun-tasks`, 모두 실패·오류·skip 0).
+Desktop `compileKotlin`, Android 앱 `compileDebugKotlin`도 통과했다.
+Android Activity 재생성 및 아래 화면 동작은 이번 자동 검증에 포함되지 않았으며 사용자의 화면 확인 대상으로 남긴다.
+
+- 앱 재실행 시 로딩 후 마지막 Project/General·선택 파일로 복귀하고, Vault 선택용 중복 창이 생기지 않는지
+- 테스트 편집 창을 최대화한 뒤 Vault 선택으로 나가면 작은 일반 창으로 복귀하는지
+- 본문 입력 직후 정상 종료·재실행하면 마지막 입력이 보존되는지(Android는 onStop 후 복귀)
+
+플랫폼 flush 없이 ViewModelStore만 직접 비우는 동작과 OS의 강제 프로세스 종료는 저장 보장 조건이 아니다.
+
+### 8.5 하이라키 단일 snapshot — 2026-09-08
+
+`MainViewModelHierarchyTest`는 eager collector로 관찰한 snapshot마다 폴더 목록과 content map의 key,
+파일 소속 폴더, Plot 항목과 파일 순서, 현재 폴더와 선택 key/index/currentFile의 일치를 확인한다.
+rename, 현재 Default 순서 변경, 비현재 Plot 순서 변경, Project 전환 경합과 빈 폴더 선택에 이 검증을 적용했다.
+빈 폴더의 선택 key·currentFile은 null이고 index는 0이어야 한다.
+
+`MainViewModelCommitTest`의 연속 Project 복원은 선택 파일 삭제 후 첫 파일 fallback,
+다음 복원으로 파일 재등장 후 기존 선택 유지, 완료 marker 이후 하이라키와 bookmark 경로 일치를 추가 확인했다.
+기존 파일명 변경의 editor session·본문 유지 테스트도 단일 snapshot API로 검증한다.
+
+전체 JVM 291개를 2회 통과했다(두 번째는 `--rerun-tasks`, 모두 실패·오류·skip 0).
+Desktop `compileKotlin`, Android 앱 `compileDebugKotlin`도 통과했다.
+실제 Vault나 UI는 조작하지 않았으며 다음 화면 확인은 사용자에게 남긴다.
+
+- 빈 폴더와 파일이 있는 폴더를 번갈아 선택할 때 이전 파일명이 남거나 다른 파일이 잠시 선택되지 않는지
+- 파일명·Default/Plot 순서를 바꾸면 사이드바와 편집 영역의 선택이 함께 유지되는지
+- 파일이 추가·삭제되는 Project 복원 뒤 목록과 선택 파일이 함께 갱신되는지
+
+### 8.6 읽기·저장 책임 분리 — 2026-09-08
+
+회귀 범위:
+
+- Project/General 및 bookmark 전환과 무관하게 `readMarkdown`이 bytes·mtime·누락 ID를 그대로 유지
+- 명시적 ID/Project 태그 보정의 캡처된 Project 이름 사용, 기존 ID·수동 태그·Plot·미관리 metadata 보존과 반복 무변경
+- ID 없는 외부 파일의 Plot 하이라키·본문 로드 무변형, 실제 편집은 cache에 반영하고 flush 때에만 디스크 저장
+- Project/General에서 읽기만 한 파일의 이름 변경 성공·실패가 원문을 다시 쓰지 않으며 실제 pending 편집은 보존
+- 관리 태그 변경의 ID-only 누락 보정과 General 비보정
+- Plot 순서 변경 취소 시 원래 파일명·원문 bytes·설정·선택 위치 복구
+
+전체 JVM 306개(49 suites)를 2회 통과했다. 두 번째는 `--rerun-tasks`이며 실패·오류·skip은 모두 0이다.
+Desktop `compileKotlin`, Android 앱 `compileDebugKotlin`도 통과했다.
+
+화면 확인은 다음으로 한정한다. 실제 Vault와 UI는 이 자동 검증에서 조작하지 않는다.
+
+- Project를 열어 둔 채 외부 Markdown을 추가해도 탐색·열기만으로 ID/태그가 생기지 않는지
+- 해당 문서를 편집·저장하거나 Project를 다시 열면 ID와 프로젝트 태그가 추가되는지
+- 일반 폴더에서는 여전히 ID/Project 태그가 자동으로 붙지 않는지
+- 읽기만 한 문서 이름을 바꾸어도 본문이 재저장되지 않고, 편집 직후 이름을 바꾸면 마지막 입력은 보존되는지
+
+커밋 조회·복원 관련 절차는 [커밋 수동 테스트](commit-manual-test.md#읽기-전용-검사와-원문-복원--2026-09-08)에 기록한다.
+
+### 8.7 자동 저장 오류·취소 안전성 — 2026-09-08
+
+회귀 범위:
+
+- flush가 기존 저장 Job의 종료를 기다리거나 실제 저장하는 도중 취소되어도 미저장값을 다음 flush로 재시도
+- 취소·실패 중 들어온 최신 입력을 과거 값으로 덮지 않고, 명시적으로 폐기된 pending을 되살리지 않음
+- 자동 저장 실패를 기존 오류 상태에 전달하고 다른 파일의 저장·후속 재시도를 유지
+- 정상 취소와 대체된 작업의 늦은 오류는 실패 알림으로 처리하지 않음
+- 실패 뒤 Job이 없는 pending도 파일 삭제 정리에서 폐기
+- 임시 파일 경로를 디렉터리로 막아 실제 FileKit 저장 실패를 유도한 후, editor cache·오류 알림·경로 복구 후 재저장 검증
+
+전체 JVM 314개(49 suites)를 2회 통과했다. 두 번째는 `--rerun-tasks`이며 실패·오류·skip은 모두 0이다.
+Desktop `compileKotlin`, Android 앱 `compileDebugKotlin`도 통과했다. 첫 전체 실행에서 취소 write를 정상 완료로
+모델링한 테스트 1건의 오류를 수정한 뒤 위 두 성공 실행을 확인했다.
+
+UI는 기존 오류창을 재사용한다. 알림을 닫아도 입력은 메모리에 남고, 저장을 계속 실패하는 동안 전환·정상 종료는
+중단된다. 프로세스 강제 종료 후 메모리 내용 복구와 이미 시작한 provider I/O의 즉시 중단은 이번 보장에 포함하지 않는다.
+실제 Vault와 화면은 조작하지 않는다. 사용자 화면 확인 시 쓰기 실패를 실제 문서에서 강제로 만들 필요는 없다.
+
+### 8.8 저장·단일 파일 이름 변경 순서 보장 — 2026-09-08
+
+자동 검증은 제어 가능한 지연 쓰기와 임시 파일만 사용한다. 별도 UI·저장 서비스·파일별 잠금을 추가하지 않고,
+자동 저장과 flush가 공유하는 쓰기 잠금을 단일 파일 rename에서도 사용한다.
+
+회귀 범위:
+
+- 취소돼도 늦게 완료하는 이전 쓰기가 최신 쓰기보다 먼저 완료되어 과거 본문으로 덮어쓰지 않음
+- 쓰기를 기다리는 flush의 취소는 이미 시작한 자동 저장을 취소하지 않고, 성공한 값을 중복 저장하지 않음
+- flush 자체의 쓰기 도중 취소하면 미저장값은 다음 flush에서 재시도
+- rename 대기 뒤 old key의 예약을 제거하고 new key로 옮겨 이전 경로에 후속 쓰기가 실행되지 않음
+- rename이 pending을 잠시 꺼낸 동안에도 전환·종료의 flush가 대기하고 새 key의 pending을 처리
+- 실제 FileKit 쓰기를 지연한 상태에서 rename 대기·추가 편집·명시적 flush·대기 취소를 검증
+- 기존 읽기 전용 rename의 원문 bytes·mtime 보존 및 편집 cache·editor session 유지 회귀를 계속 수행
+
+전체 JVM 321개(49 suites)를 2회 통과했다. 두 번째는 `--rerun-tasks`이며 실패·오류·skip은 모두 0이다.
+저장 코디네이터 21개와 파일명 변경 통합 8개가 포함되며, 이번에 추가한 회귀는 7개다.
+Desktop `compileKotlin`, Android 앱 `compileDebugKotlin`도 강제 재실행을 포함해 통과했다.
+
+실제 Vault와 화면은 조작하지 않는다. 화면 확인 시에는 테스트 문서에 입력한 직후 이름을 바꾸고 정상 종료·재실행하여
+새 이름의 파일에 마지막 입력이 남고 이전 이름의 파일이 다시 생기지 않는지만 확인하면 된다.
+
+잠금 대기는 취소할 수 있지만 물리 이름 변경에 진입한 후에는 runtime 경로 반영까지 마친 뒤 취소를 전달한다.
+외부 프로그램의 동시 수정, OS/provider 쓰기의 즉시 중단, 프로세스 kill과 폴더 rename/delete의 중간 실패 복구는
+이 단일 파일 쓰기 순서 보장 범위가 아니다.
+
+### 8.9 폴더 이름 변경 취소·실패 복구 1차 — 2026-09-08
+
+이 단계는 FileManager가 폴더명·설정·선택 bookmark를 변경하다 실패하거나 취소되는 경우의 원상복구를 다룬다.
+실제 폴더 변경 결과를 확보한 뒤 취소를 처리하고, 복구는 취소된 caller와 독립적으로 완료한다. 일반 실패와 복구
+실패는 구분해 기존 오류 UI로 전달한다. 새 저장 서비스나 별도의 복구 화면은 추가하지 않는다.
+
+복구 기준:
+
+- 원래 폴더와 그 안의 Markdown 원문은 유지되고 대상 이름의 폴더는 남지 않음
+- Project 설정의 원문과 메모리 설정, fileIds 경로 및 저장된/메모리 선택 bookmark가 원래 상태와 일치
+- 실제 취소와 주입된 CancellationException은 복구 후 다시 전달되며 이후 이름 변경 재시도가 가능
+- General에는 rollback을 이유로 `.machum.json`이 생기지 않음
+- 복구 자체가 실패하면 성공/null/단순 취소로 숨기지 않고 원래 실패 및 복구 오류를 별도 예외에 보존
+- 일반 실패는 기존 하이라키·편집 cache를 유지하면서 오류 UI에 전달
+
+회귀 주입 지점은 설정 변경 후 선택 bookmark 저장이다. 이 지점의 일반 실패·실제 caller 취소·주입된 취소 예외,
+역 rename을 막는 원래 경로 충돌, General 실패와 다른 폴더의 선택 유지까지 검증한다. 설정 파일 쓰기 자체의
+부분 실패와 provider rename 직후의 정확한 취소 시점은 별도 I/O hook 없이 결정적으로 주입하지 않았으며,
+해당 경계는 코드 검토 범위다. 프로세스 종료나 디스크 고장 후 자동 복구 journal을 제공하는 것은 아니다.
+
+전체 JVM 328개(49 suites)를 2회 통과했다. 두 번째는 `--rerun-tasks`이며 실패·오류·skip은 모두 0이다.
+이번에 추가한 회귀는 7개이며 FileManagerFolderTest 19개, MainViewModelHierarchyTest 10개가 포함된다.
+Desktop `compileKotlin`, Android 앱 `compileDebugKotlin`도 강제 재실행을 포함해 통과했다.
+
+실제 Vault와 화면은 조작하지 않는다. 사용자는 테스트 폴더를 선택한 상태에서 기존 폴더와 같은 이름으로 변경을
+시도하면 변경이 거절되고, 원래 이름·선택·본문이 유지되는지만 확인하면 된다. 실제 문서로 복구 실패를 강제로 만들
+필요는 없다.
+
+선행 flush 이후 새 pending 입력의 폴더 경로/관리 태그 이동, 후속 태그 동기화 중 취소, Project 전체 이름 변경과
+폴더 부분 삭제 복구는 이 1차 단계에서 완료한 범위가 아니다.
+
+### 8.10 폴더 설정의 pending·태그·경로 이동 2차 — 2026-09-08
+
+이 단계는 8.9의 FileManager 물리 rename 복구 위에 MainViewModel의 저장 fence와 runtime 반영을 연결한다.
+태그 쓰기는 별도 FileManager 일괄 직접 쓰기 API가 아니라 기존 DebouncedSaveCoordinator를 사용한다.
+
+새 통합 회귀 6개:
+
+- 실제 bookmark 저장을 멈춘 채 물리 폴더 rename 도중 추가 입력 → 새 경로에 최신 본문·새 관리 태그 저장,
+  id/plot/사용자 메타데이터/editor session/선택 유지, 이전 경로 미재생성
+- 태그 차이 없는 읽기 전용 rename → 본문 쓰기 0회, raw bytes/mtime/cache instance/session 보존
+- 설정-only 태그 저장 실패 → 새 설정과 원하는 cache/pending 유지, 다음 flush에서 본문과 태그 재저장
+- base 태그 변경 → 루트와 여러 하위 폴더에 적용하되 각 폴더의 관리/수동 태그 유지
+- cache 로드 이후 외부 앱이 변경한 본문 → 사전 조회한 disk를 기준으로 태그만 변경해 외부 본문/수동 태그 유지
+- 물리 rename 뒤 작업 coroutine 취소 → runtime과 pending의 새 경로 반영 완료, 취소 전달 후 명시적 flush 가능
+
+기존 태그 동기화 3개 회귀도 MainViewModel 실제 흐름으로 이관했다. id-only 보정, 재적용 raw/mtime 무변경,
+General의 id/tags/디스크 설정 무변경, base와 하위 폴더 태그 적용 범위를 유지한다.
+ProjectConfig 테스트 10곳은 제거한 `pickProject` 대신 workspace 선택/필요 시 확인 흐름을 통과한다.
+
+테스트 fixture는 구조 변경 Job 완료를 기다린 뒤 flush한다. 구조 변경이 reconciliation mutex를 기다릴 때 flush만
+앞서 끝나는 것을 피하며, 이미 취소 완료한 Job의 남은 가상시간 debounce는 join하지 않고 직접 flush한다.
+
+한계: 사전 조회 이후 외부 앱이 다시 쓰는 동시 수정, 프로세스 kill 후 메모리 pending 복구, 임의 ViewModel 폐기,
+Project 전체 rename과 폴더 부분 삭제 복구까지 보장하지 않는다. metadata 확정 후 문서 저장이 실패하면 구조 변경은
+완료된 상태이며 오류 UI는 부분 저장 실패와 재시도 가능함을 명시한다.
+
+전체 JVM **334개(50 suites)를 2회 통과**했다. 두 번째는 `--rerun-tasks --warning-mode all --no-configuration-cache`이며
+실패·오류·skip 모두 0이다. Desktop `compileKotlin`, Android `compileDebugKotlin`도 강제 재실행을 포함해 통과했다.
+
+실제 Vault와 화면은 조작하지 않았다. 사용자 화면 확인 시 테스트 문서에 입력 직후 폴더명/자동 태그를 변경하고,
+재실행 후 새 경로에 최신 본문·태그가 남으며 이전 폴더가 재생성되지 않는지 확인하면 된다.
+
+### 8.11 파일 생성 요청의 작업 공간 정체성 — 2026-09-08
+
+MainScreen의 파일 생성 요청을 workspace 위치·종류, 대상 폴더와 초기 Plot 단계를 담은 하나의 nullable 상태로
+통합했다. 작업 공간 전환/해제 시 이전 요청을 폐기하고, 생성 확인도 고정된 요청을 ViewModel에 전달한다.
+자동 검증: Compose 상태 수명 3개와 임시 Vault의 ViewModel 통합 5개를 추가했고, 최종 전체 JVM
+**342개 / 52 suites 통과**(실패·오류·skip 0). Desktop·Android 컴파일도 통과했다.
+실제 Vault와 앱 화면은 자동 조작하지 않는다. 아래는 사용자가 확인할 항목이며 아직 화면 검증 완료를 뜻하지 않는다.
+
+| ID | 절차 | 합격 기준 |
 |---|---|---|
-| VAULT-FOLDER-01 | `소재 정리`의 전체 항목 목록, 파일 hash·mtime과 frontmatter를 기록한 뒤 폴더를 열고 파일을 읽고 닫는다 | `.machum.json`, `.machum/`, 기본 네 디렉터리가 생성되지 않고 기존 파일의 hash·mtime·이름·frontmatter가 모두 유지됨 |
-| VAULT-FOLDER-02 | `id`, `tags`, `plot`이 없는 `소재 정리/첫 문장.md`를 열고 다른 위치로 이동한다 | Project 인덱싱이 실행되지 않으며 `id`, 프로젝트 태그, `plot`을 비롯한 frontmatter가 추가되지 않음 |
-| VAULT-FOLDER-03 | 일반 Vault 폴더를 연 상태에서 상단·하단 action과 컨텍스트 메뉴를 확인한다 | Project 설정, Plot 설정, Project 이름 변경과 Commit/Diff/Restore action은 표시되지 않고 일반 문서·폴더 탐색 action만 표시됨 |
-| VAULT-FOLDER-04 | 일반 Vault 폴더에서 문서를 편집·저장한 뒤 Project로 전환한다 | 사용자가 편집한 해당 문서만 저장되고, Project의 pending save·bookmark·commit 대상과 일반 폴더의 상태가 섞이지 않음 |
-| VAULT-FOLDER-05 | 읽을 수 없는 `.machum.json`이 있는 `설정 충돌`을 선택한다 | 일반 Vault 폴더로 조용히 취급하거나 설정 파일을 덮어쓰지 않고 Project 설정 오류와 복구 가능한 안내를 표시함 |
+| CREATE-REQUEST-01 | 다른 폴더를 보고 있는 상태에서 drawer의 `3. Character` 새 파일 선택 | Character로 이동하고 drawer가 닫힌 뒤 팝업이 한 번 열림. 입력한 파일은 Character에만 생성 |
+| CREATE-REQUEST-02 | `4. Scene`의 위기 단계 `+`로 팝업을 열고 취소한 뒤 빈 루트의 `새 파일` 선택 | 첫 팝업에는 위기가 미리 선택되며, 두 번째 팝업에는 이전 제목·단계가 남지 않음 |
+| CREATE-REQUEST-03 | 폴더 이동·drawer 닫기 중 다른 Project/일반 폴더 전환이 가능한 경우 전환 | 같은 상대 폴더명이 있어도 이전 생성 팝업이 새 공간에 열리지 않고 파일도 생성되지 않음 |
+| CREATE-REQUEST-04 | 일반 폴더에서 파일 생성 후 프로젝트로 설정하고 다시 생성 | 일반 폴더는 무번호·관리 메타데이터 없이 생성하고, 전환 후 새 요청에는 Project 정책 적용 |
+| CREATE-REQUEST-05 | 파일 팝업에서 Enter 확인, 취소 후 재열기, 작은 창에서 긴 제목 입력 | 중복 생성 없이 확인되며 새 요청의 입력·미리보기·포커스와 버튼 접근이 정상 |
 
-### 8.3 일반 Vault 폴더를 Project로 전환
+### 8.12 사이드바 컴포지션·드롭다운 상태 정비 — 2026-09-08
 
-| ID | 절차 | 예정 합격 기준 |
+후보 2·3의 확인 범위는 상단 workspace 선택기, 하단 Project 선택기와 설정 메뉴다. 메뉴는 한 번에 하나만
+열리며 workspace 위치·종류가 바뀌면 닫혀야 한다. 폴더 context menu, 펼침 상태, 순서 드래그와 각 dialog는
+기존 동작을 유지한다. 아래는 사용자 수동 검증 항목이며, 실제 앱 화면 검증 완료를 뜻하지 않는다.
+
+사전 설계·테스트 계획 검토와 완료 diff 독립 검토를 거쳤고 지적사항은 없었다. 관련 회귀 **28개 / 6 suites**,
+최종 전체 JVM **342개 / 52 suites**가 모두 통과했다(실패·오류·skip 0). Desktop·Android 컴파일과
+`git diff --check`도 통과했다. 새 구현을 그대로 재현하는 enum 테스트나 테스트용 상태 계층은 추가하지 않았다.
+
+| ID | 절차 | 합격 기준 |
 |---|---|---|
-| CONVERT-01 | `전환 대상`에서 `프로젝트로 전환…`을 선택한다 | 확인창에 디렉터리 역할 변경, `.machum.json` 생성, 기본 네 디렉터리 생성·재사용, Project 인덱싱 예정 항목이 실행 전 표시되고 취소 시 어떤 파일도 변경되지 않음 |
-| CONVERT-02 | `전환 대상`의 확인창에서 전환을 확정한다 | `.machum.json`, `2. Outline`, `3. Character`, `4. Scene`이 생성되고 기존 `1. Concept`은 새로 만들거나 교체하지 않고 그대로 재사용됨 |
-| CONVERT-03 | 전환 후 `.machum.json`을 확인한다 | 루트와 `4. Scene`은 Default + Plot, `1. Concept`·`2. Outline`은 Default, `3. Character`는 General로 등록되고 현재 schemaVersion이 기록됨 |
-| CONVERT-04 | 재사용된 `1. Concept/기존 메모.md`와 새로 만든 세 디렉터리를 확인한다 | 재사용 디렉터리의 기존 내용은 보존되고 새 디렉터리는 비어 있으며 제목 placeholder나 샘플 Markdown은 자동 생성되지 않음 |
-| CONVERT-05 | 전환 전후 `초안.md`와 `기존 메모.md`의 본문·파일명을 비교한다 | 기존 Markdown의 본문과 파일명은 유지되고 Project 인덱싱으로 `id`, Project 이름 태그와 해당 폴더의 관리 태그만 중복 없이 보완되며 기존 수동 태그는 보존되고 `plot`은 자동 추가되지 않음 |
-| CONVERT-06 | 전환 직후 하이라키와 위치 선택기를 확인한다 | `전환 대상`이 `Vault 폴더`에서 `프로젝트` 그룹으로 이동하고 `초안.md`는 이름이나 `plot`을 자동 변경하지 않은 채 루트 Plot의 `미분류`에 표시됨 |
-| CONVERT-07 | 전환 직후 Commit 영역과 저장소를 확인한 뒤 최초 Commit을 실행한다 | Project 전용 Commit action은 전환 성공 뒤에만 표시되고 전환 자체로 자동 Commit을 만들지 않으며, 최초 Commit은 전환된 Project 범위만 추적함 |
-| CONVERT-08 | `전환 대상`에서 전환을 다시 시도하거나 앱을 재시작한다 | 다시 전환하거나 기본 디렉터리를 중복 생성하지 않고 일반 Project 열기 흐름으로 진입함 |
+| DRAWER-MENU-01 | workspace·Project·설정 메뉴를 차례로 열기 | 한 번에 하나만 열리고 이전 메뉴의 늦은 닫기 처리가 새 메뉴를 닫지 않음 |
+| DRAWER-MENU-02 | 메뉴를 연 상태에서 workspace 전환이 발생하는 경우 확인 | 새 위치 또는 일반→Project 전환 후 이전 메뉴가 닫히고 새 위치의 항목으로 다시 열림 |
+| DRAWER-MENU-03 | 메뉴에서 workspace 전환·프로젝트 기본 설정·이름 변경 실행 | 메뉴가 닫힌 뒤 기존 화면 전환 또는 dialog가 시작되며 이전 팝업이 남지 않음 |
+| DRAWER-MENU-04 | 작은 창에서 각 선택기 열기, 키보드로 선택·닫기 | 기존 라벨·아이콘·버튼 너비·팝업 앵커 위치와 키보드 동작 유지 |
 
-### 8.4 전환 충돌과 원자성
+선택 목록/체크 표시와 설정 항목은 기존 `NAV-02/03`, `LOCATION-01~05`, `FOLDER-01F/J` 절차를 재사용한다.
+폴더 context menu와 Default/Plot 순서 드래그도 기존 절차를 유지한다. 자동 회귀와 컴파일 통과만으로
+드롭다운의 실제 앵커·키보드 동작까지 검증했다고 판단하지 않는다.
 
-| ID | 절차 | 예정 합격 기준 |
+### 8.13 디렉터리·Project·Vault 이름 검증 공통화 — 2026-09-08
+
+후보 4는 5개 화면의 입력 오류 계산을 공유한다. 아래는 사용자 수동 검증 항목이며 실제 Vault와 앱 화면은
+자동 조작하지 않는다. 생성·설정의 내용 배치와 버튼 동작은 기존 상태를 유지한다.
+
+새 정책 테스트 10개와 완료 diff의 독립 검토 후 관련 회귀 **52개 / 5 suites**, 최종 전체 JVM
+**352개 / 53 suites**가 통과했다(실패·오류·skip 0). Desktop·Android 컴파일과 `git diff --check`도 통과했다.
+
+| ID | 절차 | 합격 기준 |
 |---|---|---|
-| CONFLICT-01 | `2. Outline` 일반 파일이 있는 `전환 충돌`에서 전환을 확정한다 | 경로 충돌과 문제 항목을 실행 전에 알리고 `.machum.json`이나 나머지 기본 디렉터리를 만들지 않으며 기존 항목을 변경하지 않음 |
-| CONFLICT-02 | 기본 디렉터리 생성 또는 `.machum.json` 기록 중 실패하도록 테스트 provider를 구성해 전환한다 | 이번 전환에서 새로 만든 항목만 정리되고 재사용한 디렉터리와 기존 사용자 파일은 보존되며 반쪽짜리 Project로 노출되지 않음 |
-| CONFLICT-03 | Project 인덱싱 중 한 Markdown 쓰기를 실패시킨다 | 전환 완료 여부와 인덱싱 실패 범위를 명확히 표시하고 실패 파일을 자동 rename·삭제하지 않으며, 재시도 시 이미 부여한 `id`나 태그가 중복되지 않음 |
-| CONFLICT-04 | 전환 대상에 숨김 폴더, 비-Markdown 파일과 임의 이름의 기존 직속 디렉터리를 함께 둔 뒤 전환한다 | 기본 네 디렉터리 외 기존 항목을 삭제·이동·rename하지 않고, 지원 탐색 범위 밖 항목도 전환 과정에서 변경하지 않음 |
+| DIRECTORY-NAME-01 | 디렉터리·Project·Vault 생성에서 입력을 비우거나 공백만 입력한 뒤 ` Draft`, `CON`, `.hidden` 입력 | 빈 입력은 오류 없이 확인 비활성화. 나머지는 공백 또는 화면에 맞는 이름 오류가 표시되며 제출 불가 |
+| DIRECTORY-NAME-02 | 디렉터리/Project 생성에서 기존 이름의 대소문자 변형 입력, 별도 이름 `Draft.md` 입력 | 기존 이름은 중복 오류. `.md` 이름은 오류 없음(다른 충돌이 없는 경우) |
+| DIRECTORY-NAME-03 | 디렉터리 설정에서 이름을 그대로 두고 태그 등 설정만 변경, Project 이름 변경에서 현재 이름 그대로 두기 | 디렉터리 설정 저장은 가능하고 Project 변경 버튼은 비활성화. 기본 설정처럼 이름 변경을 허용하지 않는 화면도 저장 가능 |
+| DIRECTORY-NAME-04 | 디렉터리/Project 이름 변경에서 현재 이름의 대소문자만 변경하거나 다른 기존 이름 입력 | 각각 대소문자 변경 오류와 중복 오류가 표시되며 기존 이름 유지 |
+| DIRECTORY-NAME-05 | Project·Vault 생성에서 Enter와 확인 버튼 사용, Vault 상위 폴더 미선택 상태 확인 | 중복 제출 차단 유지. Vault는 상위 폴더 선택 전 생성 불가. 처리 실패 뒤 기존 재시도 흐름 유지 |
 
-### 8.5 기존 Project 루트의 일회성 Plot 마이그레이션
-
-| ID | 절차 | 예정 합격 기준 |
-|---|---|---|
-| ROOT-MIGRATION-01 | 유효한 `.machum.json`이 있고 schemaVersion이 없거나 구버전이며 루트가 Default 비-Plot인 `레거시 Default 작품`을 처음 연다 | 루트만 Default + Plot으로 한 번 전환되고 현재 schemaVersion이 기록되며, 기존 Markdown의 파일명·본문·`plot`은 자동 변경되지 않고 단계 없는 파일은 `미분류`에 표시됨 |
-| ROOT-MIGRATION-02 | 위 Project를 닫았다가 다시 열고, 이후 사용자가 루트 Plot을 끈 뒤 다시 연다 | schemaVersion이 이미 현재이므로 마이그레이션을 반복하지 않고 사용자가 끈 Plot 설정을 그대로 보존함 |
-| ROOT-MIGRATION-03 | schemaVersion이 없거나 구버전이며 루트가 General인 `레거시 General 작품`을 연다 | schemaVersion은 갱신할 수 있지만 루트 General 유형과 무번호·이름순 정책은 보존되고 Plot을 강제로 켜지 않음 |
-| ROOT-MIGRATION-04 | 현재 schemaVersion이며 루트 Default의 Plot을 사용자가 끈 `현재 Plot 해제 작품`을 연다 | 현재 사용자 설정으로 판단해 Plot을 다시 켜지 않고 `.machum.json`과 Markdown을 불필요하게 쓰지 않음 |
-| ROOT-MIGRATION-05 | `.machum.json`이 없는 `소재 정리`와 `필사`를 반복해서 연다 | 파일명 형태나 하위 디렉터리 구성과 무관하게 Plot 마이그레이션을 실행하거나 schemaVersion·`.machum.json`을 생성하지 않음 |
-| ROOT-MIGRATION-06 | 기본 네 디렉터리 일부가 없는 레거시 Project를 마이그레이션한다 | 마이그레이션 범위는 Project 루트 설정과 schemaVersion에 한정되고 기본 네 디렉터리를 소급 생성하거나 직속 폴더 설정을 변경하지 않음 |
-| ROOT-MIGRATION-07 | 이미 `id`와 필요한 관리 태그가 모두 있는 레거시 Project를 마이그레이션한 뒤 Markdown hash·mtime을 비교한다 | 설정 파일만 갱신되고 Markdown은 인덱싱 때문에 재작성되지 않으며, 별도의 미인덱싱 파일이 있다면 기존 Project 인덱싱 계약대로 `id`와 관리 태그만 보완되고 이름·`plot`은 유지됨 |
-| ROOT-MIGRATION-08 | 읽을 수 없거나 유효하지 않은 `.machum.json`이 있는 디렉터리를 연다 | 추측으로 설정을 마이그레이션하거나 덮어쓰지 않고 오류를 표시하며 기존 파일과 디렉터리를 변경하지 않음 |
-
----
+Unicode 대소문자 변경과 다른 항목의 lowercase 중복이 겹치면 대소문자 변경 문구를 먼저 표시한다.
+예를 들어 현재 이름 `I\u0307`, 입력 `i\u0307`, 다른 이름 `\u0130` 조합이며, 여기서 `\u` 표기는 Unicode
+코드 포인트를 뜻한다. 거부 결과는 유지하고 Project 이름 변경의 표시 우선순위만 통일했다. 이 경계는 자동 테스트로 확인한다.
 
 ## 9. 종료 기준
+
+2026-09-07 자동 검증: 전환 flush를 막은 상태에서 이전 Project의 파일/폴더 생성, 폴더 설정 변경,
+Project 이름 변경과 삭제 확인을 큐에 넣고 전환 완료 후 모두 폐기되는지 확인했다. 저장 실패 시 구조 변경 차단,
+저장/전환 도중 실제 취소의 전파와 잠금 해제, 동시 같은 이름 Project 생성의 단일 성공도 검증했다.
+전체 JVM 테스트 277개와 Android 소스 컴파일은 통과했으며, 아래 Desktop/Android 화면 항목의 완료 여부와는 별개다.
 
 - Desktop 필수 항목 전체 PASS
 - Android DocumentsUI 필수 항목 전체 PASS
 - 자동 `jvmTest`, JVM 컴파일, Android debug build PASS
 - 실패 항목의 후속 작업 기록
 
-완료 후 [에디터 컴포지션 정비 게이트](product-roadmap.md#에디터-컴포지션-정비-게이트-2단계-완료-직후)로 진행한다.
+2026-09-08 우선순위 조정에 따라 위 검증 뒤에도 에디터 내부 작업을 자동 재개하지 않는다.
+먼저 [비에디터 정비 후보](product-roadmap.md#비에디터-컴포지션팝업-정비-후보--2026-09-08)를 검토하고,
+앱 핵심 흐름 완성도와 사용자 화면 확인이 충분해지면 에디터 후속 범위를 다시 논의한다.
