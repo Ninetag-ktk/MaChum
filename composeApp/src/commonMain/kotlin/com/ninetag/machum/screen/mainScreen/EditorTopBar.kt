@@ -56,13 +56,9 @@ import androidx.compose.runtime.key
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import com.ninetag.machum.theme.WorkspaceMotion
 import androidx.compose.ui.layout.layout
-import androidx.compose.ui.layout.Layout
-import androidx.compose.ui.layout.VerticalAlignmentLine
-import androidx.compose.ui.layout.AlignmentLine
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.testTag
 import kotlin.math.roundToInt
-import kotlin.math.abs
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -114,9 +110,11 @@ fun EditorTopBar(
     var hasFocused by remember(projectFile?.key) { mutableStateOf(false) }
     var isSubmitting by remember(projectFile?.key) { mutableStateOf(false) }
     var renameError by remember(projectFile?.key) { mutableStateOf<String?>(null) }
-    val contextAlpha by key(projectFile?.key) {
+    val animatedContextAlpha by key(projectFile?.key) {
         animateFloatAsState(if (isEditing) 0f else 1f, WorkspaceMotion.contentEnterSpec(), label = "titleContext")
     }
+    // Opacity and layout consume the same composition snapshot of the animation.
+    val contextAlpha = animatedContextAlpha
     // Collapse only horizontal context space; the title control and bar keep their heights.
     val contextVisibility = Modifier.clipToBounds().layout { measurable, constraints ->
         val placeable = measurable.measure(constraints)
@@ -165,12 +163,8 @@ fun EditorTopBar(
             }
         },
         title = {
-            CenteredEditorTitle(
-                editingProgress = 1f - contextAlpha,
-                sideWidthDifference = abs((if (onNavigateBack != null) 96 else 48) - (if (onCommitClick != null) 48 else 0)).dp,
-                endContextWidth = if (projectFile != null) (infoButtonSize + infoButtonGap) * contextAlpha else 0.dp,
-            ) { compactTitleLayout ->
             BoxWithConstraints {
+            val availableTitleWidth = maxWidth
             val titleStyle = LocalTextStyle.current.copy(
                 color = MaterialTheme.colorScheme.onSurface,
                 fontWeight = FontWeight.Normal,
@@ -181,18 +175,18 @@ fun EditorTopBar(
             val measuredTitle = textMeasurer.measure(editingTitle, titleStyle, softWrap = false, maxLines = 1)
             val entryWidth = if (isEditing) textMeasurer.measure(originalTitle, titleStyle, softWrap = false, maxLines = 1).size.width else 0
             val titleWidth = with(density) { maxOf(measuredTitle.size.width, entryWidth).toDp() } + 2.dp
-            val numberWidthLimit = maxWidth * 0.2f
+            val numberWidthLimit = availableTitleWidth * 0.2f
             val numberWidth = if (fileName?.numbering?.isNotEmpty() == true) {
                 (with(density) { textMeasurer.measure("${fileName.numbering}.", titleStyle).size.width.toDp() } + 4.dp)
                     .coerceAtMost(numberWidthLimit)
             } else 0.dp
             val separatorWidth = with(density) { textMeasurer.measure("/", LocalTextStyle.current).size.width.toDp() } + 4.dp
-            // Fixed-width context consumes only what it needs; unused weighted shares must not
-            // leave the document title ellipsized. A narrow bar gives the title first claim.
-            val pathWidthLimit = if (fileName == null) maxWidth else if (compactTitleLayout) {
-                (maxWidth - titleWidth - infoButtonSize - infoButtonGap - numberWidth - separatorWidth)
-                    .coerceIn(0.dp, maxWidth * 0.3f)
-            } else maxWidth * 0.35f
+            // Reserve the natural title first, then let the path use all remaining space.
+            // Its budget uses the original gap, not constraints that change during the fade.
+            val pathWidthLimit = if (fileName == null) availableTitleWidth else {
+                (availableTitleWidth - titleWidth - infoButtonSize - infoButtonGap - numberWidth - separatorWidth)
+                    .coerceAtLeast(0.dp)
+            }
             val showPath = folderName != null && pathWidthLimit > 0.dp
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -275,7 +269,7 @@ fun EditorTopBar(
                         LaunchedEffect(Unit) {
                             focusRequester.requestFocus()
                         }
-                        Column(Modifier.weight(1f, fill = false).editorTitleCenter()) {
+                        Column(Modifier.weight(1f, fill = false)) {
                             BasicTextField(
                                 value = editingTitle,
                                 onValueChange = {
@@ -355,8 +349,7 @@ fun EditorTopBar(
                         }
                     } else {
                         Box(
-                            modifier = Modifier.weight(1f, fill = false).editorTitleCenter()
-                                .width(titleWidth)
+                            modifier = Modifier.weight(1f, fill = false)
                                 .height(titleControlHeight)
                                 .clickable {
                                     renameError = null
@@ -409,7 +402,6 @@ fun EditorTopBar(
                 }
             }
             }
-            }
         },
         actions = {
             if (onCommitClick != null) IconButton(onClick = onCommitClick) {
@@ -421,46 +413,6 @@ fun EditorTopBar(
             }
         }
     )
-}
-
-private val EditorTitleCenter = VerticalAlignmentLine { first, _ -> first }
-
-private fun Modifier.editorTitleCenter() = layout { measurable, constraints ->
-    val title = measurable.measure(constraints)
-    layout(title.width, title.height, mapOf(EditorTitleCenter to title.width / 2)) {
-        title.placeRelative(0, 0)
-    }
-}
-
-/** Positions the actual title control, rather than balancing a title/button row with a spacer. */
-@Composable
-private fun CenteredEditorTitle(
-    editingProgress: Float,
-    sideWidthDifference: Dp,
-    endContextWidth: Dp,
-    content: @Composable (Boolean) -> Unit,
-) {
-    BoxWithConstraints {
-    // Classify the original title region, before its trailing context animates the row width.
-    val compactTitleLayout = maxWidth - sideWidthDifference < 320.dp
-    Layout(content = { content(compactTitleLayout) }, modifier = Modifier.clipToBounds()) { measurables, constraints ->
-        // Material supplies the gap between navigation/actions. Remove its asymmetry to get a
-        // symmetric region around the bar center which cannot overlap either set of controls.
-        val safeWidth = (constraints.maxWidth - sideWidthDifference.roundToPx()).coerceAtLeast(0)
-        // Keep the fading trailing action inside the safe region while the title is centered.
-        // This constrains measurement only; no balancing spacer is added to the title row.
-        val rowWidth = (safeWidth - (endContextWidth.toPx() * editingProgress).roundToInt()).coerceAtLeast(0)
-        val row = measurables.single().measure(constraints.copy(minWidth = 0, maxWidth = rowWidth))
-        val titleCenter = row[EditorTitleCenter]
-        layout(safeWidth, row.height) {
-            val normalX = (safeWidth - row.width) / 2
-            val centeredX = if (titleCenter != AlignmentLine.Unspecified) safeWidth / 2 - titleCenter else normalX
-            val x = (normalX + (centeredX - normalX) * editingProgress).roundToInt()
-            // Alignment lines are physical x coordinates, including in RTL.
-            row.place(x, 0)
-        }
-    }
-    }
 }
 
 private class RenameErrorPopupPositionProvider(
