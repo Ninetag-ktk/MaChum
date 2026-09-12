@@ -113,7 +113,7 @@ class ProjectCommitService private constructor(
     suspend fun restore(
         project: PlatformFile,
         commitId: String,
-        expectedWorkingTreeHash: String? = null,
+        expectedWorkingTreeHash: String,
     ): RestoreResult =
         withContext(Dispatchers.IO) {
             commitMutex.withLock {
@@ -121,7 +121,7 @@ class ProjectCommitService private constructor(
                 if (prepared.head == null) {
                     throw IllegalStateException("복구할 커밋 이력이 없습니다.")
                 }
-                requireRestorableWorkingTree(prepared, expectedWorkingTreeHash)
+                requireExpectedWorkingTree(prepared.snapshot, expectedWorkingTreeHash)
 
                 val store = FileCommitStore(fileManager, project)
                 restorePreparedSnapshot(
@@ -163,7 +163,7 @@ class ProjectCommitService private constructor(
     suspend fun revertHead(
         project: PlatformFile,
         commitId: String,
-        expectedWorkingTreeHash: String? = null,
+        expectedWorkingTreeHash: String,
     ): RestoreResult = withContext(Dispatchers.IO) {
         commitMutex.withLock {
             val prepared = prepare(project)
@@ -171,7 +171,7 @@ class ProjectCommitService private constructor(
             require(head.id == commitId) { "현재 커밋의 변경만 되돌릴 수 있습니다." }
             val parentId = head.parentId
                 ?: throw IllegalStateException("이 커밋보다 이전 기준점이 없습니다.")
-            requireRestorableWorkingTree(prepared, expectedWorkingTreeHash)
+            requireExpectedWorkingTree(prepared.snapshot, expectedWorkingTreeHash)
 
             val store = FileCommitStore(fileManager, project)
             restorePreparedSnapshot(
@@ -184,7 +184,7 @@ class ProjectCommitService private constructor(
         }
     }
 
-    /** 공개 API가 대상과 dirty 정책을 검증한 뒤, 같은 snapshot 적용 경로를 사용한다. */
+    /** 공개 API가 대상과 확인 시점의 작업 트리를 검증한 뒤 같은 snapshot 적용 경로를 사용한다. */
     private suspend fun restorePreparedSnapshot(
         project: PlatformFile,
         store: FileCommitStore,
@@ -221,7 +221,7 @@ class ProjectCommitService private constructor(
         commitId: String,
         fileId: String,
         side: CommitFileSide,
-        expectedWorkingTreeHash: String? = null,
+        expectedWorkingTreeHash: String,
     ): FileRestoreResult = withContext(Dispatchers.IO) {
         commitMutex.withLock {
             val prepared = prepareFileRestore(
@@ -308,7 +308,7 @@ class ProjectCommitService private constructor(
         commitId: String,
         fileId: String,
         side: CommitFileSide,
-        expectedWorkingTreeHash: String? = null,
+        expectedWorkingTreeHash: String,
     ): FileRestoreResult = withContext(Dispatchers.IO) {
         commitMutex.withLock {
             val prepared = prepareFileRestore(
@@ -568,24 +568,11 @@ class ProjectCommitService private constructor(
         commitId: String,
         fileId: String,
         side: CommitFileSide,
-        expectedWorkingTreeHash: String?,
+        expectedWorkingTreeHash: String,
     ): PreparedFileRestore {
         val prepared = prepare(project)
         if (prepared.head == null) throw IllegalStateException("복구할 커밋 이력이 없습니다.")
-        val workingTreeHash = prepared.snapshot.workingTreeHash()
-        if (expectedWorkingTreeHash != null && expectedWorkingTreeHash != workingTreeHash) {
-            throw RestoreSessionStaleException(
-                "마지막 복원 이후 파일이 변경되었습니다. 현재 변경 사항을 먼저 커밋해 주세요.",
-            )
-        }
-        if (
-            expectedWorkingTreeHash == null &&
-            prepared.preview.changes.any { change -> change.fileId == fileId }
-        ) {
-            throw UncommittedChangesException(
-                "복원 대상 파일에 현재 변경 사항이 있습니다. 먼저 커밋해 주세요.",
-            )
-        }
+        requireExpectedWorkingTree(prepared.snapshot, expectedWorkingTreeHash)
 
         val store = FileCommitStore(fileManager, project)
         val change = loadHistoricalFileChange(store, commitId, fileId)
@@ -597,23 +584,6 @@ class ProjectCommitService private constructor(
             existingByPath = prepared.existingMarkdown.values.associateBy(ExistingMarkdown::relativePath),
             snapshot = prepared.snapshot,
         )
-    }
-
-    private fun requireRestorableWorkingTree(
-        prepared: PreparedCommit,
-        expectedWorkingTreeHash: String?,
-    ) {
-        val workingTreeHash = prepared.snapshot.workingTreeHash()
-        if (expectedWorkingTreeHash != null && expectedWorkingTreeHash != workingTreeHash) {
-            throw RestoreSessionStaleException(
-                "마지막 복원 이후 Project가 변경되었습니다. 현재 변경 사항을 먼저 커밋해 주세요.",
-            )
-        }
-        if (prepared.preview.hasChanges && expectedWorkingTreeHash == null) {
-            throw UncommittedChangesException(
-                "현재 변경 사항을 먼저 커밋한 뒤 복구해 주세요.",
-            )
-        }
     }
 
     private fun requireExpectedWorkingTree(

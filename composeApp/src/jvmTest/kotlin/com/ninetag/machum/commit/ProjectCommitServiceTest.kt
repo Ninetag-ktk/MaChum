@@ -274,7 +274,7 @@ class ProjectCommitServiceTest {
     }
 
     @Test
-    fun restoresAnOlderSnapshotWithoutMovingHead_andBlocksDirtyRestore() = runBlocking {
+    fun dirtyWholeProjectRestoresCanRepeatBetweenVersionsWithoutMovingHead() = runBlocking {
         withProject { project, fileManager ->
             val draft = File(project, "Draft.md").apply { writeText(note("draft-id", "first")) }
             val service = ProjectCommitService(fileManager)
@@ -284,8 +284,12 @@ class ProjectCommitServiceTest {
             File(project, "Added.md").writeText(note("added-id", "added"))
             val second = service.commit(PlatformFile(project), "second")
             assertTrue(service.preview(PlatformFile(project)).changes.isEmpty())
+            val storeBefore = commitStoreSnapshot(project)
+            val configBefore = File(project, ".machum.json").readBytes().toList()
+            val unmanaged = File(project, "Unmanaged.txt").apply { writeText("outside tracked restore scope") }
+            draft.writeText(note("draft-id", "uncommitted before historical restore"))
 
-            val restored = service.restore(PlatformFile(project), first.commit.id)
+            val restored = service.restoreConfirmed(PlatformFile(project), first.commit.id)
 
             assertEquals(first.commit.id, restored.targetCommit.id)
             assertEquals("first", NoteFile.parse(draft.readText()).body)
@@ -295,8 +299,16 @@ class ProjectCommitServiceTest {
                 setOf(CommitChangeKind.MODIFIED, CommitChangeKind.DELETED),
                 service.preview(PlatformFile(project)).changes.mapTo(mutableSetOf()) { it.kind },
             )
-            assertFailsWith<UncommittedChangesException> {
-                service.restore(PlatformFile(project), first.commit.id)
+            for (target in listOf(second.commit, first.commit, second.commit)) {
+                draft.writeText(note("draft-id", "new uncommitted edit before ${target.id}"))
+                val extra = File(project, "Uncommitted.md").apply { writeText(note("uncommitted-id", "discard this")) }
+                service.restoreConfirmed(PlatformFile(project), target.id)
+                assertEquals(if (target.id == first.commit.id) "first" else "second", NoteFile.parse(draft.readText()).body)
+                assertEquals(target.id == second.commit.id, File(project, "Added.md").exists())
+                assertFalse(extra.exists())
+                assertEquals(configBefore, File(project, ".machum.json").readBytes().toList())
+                assertEquals("outside tracked restore scope", unmanaged.readText())
+                assertEquals(storeBefore, commitStoreSnapshot(project))
             }
         }
     }
@@ -319,7 +331,7 @@ class ProjectCommitServiceTest {
             fileManager.reloadCurrentProjectConfig()
             service.commit(PlatformFile(project), "move character")
 
-            service.restore(PlatformFile(project), first.commit.id)
+            service.restoreConfirmed(PlatformFile(project), first.commit.id)
 
             assertTrue(File(characterFolder, "Hero.md").isFile)
             assertTrue(!File(project, "Hero.md").exists())
@@ -363,7 +375,7 @@ class ProjectCommitServiceTest {
             )
             val second = service.commit(PlatformFile(project), "move and edit")
 
-            val result = service.restoreFileContent(
+            val result = service.restoreFileContentConfirmed(
                 project = PlatformFile(project),
                 commitId = first.commit.id,
                 fileId = "draft-id",
@@ -390,14 +402,14 @@ class ProjectCommitServiceTest {
     }
 
     @Test
-    fun fileContentRestoreRejectsMissingSideAndDirtyTarget() = runBlocking {
+    fun fileContentRestoreRejectsMissingSideButDiscardsConfirmedDirtyTarget() = runBlocking {
         withProject { project, fileManager ->
             val draft = File(project, "Draft.md").apply { writeText(note("draft-id", "first")) }
             val service = ProjectCommitService(fileManager)
             val first = service.commit(PlatformFile(project), "initial")
 
             assertFailsWith<IllegalArgumentException> {
-                service.restoreFileContent(
+                service.restoreFileContentConfirmed(
                     PlatformFile(project),
                     first.commit.id,
                     "draft-id",
@@ -406,15 +418,13 @@ class ProjectCommitServiceTest {
             }
 
             draft.writeText(note("draft-id", "dirty"))
-            assertFailsWith<UncommittedChangesException> {
-                service.restoreFileContent(
-                    PlatformFile(project),
-                    first.commit.id,
-                    "draft-id",
-                    CommitFileSide.AFTER,
-                )
-            }
-            assertEquals("dirty", NoteFile.parse(draft.readText()).body)
+            service.restoreFileContentConfirmed(
+                PlatformFile(project),
+                first.commit.id,
+                "draft-id",
+                CommitFileSide.AFTER,
+            )
+            assertEquals("first", NoteFile.parse(draft.readText()).body)
         }
     }
 
@@ -447,7 +457,7 @@ class ProjectCommitServiceTest {
             )
             service.commit(PlatformFile(project), "remove plot")
 
-            service.restoreFileContent(
+            service.restoreFileContentConfirmed(
                 PlatformFile(project),
                 first.commit.id,
                 "draft-id",
@@ -480,7 +490,7 @@ class ProjectCommitServiceTest {
             renamedDraft.writeText(note("draft-id", "current body"))
             service.commit(PlatformFile(renamedProject), "after project rename")
 
-            service.restoreFileContent(
+            service.restoreFileContentConfirmed(
                 project = PlatformFile(renamedProject),
                 commitId = historical.commit.id,
                 fileId = "draft-id",
@@ -543,7 +553,7 @@ class ProjectCommitServiceTest {
             )
             service.commit(PlatformFile(project), "outline")
 
-            service.restoreFileContent(
+            service.restoreFileContentConfirmed(
                 project = PlatformFile(project),
                 commitId = historical.commit.id,
                 fileId = "draft-id",
@@ -573,7 +583,7 @@ class ProjectCommitServiceTest {
             renamedDraft.writeText(note("draft-id", "current body"))
             service.commit(PlatformFile(renamedProject), "after project rename")
 
-            val result = service.restore(
+            val result = service.restoreConfirmed(
                 project = PlatformFile(renamedProject),
                 commitId = historical.commit.id,
             )
@@ -608,7 +618,7 @@ class ProjectCommitServiceTest {
             service.commit(PlatformFile(project), "move selected")
             unrelated.writeText(note("unrelated-id", "dirty unrelated"))
 
-            val result = service.restoreFile(
+            val result = service.restoreFileConfirmed(
                 PlatformFile(project),
                 first.commit.id,
                 "selected-id",
@@ -642,7 +652,7 @@ class ProjectCommitServiceTest {
             assertTrue(deleted.delete())
             val deletionCommit = service.commit(PlatformFile(project), "delete")
 
-            val recreated = service.restoreFile(
+            val recreated = service.restoreFileConfirmed(
                 PlatformFile(project),
                 deletionCommit.commit.id,
                 "deleted-id",
@@ -657,7 +667,7 @@ class ProjectCommitServiceTest {
             val added = File(project, "Added.md").apply { writeText(note("added-id", "added")) }
             val additionCommit = service.commit(PlatformFile(project), "add")
 
-            val removed = service.restoreFile(
+            val removed = service.restoreFileConfirmed(
                 PlatformFile(project),
                 additionCommit.commit.id,
                 "added-id",
@@ -690,7 +700,7 @@ class ProjectCommitServiceTest {
             service.commit(PlatformFile(project), "move and occupy old path")
 
             assertFailsWith<CommitConflictException> {
-                service.restoreFile(
+                service.restoreFileConfirmed(
                     PlatformFile(project),
                     first.commit.id,
                     "selected-id",
@@ -788,7 +798,7 @@ class ProjectCommitServiceTest {
             draft.writeText(note("draft-id", "head"))
             val head = service.commit(platformProject, "head")
 
-            service.restore(platformProject, first.commit.id)
+            service.restoreConfirmed(platformProject, first.commit.id)
             val restoredPreview = service.preview(platformProject)
             val result = service.restoreHeadSnapshot(
                 project = platformProject,
@@ -817,7 +827,8 @@ class ProjectCommitServiceTest {
             val historyBefore = service.history(platformProject).map { it.commit.id }
             val storeBefore = commitStoreSnapshot(project)
 
-            val result = service.revertHead(platformProject, second.commit.id)
+            draft.writeText(note("draft-id", "uncommitted before revert"))
+            val result = service.revertHeadConfirmed(platformProject, second.commit.id)
 
             assertEquals(first.commit.id, result.targetCommit.id)
             assertTrue(result.workingTreeHash.isNotBlank())
@@ -843,10 +854,10 @@ class ProjectCommitServiceTest {
             val historyBefore = service.history(platformProject).map { it.commit.id }
             val storeBefore = commitStoreSnapshot(project)
 
-            val restoredFirst = service.restore(platformProject, first.commit.id)
+            val restoredFirst = service.restoreConfirmed(platformProject, first.commit.id)
             assertEquals("first", NoteFile.parse(draft.readText()).body)
 
-            val restoredSecond = service.restore(
+            val restoredSecond = service.restoreConfirmed(
                 project = platformProject,
                 commitId = second.commit.id,
                 expectedWorkingTreeHash = restoredFirst.workingTreeHash,
@@ -854,7 +865,7 @@ class ProjectCommitServiceTest {
             assertEquals("second", NoteFile.parse(draft.readText()).body)
             assertNotEquals(restoredFirst.workingTreeHash, restoredSecond.workingTreeHash)
 
-            val restoredHead = service.restore(
+            val restoredHead = service.restoreConfirmed(
                 project = platformProject,
                 commitId = third.commit.id,
                 expectedWorkingTreeHash = restoredSecond.workingTreeHash,
@@ -863,8 +874,8 @@ class ProjectCommitServiceTest {
             assertFalse(service.preview(platformProject).hasChanges)
             assertEquals(third.commit.id, restoredHead.targetCommit.id)
 
-            assertFailsWith<UncommittedChangesException> {
-                service.restore(
+            assertFailsWith<RestoreSessionStaleException> {
+                service.restoreConfirmed(
                     project = platformProject,
                     commitId = first.commit.id,
                     expectedWorkingTreeHash = restoredFirst.workingTreeHash,
@@ -896,6 +907,8 @@ class ProjectCommitServiceTest {
             firstFile.writeText(rawFormattedNote("a-id", tagsAsFlow = false, body = "a current"))
             secondFile.writeText(rawFormattedNote("b-id", tagsAsFlow = true, body = "b current"))
             val head = normalService.commit(platformProject, "current")
+            firstFile.writeText(rawFormattedNote("a-id", tagsAsFlow = false, body = "a uncommitted rollback target"))
+            secondFile.writeText(rawFormattedNote("b-id", tagsAsFlow = true, body = "b uncommitted rollback target"))
             val firstBefore = firstFile.readBytes()
             val secondBefore = secondFile.readBytes()
             val unrelatedBefore = unrelated.readBytes()
@@ -910,7 +923,7 @@ class ProjectCommitServiceTest {
             )
 
             assertFailsWith<CommitStorageException> {
-                failingService.restore(platformProject, historical.commit.id)
+                failingService.restoreConfirmed(platformProject, historical.commit.id)
             }
 
             assertContentEquals(firstBefore, firstFile.readBytes())
@@ -949,7 +962,7 @@ class ProjectCommitServiceTest {
             val service = ProjectCommitService(fileManager, mutator)
 
             val error = cancelAtMutationCheckpoint(mutator) {
-                service.restore(platformProject, historical.commit.id)
+                service.restoreConfirmed(platformProject, historical.commit.id)
             }
 
             assertTrue(error is CancellationException)
@@ -990,7 +1003,7 @@ class ProjectCommitServiceTest {
             )
 
             val error = assertFailsWith<CommitStorageException> {
-                failingService.restore(platformProject, historical.commit.id)
+                failingService.restoreConfirmed(platformProject, historical.commit.id)
             }
 
             assertFalse(error is RestoreRollbackFailedException)
@@ -1017,6 +1030,7 @@ class ProjectCommitServiceTest {
             val historical = normalService.commit(platformProject, "historical")
             draft.writeText(note("draft-id", "current"))
             val head = normalService.commit(platformProject, "current")
+            draft.writeText(rawFormattedNote("draft-id", tagsAsFlow = true, body = "uncommitted selected file"))
             val unrelatedBefore = NoteFile.parse(note("unrelated-id", "dirty unrelated"))
                 .withTags(listOf("Project"))
                 .inject()
@@ -1035,7 +1049,7 @@ class ProjectCommitServiceTest {
             )
 
             assertFailsWith<CommitStorageException> {
-                failingService.restoreFileContent(
+                failingService.restoreFileContentConfirmed(
                     project = platformProject,
                     commitId = historical.commit.id,
                     fileId = "draft-id",
@@ -1070,6 +1084,7 @@ class ProjectCommitServiceTest {
             assertTrue(historicalFile.renameTo(currentFile))
             currentFile.writeText(note("draft-id", "current"))
             val head = normalService.commit(platformProject, "current")
+            currentFile.writeText(rawFormattedNote("draft-id", tagsAsFlow = false, body = "uncommitted moving file"))
             val currentBefore = currentFile.readText()
             val unrelatedBefore = unrelated.readText()
             assertTrue(unrelated.setLastModified(1_234_000L))
@@ -1085,7 +1100,7 @@ class ProjectCommitServiceTest {
             )
 
             assertFailsWith<CommitStorageException> {
-                failingService.restoreFile(
+                failingService.restoreFileConfirmed(
                     project = platformProject,
                     commitId = historical.commit.id,
                     fileId = "draft-id",
@@ -1122,7 +1137,7 @@ class ProjectCommitServiceTest {
             val service = ProjectCommitService(fileManager, mutator)
 
             val error = cancelAtMutationCheckpoint(mutator) {
-                service.restoreFileContent(
+                service.restoreFileContentConfirmed(
                     project = platformProject,
                     commitId = historical.commit.id,
                     fileId = "draft-id",
@@ -1173,7 +1188,7 @@ class ProjectCommitServiceTest {
             val service = ProjectCommitService(fileManager, mutator)
 
             val error = cancelAtMutationCheckpoint(mutator) {
-                service.restore(platformProject, historical.commit.id)
+                service.restoreConfirmed(platformProject, historical.commit.id)
             }
 
             assertTrue(error is CancellationException)
@@ -1202,7 +1217,7 @@ class ProjectCommitServiceTest {
             val service = ProjectCommitService(fileManager, mutator)
 
             val error = cancelAtMutationCheckpoint(mutator) {
-                service.restoreFileContent(
+                service.restoreFileContentConfirmed(
                     project = platformProject,
                     commitId = historical.commit.id,
                     fileId = "draft-id",
@@ -1243,7 +1258,7 @@ class ProjectCommitServiceTest {
             val service = ProjectCommitService(fileManager, mutator)
 
             val error = cancelAtMutationCheckpoint(mutator) {
-                service.restoreFile(
+                service.restoreFileConfirmed(
                     project = platformProject,
                     commitId = historical.commit.id,
                     fileId = "draft-id",
@@ -1276,6 +1291,92 @@ class ProjectCommitServiceTest {
         job.join()
         assertTrue(job.isCancelled)
         error
+    }
+
+    @Test
+    fun dirtyFileContentCanRepeatBetweenVersionsWithoutChangingPathPlotOrOtherFiles() = runBlocking {
+        assertRepeatedDirtyFileRestore(contentOnly = true)
+    }
+
+    @Test
+    fun dirtyWholeFileCanRepeatBetweenVersionsIncludingPathWithoutChangingOtherFiles() = runBlocking {
+        assertRepeatedDirtyFileRestore(contentOnly = false)
+    }
+
+    private suspend fun assertRepeatedDirtyFileRestore(contentOnly: Boolean) = withProject { project, fileManager ->
+        val oldFolder = File(project, "Old").apply { mkdir() }
+        val newFolder = File(project, "New").apply { mkdir() }
+        val oldFile = File(oldFolder, "A.md").apply {
+            writeText(richNote("draft-id", listOf("Project"), emptyList(), "1) 발단", "A", "version A"))
+        }
+        val unrelated = File(project, "Other.md").apply { writeText(note("other-id", "committed other")) }
+        val service = ProjectCommitService(fileManager)
+        val platformProject = PlatformFile(project)
+        val a = service.commit(platformProject, "version A")
+        val newFile = File(newFolder, "B.md")
+        assertTrue(oldFile.renameTo(newFile))
+        newFile.writeText(richNote("draft-id", listOf("Project"), emptyList(), "4) 절정", "B", "version B"))
+        val b = service.commit(platformProject, "version B")
+        val storeBefore = commitStoreSnapshot(project)
+        val configBefore = File(project, ".machum.json").readBytes().toList()
+        val unrelatedRaw = rawFormattedNote("other-id", tagsAsFlow = true, body = "uncommitted unrelated bytes")
+        unrelated.writeText(unrelatedRaw)
+        assertTrue(unrelated.setLastModified(1_234_000L))
+        val unrelatedModified = unrelated.lastModified()
+        var currentFile = newFile
+        var currentPlot = "4) 절정"
+        for (target in listOf(a.commit, b.commit, a.commit, b.commit)) {
+            currentFile.writeText(richNote("draft-id", listOf("Project"), emptyList(), currentPlot, "dirty", "discard uncommitted edit"))
+            val confirmationHash = service.preview(platformProject).workingTreeHash
+            val result = if (contentOnly) service.restoreFileContent(
+                platformProject, target.id, "draft-id", CommitFileSide.AFTER, confirmationHash,
+            ) else service.restoreFile(
+                platformProject, target.id, "draft-id", CommitFileSide.AFTER, confirmationHash,
+            )
+            val targetIsA = target.id == a.commit.id
+            currentFile = if (contentOnly || !targetIsA) newFile else oldFile
+            if (!contentOnly) currentPlot = if (targetIsA) "1) 발단" else "4) 절정"
+            val expectedPath = if (contentOnly || !targetIsA) "New/B.md" else "Old/A.md"
+            assertEquals(expectedPath, result.restoredPath)
+            val restored = NoteFile.parse(currentFile.readText())
+            assertEquals(if (targetIsA) "version A" else "version B", restored.body)
+            assertEquals("draft-id", restored.id)
+            assertEquals(currentPlot, restored.plot)
+            assertFalse((if (currentFile == oldFile) newFile else oldFile).exists())
+            assertEquals(unrelatedRaw, unrelated.readText())
+            assertEquals(unrelatedModified, unrelated.lastModified())
+            assertEquals(configBefore, File(project, ".machum.json").readBytes().toList())
+            assertEquals(storeBefore, commitStoreSnapshot(project))
+            assertEquals(b.commit.id, service.history(platformProject).first().commit.id)
+        }
+    }
+
+    @Test
+    fun everyRestoreScopeRejectsChangesAfterConfirmationWithoutMutatingAnything() = runBlocking {
+        withProject { project, fileManager ->
+            val draft = File(project, "Draft.md").apply { writeText(note("draft-id", "A")) }
+            val service = ProjectCommitService(fileManager)
+            val platformProject = PlatformFile(project)
+            val a = service.commit(platformProject, "A")
+            draft.writeText(note("draft-id", "B"))
+            val b = service.commit(platformProject, "B")
+            val confirmationHash = service.preview(platformProject).workingTreeHash
+            draft.writeText(rawFormattedNote("draft-id", tagsAsFlow = true, body = "changed after confirmation"))
+            val documentBefore = draft.readBytes().toList()
+            val storeBefore = commitStoreSnapshot(project)
+            val operations: List<suspend () -> Unit> = listOf(
+                { service.restore(platformProject, a.commit.id, confirmationHash) },
+                { service.restoreHeadSnapshot(platformProject, b.commit.id, confirmationHash) },
+                { service.revertHead(platformProject, b.commit.id, confirmationHash) },
+                { service.restoreFileContent(platformProject, a.commit.id, "draft-id", CommitFileSide.AFTER, confirmationHash) },
+                { service.restoreFile(platformProject, a.commit.id, "draft-id", CommitFileSide.AFTER, confirmationHash) },
+            )
+            operations.forEach { operation ->
+                assertFailsWith<RestoreSessionStaleException> { operation() }
+                assertEquals(documentBefore, draft.readBytes().toList())
+                assertEquals(storeBefore, commitStoreSnapshot(project))
+            }
+        }
     }
 
     private suspend fun withProject(block: suspend (File, FileManager) -> Unit) {
@@ -1411,6 +1512,25 @@ class ProjectCommitServiceTest {
             checkpointRelease.await()
         }
     }
+
+    // Tests confirm the current preview immediately unless explicitly exercising a stale confirmation.
+    private suspend fun ProjectCommitService.restoreConfirmed(
+        project: PlatformFile, commitId: String, expectedWorkingTreeHash: String? = null,
+    ) = restore(project, commitId, expectedWorkingTreeHash ?: preview(project).workingTreeHash)
+
+    private suspend fun ProjectCommitService.revertHeadConfirmed(
+        project: PlatformFile, commitId: String, expectedWorkingTreeHash: String? = null,
+    ) = revertHead(project, commitId, expectedWorkingTreeHash ?: preview(project).workingTreeHash)
+
+    private suspend fun ProjectCommitService.restoreFileContentConfirmed(
+        project: PlatformFile, commitId: String, fileId: String, side: CommitFileSide,
+        expectedWorkingTreeHash: String? = null,
+    ) = restoreFileContent(project, commitId, fileId, side, expectedWorkingTreeHash ?: preview(project).workingTreeHash)
+
+    private suspend fun ProjectCommitService.restoreFileConfirmed(
+        project: PlatformFile, commitId: String, fileId: String, side: CommitFileSide,
+        expectedWorkingTreeHash: String? = null,
+    ) = restoreFile(project, commitId, fileId, side, expectedWorkingTreeHash ?: preview(project).workingTreeHash)
 
     private fun note(id: String, body: String): String = """
         ---

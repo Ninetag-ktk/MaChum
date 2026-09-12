@@ -41,64 +41,6 @@ import com.ninetag.machum.theme.WorkspaceUiMetrics
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
-private class PropertyDraft(val id: Int, property: DocumentProperty?) {
-    var original by mutableStateOf(property)
-    var name by mutableStateOf(property?.key.orEmpty())
-    var type by mutableStateOf(property?.type ?: DocumentPropertyType.TEXT)
-    var text by mutableStateOf(TextFieldValue(property?.value.scalarText()))
-    var items by mutableStateOf((property?.value as? DocumentPropertyValue.ListValue)?.items.orEmpty())
-    var checked by mutableStateOf((property?.value as? DocumentPropertyValue.BooleanValue)?.value ?: false)
-    var error by mutableStateOf<String?>(null)
-    var saving by mutableStateOf(false)
-    var dirty by mutableStateOf(false)
-    var pendingDelete by mutableStateOf(false)
-    var nameEditing = false
-    val list: Boolean get() = type == DocumentPropertyType.LIST || type == DocumentPropertyType.TAGS
-    fun markEdited() {
-        pendingDelete = false
-        dirty = true
-    }
-    fun commitInput() {
-        if (!list || text.composition != null) return
-        val value = text.text.trim()
-        if (value.isNotEmpty() && items.none { it.display() == value }) items = items + DocumentPropertyListItem.Text(value)
-        text = TextFieldValue()
-    }
-    fun value(): DocumentPropertyValue = when (type) {
-        DocumentPropertyType.LIST, DocumentPropertyType.TAGS -> DocumentPropertyValue.ListValue(items)
-        DocumentPropertyType.NUMBER -> DocumentPropertyValue.NumberValue(text.text)
-        DocumentPropertyType.BOOLEAN -> DocumentPropertyValue.BooleanValue(checked)
-        DocumentPropertyType.DATE -> DocumentPropertyValue.DateValue(text.text)
-        DocumentPropertyType.DATE_TIME -> DocumentPropertyValue.DateTimeValue(text.text)
-        else -> DocumentPropertyValue.Text(text.text)
-    }
-    fun hasValue(): Boolean = if (type == DocumentPropertyType.BOOLEAN) true else items.isNotEmpty() || text.text.isNotEmpty()
-}
-private class PropertyForm {
-    val rows = mutableStateListOf<PropertyDraft>()
-    var nextId = 0
-    fun reconcile(properties: List<DocumentProperty>) {
-        rows.removeAll { row ->
-            row.original != null && !row.dirty && !row.saving && !row.pendingDelete &&
-                properties.none { it.key == row.original?.key }
-        }
-        properties.forEach { p ->
-            val row = rows.firstOrNull { it.original?.key == p.key || (it.saving && it.name.trim() == p.key) }
-            if (row == null) rows.add(PropertyDraft(nextId++, p))
-            else if (!row.dirty && !row.saving && !row.pendingDelete && row.original != p) {
-                val index = rows.indexOf(row)
-                rows[index] = PropertyDraft(row.id, p)
-            }
-        }
-        ensureEditableRow()
-    }
-    fun ensureEditableRow() {
-        if (rows.none { it.original == null || (it.original?.readOnly == false && !DocumentPropertyProtectionPolicy.isAutomaticKey(it.original?.key)) }) {
-            rows.add(PropertyDraft(nextId++, null))
-        }
-    }
-}
-
 /** Drafts belong to the file; changing selection must never move an errored edit to another file. */
 @Composable
 internal fun DocumentInformationSection(
@@ -123,82 +65,15 @@ internal fun DocumentInformationSection(
     LaunchedEffect(workspaceIdentity, file.key, raw) { form.reconcile(parsed.properties) }
     val fileKey = file.key
     fun submit(row: PropertyDraft, explicitDelete: Boolean = false) {
-        val deleting = explicitDelete || row.pendingDelete
-        if (row.saving || (!row.dirty && !deleting)) return
-        if (deleting && row.original == null) {
-            form.rows.remove(row)
-            form.ensureEditableRow()
-            return
-        }
-        if (!deleting) row.commitInput()
-        if (!deleting && row.nameEditing && row.name.trim() != row.original?.key) return
-        val expected = note
-        val currentRaw = expected.inject()
-        val current = parseDocumentProperties(currentRaw).properties
-        val original = row.original
-        if (deleting && original != null && (
-            original.readOnly || original.key in protectedKeys || DocumentPropertyProtectionPolicy.isAutomaticKey(original.key) ||
-                protection.isManagedTagsKey(original.key)
-        )) {
-            row.error = "이 속성은 삭제할 수 없습니다."
-            row.pendingDelete = false
-            return
-        }
-        if (deleting) row.pendingDelete = true
-        if (original != null && current.firstOrNull { it.key == original.key } != original) {
-            row.error = "속성이 변경되었습니다. 파일의 최신 값을 확인해 주세요."
-            return
-        }
-        val name = row.name.trim()
-        if (!deleting && original != null && original.key in protectedKeys && name != original.key) {
-            row.error = "이 속성 이름은 변경하거나 삭제할 수 없습니다."
-            return
-        }
-        if (!deleting && name.isEmpty() && row.hasValue()) { row.error = "값이 있는 속성에는 이름이 필요합니다."; return }
-        if (!deleting && name != original?.key && current.any { it.key == name }) { row.error = "이미 있는 속성 이름입니다."; return }
-        if (!deleting && (DocumentPropertyProtectionPolicy.isAutomaticKey(name) || DocumentPropertyProtectionPolicy.isAutomaticKey(original?.key))) { row.error = "자동 관리 속성은 변경할 수 없습니다."; return }
-        if (!deleting && (protection.isManagedSourceKey(name) || protection.isManagedSourceKey(original?.key)) && row.type != DocumentPropertyType.TEXT) {
-            row.error = "source는 텍스트 값 하나만 사용합니다."; return
-        }
-        if (!deleting && original != null && name == original.key && row.type == original.type && row.value() == original.value) {
-            row.dirty = false
-            row.error = null
-            return
-        }
-        var nextRaw = currentRaw
-        fun accept(result: DocumentPropertyResult): Boolean = when (result) {
-            is DocumentPropertyResult.Success -> { nextRaw = result.raw; true }
-            is DocumentPropertyResult.Failure -> { row.error = result.message; false }
-        }
-        if (deleting && original != null) {
-            if (!accept(deleteDocumentProperty(nextRaw, original.key))) return
-        } else if (name.isEmpty()) {
-            if (original == null) { row.dirty = false; row.error = null; return }
-            if (!accept(deleteDocumentProperty(nextRaw, original.key))) return
-        } else {
-            if (original != null && original.key != name && !accept(renameDocumentProperty(nextRaw, original.key, name))) return
-            if (!accept(setDocumentProperty(nextRaw, name, row.value()))) return
-        }
-        if (nextRaw == currentRaw) { row.dirty = false; row.error = null; return }
-        val updated = NoteFile.parse(nextRaw)
-        row.saving = true
-        row.error = null
+        val change = form.prepareSave(row, note, protection, protectedKeys, explicitDelete) ?: return
         scope.launch {
             try {
-                val error = onSave(fileKey, expected, updated)
-                row.error = error
-                if (error == null) {
-                    row.dirty = false
-                    row.pendingDelete = false
-                    if (deleting || name.isEmpty()) {
-                        form.rows.remove(row)
-                        form.ensureEditableRow()
-                    }
-                    else row.original = parseDocumentProperties(nextRaw).properties.firstOrNull { it.key == name }
-                }
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { row.error = e.message ?: "속성을 저장하지 못했습니다." }
-            finally { row.saving = false }
+                form.completeSave(row, change, onSave(fileKey, change.expected, change.updated))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                form.completeSave(row, change, e.message ?: "속성을 저장하지 못했습니다.")
+            } finally { form.cancelSave(row) }
         }
     }
     Column(
@@ -574,17 +449,6 @@ private fun CompactPropertyFieldDecoration(
         }
         innerTextField()
     }
-}
-private fun DocumentPropertyListItem.display(): String = when (this) {
-    is DocumentPropertyListItem.Text -> value
-    is DocumentPropertyListItem.NumberValue -> value
-}
-private fun DocumentPropertyValue?.scalarText(): String = when (this) {
-    is DocumentPropertyValue.Text -> value
-    is DocumentPropertyValue.NumberValue -> value
-    is DocumentPropertyValue.DateValue -> value
-    is DocumentPropertyValue.DateTimeValue -> value
-    else -> ""
 }
 private fun DocumentPropertyType.label() = when (this) {
     DocumentPropertyType.TEXT -> "텍스트"

@@ -209,8 +209,6 @@ internal fun CommitHistoryDetail(
     entry: CommitHistoryEntry,
     isHead: Boolean,
     workingPreview: CommitPreview?,
-    canReplaceProjectRestore: Boolean,
-    onOpenCommitDialog: () -> Unit,
     onProjectRestoreRequest: (CommitHistoryEntry) -> Unit,
     onHeadRevertRequest: (CommitHistoryEntry) -> Unit,
     modifier: Modifier = Modifier,
@@ -261,11 +259,7 @@ internal fun CommitHistoryDetail(
         HorizontalDivider()
         val projectStateKnown = workingPreview != null
         val projectDirty = workingPreview?.hasChanges == true
-        val snapshotRestoreEnabled = projectStateKnown && if (isHead) {
-            projectDirty
-        } else {
-            !projectDirty || canReplaceProjectRestore
-        }
+        val snapshotRestoreEnabled = projectStateKnown && (!isHead || projectDirty)
         Button(
             onClick = { onProjectRestoreRequest(entry) },
             enabled = snapshotRestoreEnabled,
@@ -277,12 +271,6 @@ internal fun CommitHistoryDetail(
                 DisabledReason("현재 변경 상태를 확인한 뒤 복원할 수 있습니다.")
             isHead && !projectDirty ->
                 DisabledReason("작업 파일이 이미 현재 커밋 시점과 같습니다.")
-            !isHead && projectDirty && !canReplaceProjectRestore -> {
-                DisabledReason("현재 변경 사항을 먼저 커밋해야 프로젝트 전체를 복원할 수 있습니다.")
-                TextButton(onClick = onOpenCommitDialog) {
-                    Text("변경사항 커밋")
-                }
-            }
         }
 
         if (isHead) {
@@ -291,14 +279,9 @@ internal fun CommitHistoryDetail(
             } else {
                 OutlinedButton(
                     onClick = { onHeadRevertRequest(entry) },
-                    enabled = projectStateKnown && (!projectDirty || canReplaceProjectRestore),
+                    enabled = projectStateKnown,
                 ) {
                     Text("최근 커밋의 변경 되돌리기…")
-                }
-                if (projectDirty && !canReplaceProjectRestore) {
-                    DisabledReason(
-                        "현재 변경을 먼저 커밋하거나 현재 커밋 시점으로 복원한 뒤 실행할 수 있습니다.",
-                    )
                 }
             }
         }

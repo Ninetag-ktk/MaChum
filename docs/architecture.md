@@ -674,9 +674,9 @@ canonical 내용을 함께 검증하며, blob 검증만으로 손상 객체를 �
 새 목적지 파일은 생성과 rollback용 참조 등록만 짧게 보호해 취소 시 임시 파일을 놓치지 않게 한다.
 HEAD와 이력은 변경하지 않으며, 프로세스 강제 종료나 외부 프로그램과의 원자적 동시 쓰기까지 보장하지 않는다.
 
-세 복원 동작의 데이터 보존·dirty 예외·세션 범위는 [제품 도메인 §9.6](design/product-domain.md#96-커밋-ui-역할-분리와-복원-정책source-of-truth확정)에만 정의한다.
+세 복원 동작의 데이터 보존·선택 범위 폐기·확인 계약는 [제품 도메인 §9.6](design/product-domain.md#96-커밋-ui-역할-분리와-복원-정책source-of-truth확정)에만 정의한다.
 서비스는 파일 단위 대상을 기존 `CommitChange`의 `BEFORE | AFTER` side로 표현하며 새 영속 모델을 만들지 않는다.
-`NoteFile` 변환으로 historical 본문에 현재 정체성·분류를 적용한다. 런타임 세션은 canonical hash를 재검사하며 일반 dirty 차단과 stale 세션 오류를 구분한다.
+`NoteFile` 변환으로 historical 본문에 현재 정체성·분류를 적용한다. 확인 요청은 canonical hash를 고정한다. 실행 시 pending save를 flush한 뒤 쓰기를 일시정지하고 고정 hash를 검증한다. 불일치하면 새 확인을 요구하며 복원 중 늦은 본문 입력은 받지 않는다.
 
 ---
 

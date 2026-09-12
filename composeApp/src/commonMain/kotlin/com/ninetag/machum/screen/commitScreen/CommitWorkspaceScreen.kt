@@ -137,8 +137,6 @@ internal fun CommitWorkspaceScreen(
                             } else CommitHistoryDetail(
                                 entry = entry, isHead = entry.commit.id == head,
                                 workingPreview = historyState.workingPreview,
-                                canReplaceProjectRestore = historyState.canReplaceProjectRestore,
-                                onOpenCommitDialog = openChanges,
                                 onProjectRestoreRequest = onProjectRestoreRequest,
                                 onHeadRevertRequest = onHeadRevertRequest,
                                 modifier = Modifier.fillMaxSize(),

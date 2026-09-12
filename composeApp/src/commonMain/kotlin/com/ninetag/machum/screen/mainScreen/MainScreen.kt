@@ -576,12 +576,6 @@ private fun commitRestoreAvailability(
         enabled = false,
         disabledReason = "현재 변경 상태를 확인한 뒤 복원할 수 있습니다.",
     )
-    state.workingPreview.changes.any { it.fileId == change.fileId } &&
-        change.fileId !in state.replaceableFileIds ->
-        CommitRestoreActionAvailability(
-            enabled = false,
-            disabledReason = "이 파일의 현재 변경 사항을 먼저 커밋해야 복원할 수 있습니다.",
-        )
     requiresCurrentFile && change.fileId !in state.workingPreview.currentFileIds ->
         CommitRestoreActionAvailability(
             enabled = false,
@@ -601,7 +595,7 @@ private fun restoreCopy(target: CommitRestoreTarget): RestoreDialogCopy = when (
     is CommitRestoreTarget.Project -> RestoreDialogCopy(
         title = "프로젝트 전체 복원",
         body = "‘${target.entry.commit.message}’ 커밋 시점의 모든 추적 Markdown 파일로 되돌립니다. " +
-            "파일의 내용·이름·경로·존재 여부가 바뀌며, 커밋 이력과 프로젝트 설정은 유지됩니다.",
+            "현재 미커밋 변경은 폐기됩니다. 파일의 내용·이름·경로·존재 여부가 바뀌며, 커밋 이력과 프로젝트 설정은 유지됩니다.",
         confirmLabel = "전체 복원",
         busyLabel = "프로젝트를 복원하는 중…",
     )
@@ -616,14 +610,14 @@ private fun restoreCopy(target: CommitRestoreTarget): RestoreDialogCopy = when (
     is CommitRestoreTarget.HeadChanges -> RestoreDialogCopy(
         title = "최근 커밋 이전 상태로 되돌리기",
         body = "‘${target.entry.commit.message}’ 커밋 바로 전의 Project 상태를 작업 파일에 적용합니다. " +
-            "현재 HEAD와 기존 커밋 이력은 유지되며, 결과는 새 미커밋 변경으로 표시됩니다.",
+            "현재 미커밋 변경은 폐기됩니다. 현재 HEAD와 기존 커밋 이력은 유지되며, 결과는 새 미커밋 변경으로 표시됩니다.",
         confirmLabel = "변경 되돌리기",
         busyLabel = "최근 커밋의 변경을 되돌리는 중…",
     )
     is CommitRestoreTarget.FileContent -> RestoreDialogCopy(
         title = "파일 내용 복원",
         body = "${target.side.label}의 본문과 일반 frontmatter를 현재 파일에 적용합니다. " +
-            "현재 파일명·경로·순번과 id·plot 정보는 유지됩니다.",
+            "이 파일의 미커밋 내용 변경은 폐기됩니다. 현재 파일명·경로·순번과 id·plot 정보 및 다른 파일의 변경은 유지됩니다.",
         confirmLabel = "내용 복원",
         busyLabel = "파일 내용을 복원하는 중…",
     )
@@ -631,7 +625,7 @@ private fun restoreCopy(target: CommitRestoreTarget): RestoreDialogCopy = when (
         val path = target.change.path(target.side)
         RestoreDialogCopy(
             title = "단일 파일 전체 복원",
-            body = if (path == null) {
+            body = "이 파일의 미커밋 변경은 폐기하며 다른 파일은 유지합니다. " + if (path == null) {
                 "선택한 ${target.side.label} 상태에는 파일이 없습니다. 현재 파일 한 개를 삭제 상태로 되돌립니다."
             } else {
                 "파일 한 개를 ${target.side.label} 상태와 동일하게 복원합니다. 내용과 함께 이름·경로·존재 여부가 바뀔 수 있습니다: $path"

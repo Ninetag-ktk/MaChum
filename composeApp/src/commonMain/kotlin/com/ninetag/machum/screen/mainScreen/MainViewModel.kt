@@ -11,8 +11,6 @@ import com.ninetag.machum.commit.CommitFileSide
 import com.ninetag.machum.commit.FileRestoreResult
 import com.ninetag.machum.commit.FileLineDiff
 import com.ninetag.machum.commit.ProjectCommitService
-import com.ninetag.machum.commit.RestoreResult
-import com.ninetag.machum.commit.RestoreRollbackFailedException
 import com.ninetag.machum.commit.RestoreSessionStaleException
 import com.ninetag.machum.entity.DEFAULT_BASE_FOLDER_CONFIG
 import com.ninetag.machum.entity.FolderConfig
@@ -145,7 +143,6 @@ class MainViewModel internal constructor(
     val commitHistoryUiState: StateFlow<CommitHistoryUiState> = _commitHistoryUiState.asStateFlow()
     private var commitReadJob: Job? = null
     private var commitRequestGeneration = 0L
-    private var activeRestoreSession: ActiveRestoreSession? = null
 
     private val _projectBaselineUiState =
         MutableStateFlow<ProjectBaselineUiState>(ProjectBaselineUiState.Idle)
@@ -533,7 +530,6 @@ class MainViewModel internal constructor(
         cancelCommitRequests()
         _commitCreateUiState.value = CommitCreateUiState()
         _commitHistoryUiState.value = CommitHistoryUiState()
-        activeRestoreSession = null
     }
 
     fun updateCommitMessage(message: String) {
@@ -639,8 +635,6 @@ class MainViewModel internal constructor(
                     selectedCommitId = selectedCommitId?.takeIf { selected ->
                         history.any { it.commit.id == selected }
                     },
-                    canReplaceProjectRestore = activeRestoreSession?.scope is RestoreSessionScope.Project,
-                    replaceableFileIds = activeRestoreSession.replaceableFileIds(),
                 )
             } catch (cancellation: CancellationException) {
                 throw cancellation
@@ -734,7 +728,7 @@ class MainViewModel internal constructor(
             CommitRestoreTarget.Project(entry)
         }
         _commitHistoryUiState.value = state.copy(
-            restore = CommitRestoreUiState(target),
+            restore = CommitRestoreUiState(target, state.workingPreview?.workingTreeHash ?: return),
             errorMessage = null,
         )
     }
@@ -744,7 +738,7 @@ class MainViewModel internal constructor(
         if (!state.isOpen || state.isLoading || state.restore?.isRestoring == true) return
         if (entry.commit.parentId == null || state.history.firstOrNull()?.commit?.id != entry.commit.id) return
         _commitHistoryUiState.value = state.copy(
-            restore = CommitRestoreUiState(CommitRestoreTarget.HeadChanges(entry)),
+            restore = CommitRestoreUiState(CommitRestoreTarget.HeadChanges(entry), state.workingPreview?.workingTreeHash ?: return),
             errorMessage = null,
         )
     }
@@ -771,7 +765,7 @@ class MainViewModel internal constructor(
             CommitRestoreTarget.File(commitId, change, side)
         }
         _commitHistoryUiState.value = state.copy(
-            restore = CommitRestoreUiState(target),
+            restore = CommitRestoreUiState(target, state.workingPreview?.workingTreeHash ?: return),
             errorMessage = null,
         )
     }
@@ -802,100 +796,78 @@ class MainViewModel internal constructor(
                     saveCoordinator.flushAll()
                     if (!isCurrentCommitRequest(request, context)) return@withLock null
 
-                    val selectedFileKey = _hierarchyState.value.currentFile?.key
-                    val selectedFolderKey = _hierarchyState.value.currentFolderKey
-                    val restoreSession = activeRestoreSession
-                    suspend fun applyProjectResult(result: RestoreResult) {
-                        restoreApplied = true
-                        activeRestoreSession = ActiveRestoreSession(
-                            workingTreeHash = result.workingTreeHash,
-                            scope = RestoreSessionScope.Project,
-                        )
-                        invalidateAllEditorRuntimeForRestore()
-                        refreshFoldersAndFiles(
-                            project = project,
-                            preferredKey = selectedFileKey,
-                            preferredFolderKey = selectedFolderKey,
-                            cancelRemoved = false,
-                        )
-                    }
-                    suspend fun applyFileResult(result: FileRestoreResult) {
-                        restoreApplied = true
-                        activeRestoreSession = restoreSession.afterFileRestore(
-                            fileId = result.fileId,
-                            workingTreeHash = result.workingTreeHash,
-                        )
-                        reconcileSingleFileRestore(
-                            project = project,
-                            result = result,
-                            selectedFileKey = selectedFileKey,
-                            selectedFolderKey = selectedFolderKey,
-                        )
-                    }
-                    when (val target = restore.target) {
-                        is CommitRestoreTarget.Project -> {
-                            val result = projectCommitService.restore(
+                    saveCoordinator.withWritesPaused {
+                        val selectedFileKey = _hierarchyState.value.currentFile?.key
+                        val selectedFolderKey = _hierarchyState.value.currentFolderKey
+                        suspend fun applyProjectResult() {
+                            restoreApplied = true
+                            invalidateAllEditorRuntimeForRestore()
+                            refreshFoldersAndFiles(
                                 project = project,
-                                commitId = target.entry.commit.id,
-                                expectedWorkingTreeHash = restoreSession.projectReplacementHash(),
+                                preferredKey = selectedFileKey,
+                                preferredFolderKey = selectedFolderKey,
+                                cancelRemoved = false,
                             )
-                            applyProjectResult(result)
                         }
-                        is CommitRestoreTarget.HeadSnapshot -> {
-                            val expectedHash = state.workingPreview?.workingTreeHash
-                                ?.takeIf(String::isNotBlank)
-                                ?: throw IllegalStateException(
-                                    "현재 변경 상태를 다시 확인한 뒤 복원해 주세요.",
+                        suspend fun applyFileResult(result: FileRestoreResult) {
+                            restoreApplied = true
+                            reconcileSingleFileRestore(
+                                project = project,
+                                result = result,
+                                selectedFileKey = selectedFileKey,
+                                selectedFolderKey = selectedFolderKey,
+                            )
+                        }
+                        when (val target = restore.target) {
+                            is CommitRestoreTarget.Project -> {
+                                projectCommitService.restore(
+                                    project = project,
+                                    commitId = target.entry.commit.id,
+                                    expectedWorkingTreeHash = restore.expectedWorkingTreeHash,
                                 )
-                            val result = projectCommitService.restoreHeadSnapshot(
-                                project = project,
-                                commitId = target.entry.commit.id,
-                                expectedWorkingTreeHash = expectedHash,
-                            )
-                            applyProjectResult(result)
+                                applyProjectResult()
+                            }
+                            is CommitRestoreTarget.HeadSnapshot -> {
+                                projectCommitService.restoreHeadSnapshot(
+                                    project = project,
+                                    commitId = target.entry.commit.id,
+                                    expectedWorkingTreeHash = restore.expectedWorkingTreeHash,
+                                )
+                                applyProjectResult()
+                            }
+                            is CommitRestoreTarget.HeadChanges -> {
+                                projectCommitService.revertHead(
+                                    project = project,
+                                    commitId = target.entry.commit.id,
+                                    expectedWorkingTreeHash = restore.expectedWorkingTreeHash,
+                                )
+                                applyProjectResult()
+                            }
+                            is CommitRestoreTarget.FileContent -> {
+                                val result = projectCommitService.restoreFileContent(
+                                    project = project,
+                                    commitId = target.commitId,
+                                    fileId = target.change.fileId,
+                                    side = target.side,
+                                    expectedWorkingTreeHash = restore.expectedWorkingTreeHash,
+                                )
+                                applyFileResult(result)
+                            }
+                            is CommitRestoreTarget.File -> {
+                                val result = projectCommitService.restoreFile(
+                                    project = project,
+                                    commitId = target.commitId,
+                                    fileId = target.change.fileId,
+                                    side = target.side,
+                                    expectedWorkingTreeHash = restore.expectedWorkingTreeHash,
+                                )
+                                applyFileResult(result)
+                            }
                         }
-                        is CommitRestoreTarget.HeadChanges -> {
-                            val result = projectCommitService.revertHead(
-                                project = project,
-                                commitId = target.entry.commit.id,
-                                expectedWorkingTreeHash = restoreSession.projectReplacementHash(),
-                            )
-                            applyProjectResult(result)
-                        }
-                        is CommitRestoreTarget.FileContent -> {
-                            val result = projectCommitService.restoreFileContent(
-                                project = project,
-                                commitId = target.commitId,
-                                fileId = target.change.fileId,
-                                side = target.side,
-                                expectedWorkingTreeHash = restoreSession.fileReplacementHash(
-                                    target.change.fileId,
-                                    targetIsDirty = state.workingPreview?.changes?.any { change ->
-                                        change.fileId == target.change.fileId
-                                    } == true,
-                                ),
-                            )
-                            applyFileResult(result)
-                        }
-                        is CommitRestoreTarget.File -> {
-                            val result = projectCommitService.restoreFile(
-                                project = project,
-                                commitId = target.commitId,
-                                fileId = target.change.fileId,
-                                side = target.side,
-                                expectedWorkingTreeHash = restoreSession.fileReplacementHash(
-                                    target.change.fileId,
-                                    targetIsDirty = state.workingPreview?.changes?.any { change ->
-                                        change.fileId == target.change.fileId
-                                    } == true,
-                                ),
-                            )
-                            applyFileResult(result)
-                        }
+                        if (!isCurrentCommitRequest(request, context)) return@withWritesPaused null
+                        reloadSelectedFileAfterRestore(context)
+                        projectCommitService.preview(project) to projectCommitService.history(project)
                     }
-                    if (!isCurrentCommitRequest(request, context)) return@withLock null
-                    reloadSelectedFileAfterRestore(context)
-                    projectCommitService.preview(project) to projectCommitService.history(project)
                 } ?: return@launch
 
                 if (!isCurrentCommitRequest(request, context)) return@launch
@@ -905,15 +877,12 @@ class MainViewModel internal constructor(
                     workingPreview = refreshed.first,
                     restore = null,
                     errorMessage = null,
-                    canReplaceProjectRestore = activeRestoreSession?.scope is RestoreSessionScope.Project,
-                    replaceableFileIds = activeRestoreSession.replaceableFileIds(),
                 )
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Exception) {
                 if (!isCurrentCommitRequest(request, context)) return@launch
                 if (error is RestoreSessionStaleException) {
-                    activeRestoreSession = null
                     val refreshed = runCatching {
                         fileReconciliationMutex.withLock {
                             if (!isCurrentCommitRequest(request, context)) return@withLock null
@@ -928,19 +897,14 @@ class MainViewModel internal constructor(
                         workingPreview = refreshed?.first ?: current.workingPreview,
                         restore = null,
                         errorMessage = error.message ?: "Project가 변경되어 복원을 취소했습니다.",
-                        canReplaceProjectRestore = false,
-                        replaceableFileIds = emptySet(),
                     )
                     return@launch
                 }
-                if (error is RestoreRollbackFailedException) activeRestoreSession = null
                 val current = _commitHistoryUiState.value
                 _commitHistoryUiState.value = if (restoreApplied) {
                     current.copy(
                         restore = null,
                         errorMessage = "복원은 완료했지만 화면을 새로고침하지 못했습니다. ${error.message.orEmpty()}",
-                        canReplaceProjectRestore = activeRestoreSession?.scope is RestoreSessionScope.Project,
-                        replaceableFileIds = activeRestoreSession.replaceableFileIds(),
                     )
                 } else {
                     current.copy(
@@ -948,8 +912,6 @@ class MainViewModel internal constructor(
                             isRestoring = false,
                             errorMessage = error.message ?: "선택한 상태로 복원하지 못했습니다.",
                         ),
-                        canReplaceProjectRestore = activeRestoreSession?.scope is RestoreSessionScope.Project,
-                        replaceableFileIds = activeRestoreSession.replaceableFileIds(),
                     )
                 }
             }
@@ -978,7 +940,6 @@ class MainViewModel internal constructor(
                 if (!isCurrentCommitRequest(request, context)) return@launch
                 _commitCreateUiState.value = CommitCreateUiState()
                 _commitHistoryUiState.value = CommitHistoryUiState()
-                activeRestoreSession = null
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Exception) {
@@ -1632,6 +1593,7 @@ class MainViewModel internal constructor(
     }
 
     fun updateBody(fileKey: FileKey, newBody: String) {
+        if (_commitHistoryUiState.value.restore?.isRestoring == true) return
         if (workspaceInputBlocked) return
         val current = loadedNote(fileKey) ?: return
         if (current.body == newBody) return
@@ -2185,7 +2147,6 @@ class MainViewModel internal constructor(
             projectBaselineJob = null
             _projectBaselineUiState.value = ProjectBaselineUiState.Idle
         }
-        activeRestoreSession = null
         saveCoordinator.cancelAll()
         pageLoadJobs.values.forEach(Job::cancel)
         pageLoadJobs.clear()
@@ -2481,10 +2442,6 @@ data class CommitHistoryUiState(
     val diff: CommitDiffUiState? = null,
     val restore: CommitRestoreUiState? = null,
     val errorMessage: String? = null,
-    /** Project 전체 복원만으로 만들어진 현재 변경을 다른 시점으로 안전하게 교체할 수 있다. */
-    val canReplaceProjectRestore: Boolean = false,
-    /** 파일 복원으로 만들어져 같은 이력 화면 안에서 다시 교체할 수 있는 파일 정체성. */
-    val replaceableFileIds: Set<String> = emptySet(),
 )
 
 data class CommitDiffUiState(
@@ -2501,6 +2458,7 @@ data class CommitDiffUiState(
 
 data class CommitRestoreUiState(
     val target: CommitRestoreTarget,
+    val expectedWorkingTreeHash: String,
     val isRestoring: Boolean = false,
     val errorMessage: String? = null,
 )
@@ -2543,46 +2501,4 @@ sealed interface ProjectBaselineUiState {
         override val projectLocation: String,
         val message: String,
     ) : ProjectBaselineUiState
-}
-
-private data class ActiveRestoreSession(
-    val workingTreeHash: String,
-    val scope: RestoreSessionScope,
-)
-
-private sealed interface RestoreSessionScope {
-    data object Project : RestoreSessionScope
-    data class Files(val fileIds: Set<String>) : RestoreSessionScope
-}
-
-private fun ActiveRestoreSession?.projectReplacementHash(): String? =
-    this?.workingTreeHash?.takeIf { scope is RestoreSessionScope.Project }
-
-private fun ActiveRestoreSession?.fileReplacementHash(
-    fileId: String,
-    targetIsDirty: Boolean,
-): String? = when (val currentScope = this?.scope) {
-    RestoreSessionScope.Project -> null
-    is RestoreSessionScope.Files -> workingTreeHash.takeIf {
-        !targetIsDirty || fileId in currentScope.fileIds
-    }
-    null -> null
-}
-
-private fun ActiveRestoreSession?.afterFileRestore(
-    fileId: String,
-    workingTreeHash: String,
-): ActiveRestoreSession = ActiveRestoreSession(
-    workingTreeHash = workingTreeHash,
-    scope = when (val currentScope = this?.scope) {
-        RestoreSessionScope.Project -> RestoreSessionScope.Files(setOf(fileId))
-        is RestoreSessionScope.Files -> RestoreSessionScope.Files(currentScope.fileIds + fileId)
-        null -> RestoreSessionScope.Files(setOf(fileId))
-    },
-)
-
-private fun ActiveRestoreSession?.replaceableFileIds(): Set<String> = when (val currentScope = this?.scope) {
-    RestoreSessionScope.Project -> emptySet()
-    is RestoreSessionScope.Files -> currentScope.fileIds
-    null -> emptySet()
 }

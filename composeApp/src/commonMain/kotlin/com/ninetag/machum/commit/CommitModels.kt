@@ -131,11 +131,11 @@ class CommitConflictException(message: String) : IllegalStateException(message)
 open class CommitStorageException(message: String, cause: Throwable? = null) :
     IllegalStateException(message, cause)
 
-/** 복원 실패 뒤 원래 working tree까지 완전히 검증하지 못해 복원 세션을 폐기해야 한다. */
+/** 복원 실패 뒤 원래 working tree까지 완전히 검증하지 못한 복구 오류. */
 class RestoreRollbackFailedException(message: String, cause: Throwable? = null) :
     CommitStorageException(message, cause)
 
 open class UncommittedChangesException(message: String) : IllegalStateException(message)
 
-/** 직전 preview/복원 뒤 working tree가 바뀌어 안전 토큰을 더 이상 사용할 수 없다. */
+/** 확인 당시 working tree가 바뀌어 기존 확인으로 실행할 수 없다. */
 class RestoreSessionStaleException(message: String) : UncommittedChangesException(message)
