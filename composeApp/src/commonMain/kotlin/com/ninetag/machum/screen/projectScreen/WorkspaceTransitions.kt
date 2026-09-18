@@ -73,8 +73,12 @@ internal fun WorkspaceChoiceList(
     var pressedChoice by remember { mutableStateOf<WorkspaceChoice?>(null) }
     var pointer by remember { mutableStateOf(Offset.Zero) }
     val latestTransition by rememberUpdatedState(onTransition)
-    val hover = dragging?.let {
-        workspaceDropDestination(it.setup, pointer, viewport, bounds.values)
+    val hover by remember {
+        derivedStateOf {
+            dragging?.let {
+                workspaceDropDestination(it.setup, pointer, viewport, bounds.values)
+            }
+        }
     }
     LaunchedEffect(blocked) { if (blocked) dragging = null }
     LaunchedEffect(dragging != null, blocked) {

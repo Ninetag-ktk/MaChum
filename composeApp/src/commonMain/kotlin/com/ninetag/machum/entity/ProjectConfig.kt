@@ -15,6 +15,7 @@ import kotlinx.serialization.encoding.Encoder
  * - `folders`: 폴더 경로(프로젝트 디렉토리 기준 상대) → 폴더별 동작 선언. 키 `""` = 프로젝트 디렉토리(base) = 원고 스코프.
  *   프로젝트 루트는 `default + Plot`, 그 밖의 미지정 폴더는 [FolderConfig] 기본값
  *   (`default`, Plot 꺼짐, autoTags 없음)으로 간주.
+ * - `propertyTypes`: 프로젝트 전체에서 공유하는 속성 key별 화면 유형.
  * - `fileIds`: 커밋 정체성용 파일 ID 맵 (rename/이동 추적). 향후 커밋 기능에서 사용.
  *
  * 구 스키마의 `workflow`/`workflowLastModified` 필드는 제거됨(workflow 은퇴, §1.2, §7).
@@ -24,6 +25,7 @@ import kotlinx.serialization.encoding.Encoder
 data class ProjectConfig(
     val folders: Map<String, FolderConfig> = emptyMap(),
     val fileIds: Map<String, String> = emptyMap(),
+    val propertyTypes: Map<String, DocumentPropertyType> = emptyMap(),
 )
 
 /** 프로젝트 디렉토리 자체를 가리키는 [ProjectConfig.folders] 키. */
@@ -139,12 +141,14 @@ fun ProjectConfig.effectiveAutoTags(relativePath: String): List<String> {
  * 폴더별 동작 선언 (docs/product-roadmap.md).
  * - [FolderConfig.type]: 파일 생성·정렬 방식을 결정하는 폴더 유형.
  * - [FolderConfig.autoTags]: 이 폴더 파일에 additive 병합되는 관리 태그.
+ * - [FolderConfig.defaultPropertyKeys]: 이 범위에서 새 문서에 넣을 속성 key. 다른 범위와 합치지 않는다.
  */
 @Serializable(with = FolderConfigSerializer::class)
 data class FolderConfig(
     val type: FolderType = FolderType.DEFAULT,
     val plotEnabled: Boolean = false,
     val autoTags: List<String> = emptyList(),
+    val defaultPropertyKeys: List<String> = emptyList(),
 ) {
     val isPlot: Boolean
         get() = type == FolderType.DEFAULT && plotEnabled
@@ -152,6 +156,7 @@ data class FolderConfig(
     fun normalized(): FolderConfig = copy(
         plotEnabled = isPlot,
         autoTags = normalizeTags(autoTags),
+        defaultPropertyKeys = normalizePropertyKeys(defaultPropertyKeys),
     )
 }
 
@@ -179,6 +184,7 @@ object FolderConfigSerializer : KSerializer<FolderConfig> {
             },
             plotEnabled = normalized.isPlot,
             autoTags = normalized.autoTags,
+            defaultPropertyKeys = normalized.defaultPropertyKeys,
         )
         encoder.encodeSerializableValue(FolderConfigSurrogate.serializer(), surrogate)
     }
@@ -186,10 +192,10 @@ object FolderConfigSerializer : KSerializer<FolderConfig> {
     override fun deserialize(decoder: Decoder): FolderConfig {
         val surrogate = decoder.decodeSerializableValue(FolderConfigSurrogate.serializer())
         return when (surrogate.type.lowercase()) {
-            "default" -> FolderConfig(FolderType.DEFAULT, surrogate.plotEnabled, surrogate.autoTags)
-            "general" -> FolderConfig(FolderType.GENERAL, false, surrogate.autoTags)
-            "numbered" -> FolderConfig(FolderType.DEFAULT, false, surrogate.autoTags)
-            "plot" -> FolderConfig(FolderType.DEFAULT, true, surrogate.autoTags)
+            "default" -> FolderConfig(FolderType.DEFAULT, surrogate.plotEnabled, surrogate.autoTags, surrogate.defaultPropertyKeys)
+            "general" -> FolderConfig(FolderType.GENERAL, false, surrogate.autoTags, surrogate.defaultPropertyKeys)
+            "numbered" -> FolderConfig(FolderType.DEFAULT, false, surrogate.autoTags, surrogate.defaultPropertyKeys)
+            "plot" -> FolderConfig(FolderType.DEFAULT, true, surrogate.autoTags, surrogate.defaultPropertyKeys)
             else -> throw SerializationException("Unknown folder type: ${surrogate.type}")
         }
     }
@@ -200,4 +206,10 @@ private data class FolderConfigSurrogate(
     val type: String = "default",
     val plotEnabled: Boolean = false,
     val autoTags: List<String> = emptyList(),
+    val defaultPropertyKeys: List<String> = emptyList(),
 )
+
+private fun normalizePropertyKeys(defaultPropertyKeys: List<String>): List<String> = defaultPropertyKeys
+    .map { it.trim() }
+    .filter { it.isNotBlank() }
+    .distinct()

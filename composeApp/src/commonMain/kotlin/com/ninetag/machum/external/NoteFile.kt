@@ -74,6 +74,17 @@ class NoteFile private constructor(
         return "$bom---$lineEnding$fm$lineEnding---$lineEnding$lineEnding$body"
     }
 
+    /**
+     * 문서 속성 파싱에 필요한 최소 원문. 본문 편집만으로 속성 파서를 다시 실행하지 않게 한다.
+     * 닫는 fence가 없는 `---` 시작 문서는 기존 오류 표시를 보존하기 위해 전체 원문을 반환한다.
+     */
+    internal fun documentPropertiesSnapshot(): String {
+        val malformedFrontmatterCandidate = blocks.isEmpty() && (
+            body == "---" || body.startsWith("---\n") || body.startsWith("---\r")
+        )
+        return if (malformedFrontmatterCandidate) inject() else withBody("", ensureId = false).inject()
+    }
+
     // --- 내부 조회/수정 헬퍼 ---
 
     private fun scalarOf(key: String): String? =
@@ -88,7 +99,9 @@ class NoteFile private constructor(
     }
 
     private fun withList(key: String, items: List<String>): NoteFile {
-        val replacement = Block.ListBlock(key, original = null, items = items, dirty = true)
+        val current = blocks.filterIsInstance<Block.ListBlock>().lastOrNull { it.key == key }
+        check(current?.editable != false) { "지원하지 않는 $key 목록 원문을 보존했습니다. 파일에서 직접 정리해 주세요." }
+        val replacement = Block.ListBlock(key, original = null, items = items, dirty = true, editable = true)
         return NoteFile(replaceOrAppend(key, replacement), body, lineEnding, hasUtf8Bom)
     }
 
@@ -133,13 +146,14 @@ class NoteFile private constructor(
             private val original: String?,
             val items: List<String>,
             private val dirty: Boolean,
+            val editable: Boolean,
         ) : Block() {
             override fun render(lineEnding: String): String? = when {
                 !dirty -> original
-                items.isEmpty() -> null
+                items.isEmpty() -> "$key:"
                 else -> buildString {
                     append(key).append(":")
-                    items.forEach { append(lineEnding).append("  - ").append(it) }
+                    items.forEach { append(lineEnding).append("  - ").append(encodeYamlText(it)) }
                 }
             }
             override fun keyOrNull(): String = key
@@ -240,7 +254,16 @@ class NoteFile private constructor(
             val raw = lines.joinToString(lineEnding)
             return when (key) {
                 KEY_ID, KEY_PLOT -> Block.Scalar(key, original = raw, value = parseScalar(lines.first()), dirty = false)
-                KEY_TAGS, KEY_ALIASES -> Block.ListBlock(key, original = raw, items = parseList(lines), dirty = false)
+                KEY_TAGS, KEY_ALIASES -> {
+                    val items = parseList(lines)
+                    Block.ListBlock(
+                        key,
+                        original = raw,
+                        items = items.orEmpty(),
+                        dirty = false,
+                        editable = items != null,
+                    )
+                }
                 else -> Block.Raw(raw)
             }
         }
@@ -262,31 +285,30 @@ class NoteFile private constructor(
         }
 
         private fun parseScalar(keyLine: String): String? =
-            stripQuotes(keyLine.substringAfter(':', "").trim()).ifEmpty { null }
+            decodeYamlText(splitYamlInlineComment(keyLine.substringAfter(':', "")).first).ifEmpty { null }
 
-        private fun parseList(lines: List<String>): List<String> {
-            val inline = lines.first().substringAfter(':', "").trim()
+        private fun parseList(lines: List<String>): List<String>? {
+            val inline = splitYamlInlineComment(lines.first().substringAfter(':', "")).first.trim()
             return when {
                 // block 형태:  key: \n   - a \n   - b
                 inline.isEmpty() -> lines.drop(1).mapNotNull { line ->
                     val t = line.trim()
-                    if (t.startsWith("-")) stripQuotes(t.removePrefix("-").trim()).ifEmpty { null } else null
+                    if (t.startsWith("-")) {
+                        decodeYamlText(splitYamlInlineComment(t.removePrefix("-")).first).ifEmpty { null }
+                    } else {
+                        null
+                    }
                 }
                 // flow 형태:  key: [a, b]
-                inline.startsWith("[") -> inline.removePrefix("[").removeSuffix("]")
-                    .split(",").map { stripQuotes(it.trim()) }.filter { it.isNotEmpty() }
+                inline.startsWith("[") -> {
+                    if (!inline.endsWith("]")) return null
+                    splitYamlInlineList(inline.removePrefix("[").removeSuffix("]"))
+                        ?.map(::decodeYamlText)
+                        ?.filter { it.isNotEmpty() }
+                }
                 // 인라인 CSV/단일 스칼라:  key: a, b  또는  key: a
-                else -> inline.split(",").map { stripQuotes(it.trim()) }.filter { it.isNotEmpty() }
+                else -> inline.split(",").map(::decodeYamlText).filter { it.isNotEmpty() }
             }
-        }
-
-        private fun stripQuotes(s: String): String {
-            if (s.length >= 2) {
-                val f = s.first()
-                val l = s.last()
-                if ((f == '"' && l == '"') || (f == '\'' && l == '\'')) return s.substring(1, s.length - 1)
-            }
-            return s
         }
     }
 }

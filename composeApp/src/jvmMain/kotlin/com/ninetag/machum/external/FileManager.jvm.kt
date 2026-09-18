@@ -13,6 +13,18 @@ import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.StandardOpenOption
 
+internal actual suspend fun listDirectoryEntries(
+    directory: PlatformFile,
+): List<PlatformDirectoryEntry> = withContext(Dispatchers.IO) {
+    directory.file.listFiles().orEmpty().map { child ->
+        PlatformDirectoryEntry(
+            platformFile = PlatformFile(child),
+            name = child.name,
+            isDirectory = child.isDirectory,
+        )
+    }
+}
+
 internal actual suspend fun validateWorkspaceTrashChild(parent: PlatformFile, child: PlatformFile): Unit = withContext(Dispatchers.IO) {
     validateWorkspaceTrashPath(parent, child, directory = true)
 }
@@ -54,7 +66,11 @@ internal actual suspend fun purgeWorkspaceTrashEntryNative(trash: PlatformFile, 
     // walk does not follow links; revalidate each path and fail closed if the tree changed.
     val root = entry.file.toPath().toAbsolutePath().normalize()
     Files.walk(root).use { paths ->
-        val entries = paths.filter { it != root && it != root.resolve(WORKSPACE_TRASH_RECEIPT) && it != root.resolve(WORKSPACE_TRASH_CONFIG_RECOVERY) }
+        val entries = paths.filter {
+            it != root && it != root.resolve(WORKSPACE_TRASH_RECEIPT) &&
+                it != root.resolve(WORKSPACE_TRASH_RECEIPT_RECOVERY) &&
+                it != root.resolve(WORKSPACE_TRASH_CONFIG_RECOVERY)
+        }
             .sorted(Comparator.reverseOrder()).iterator()
         while (entries.hasNext()) {
             val path = entries.next()
@@ -63,6 +79,7 @@ internal actual suspend fun purgeWorkspaceTrashEntryNative(trash: PlatformFile, 
         }
     }
     Files.deleteIfExists(root.resolve(WORKSPACE_TRASH_CONFIG_RECOVERY))
+    Files.deleteIfExists(root.resolve(WORKSPACE_TRASH_RECEIPT_RECOVERY))
     Files.delete(root.resolve(WORKSPACE_TRASH_RECEIPT))
     Files.delete(root)
 }
@@ -182,6 +199,50 @@ internal actual suspend fun FileManager.renameMarkdownExact(
     } catch (error: Exception) {
         null
     }
+}
+
+internal actual suspend fun moveProjectFileNative(
+    project: PlatformFile,
+    sourceParent: PlatformFile,
+    source: PlatformFile,
+    targetParent: PlatformFile,
+): PlatformFile = withContext(Dispatchers.IO) {
+    val projectPath = project.file.toPath().toAbsolutePath().normalize()
+    check(!Files.isSymbolicLink(projectPath) && Files.isDirectory(projectPath, LinkOption.NOFOLLOW_LINKS)) {
+        "현재 Project 경로가 올바르지 않습니다."
+    }
+    val projectReal = projectPath.toRealPath()
+
+    fun validatedProjectDirectory(directory: PlatformFile): java.nio.file.Path {
+        val path = directory.file.toPath().toAbsolutePath().normalize()
+        check(!Files.isSymbolicLink(path) && Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+            "Project 폴더가 올바르지 않습니다."
+        }
+        val real = path.toRealPath()
+        check(real == projectReal || real.parent == projectReal) {
+            "Project 루트 또는 직속 폴더가 아닙니다."
+        }
+        return real
+    }
+
+    val sourceDirectory = validatedProjectDirectory(sourceParent)
+    val targetDirectory = validatedProjectDirectory(targetParent)
+    check(sourceDirectory != targetDirectory) { "같은 폴더로 이동할 수 없습니다." }
+
+    val sourcePath = source.file.toPath().toAbsolutePath().normalize()
+    check(sourcePath.parent == sourceDirectory && !Files.isSymbolicLink(sourcePath) &&
+        Files.isRegularFile(sourcePath, LinkOption.NOFOLLOW_LINKS) &&
+        sourcePath.toRealPath().parent == sourceDirectory && source.name.endsWith(".md", ignoreCase = true)) {
+        "Project 폴더의 직속 Markdown 파일이 아닙니다."
+    }
+    val targetPath = targetDirectory.resolve(source.name)
+    check(!Files.exists(targetPath, LinkOption.NOFOLLOW_LINKS)) { "대상 폴더에 같은 이름의 문서가 있습니다." }
+    check(Files.list(targetDirectory).use { children ->
+        children.noneMatch { it.fileName.toString().equals(source.name, ignoreCase = true) }
+    }) { "대상 폴더에 같은 이름의 항목이 있습니다." }
+
+    // No copy/delete fallback and no REPLACE_EXISTING: provider ownership and bytes stay intact.
+    PlatformFile(Files.move(sourcePath, targetPath).toFile())
 }
 
 internal actual suspend fun FileManager.renameDirectoryExact(

@@ -29,13 +29,18 @@ raw markdown
 
 ### 문서 생명주기와 외부 값 동기화
 
-`HorizontalPager`와 `MarkdownBlockTextField`는 모두 `FileKey` 기반 document key를 사용한다. 파일이 바뀌면
-블록·selection·focus requester·지연 reparse effect를 포함한 에디터 컴포지션 전체가 새 수명으로 생성된다.
+파일 목록·저장·외부 변경 추적은 `FileKey`를 사용하고, `HorizontalPager`·문서 정보·`MarkdownBlockTextField`의
+composition identity는 ViewModel이 발급한 `editorSessionKey`를 사용한다. 파일이 실제로 교체되면 블록·속성 초안·selection·
+focus requester·지연 reparse effect를 포함한 문서 컴포지션 전체가 새 수명으로 생성되고, 앱 내부 rename은 같은 session을
+새 `FileKey`로 이동해 기존 편집 상태를 유지한다.
 `EditorPage`는 ViewModel이나 전체 cache를 직접 구독하지 않고 상위 화면에서 현재 파일의 `NoteFile`과 callback만 받는다.
 
 같은 파일의 외부 변경은 `EditorDocumentValueCoordinator`가 조정한다. 내부 입력을 부모가 다시 내려준 값은 재파싱하지 않고,
 실제 외부 교체만 새 블록으로 파싱한다. 외부 교체마다 revision을 증가시켜 이전 블록 snapshot의 늦은
 `onValueChange`가 새 외부 값을 덮어쓰지 못하게 한다. 최초 렌더링의 동일 값도 편집 이벤트로 전달하지 않는다.
+ViewModel은 자동 저장 직전 디스크 기준도 비교한다. 기준이 달라졌으면 로컬 pending과 속성 변경을 기록하지 않고
+`editorSessionKey`를 교체해 디스크 문서를 새 baseline으로 적용한다. 이에 따라 블록 history뿐 아니라 문서 정보 form 초안,
+selection과 focus도 함께 초기화된다. 사용자 선택형 충돌 UI는 만들지 않으며, 불완전 파일 이동 복구 상태는 별도 무결성 오류다.
 
 블록 간 예약 포커스는 UI 비의존 `EditorFocusCoordinator`가 최신 `EditorFocusRequest` 하나만 소유한다.
 외부 value revision은 root editor의 `focusEpoch`로도 사용하여 문서 교체 전 요청을 폐기한다. 실제 스크롤,

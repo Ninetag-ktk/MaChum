@@ -4,7 +4,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -73,6 +75,8 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
 import org.koin.compose.viewmodel.koinViewModel
 
+private val GENERAL_PROTECTED_PROPERTY_KEYS = setOf("source", "tags")
+
 @Composable
 fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
 
@@ -80,6 +84,7 @@ fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
     val documentInfoExpanded by documentInfoPreferences.expanded.collectAsState(initial = false)
     var documentInfoPreferenceError by remember { mutableStateOf<String?>(null) }
     val documentConflicts by viewModel.documentConflicts.collectAsState()
+    val propertyDefinitionSync by viewModel.propertyDefinitionSyncUiState.collectAsState()
     val generalSourceState by viewModel.generalSourceState.collectAsState()
     val hierarchy by viewModel.hierarchyState.collectAsState()
     val folderList = hierarchy.folderList
@@ -138,9 +143,13 @@ fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
         return
     }
 
+    val pagerIdentity = remember(currentProjectLocation, currentWorkspaceKind, currentFolder?.key) {
+        listOf(currentProjectLocation, currentWorkspaceKind, currentFolder?.key)
+    }
+    val pageKeys = remember(fileList) { fileList.map { it.key } }
     val pagerState = rememberDocumentPagerState(
-        identity = listOf(currentProjectLocation, currentWorkspaceKind, currentFolder?.key),
-        pageKeys = fileList.map { it.key },
+        identity = pagerIdentity,
+        pageKeys = pageKeys,
         selectedPage = currentIndex,
         onPageSettled = viewModel::selectFile,
     )
@@ -270,6 +279,7 @@ fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
                         onDeleteDirectoryDismissed = viewModel::dismissDeleteDirectory,
                         onDeleteDirectoryConfirmed = viewModel::confirmDeleteDirectory,
                         onFileTrashRequested = viewModel::requestMoveFileToTrash,
+                        onMoveFile = viewModel::moveFileResult,
                         onClose = { scope.launch { drawerState.close() } },
                     )
                 }
@@ -311,29 +321,37 @@ fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
                             .padding(paddingValues),
                         ) {
                             val propertyHeightLimit = (maxHeight * 0.45f).coerceAtMost(260.dp)
+                            val documentPropertyForms = remember(currentProjectLocation, currentWorkspaceKind) {
+                                mutableMapOf<Pair<String, Any>, PropertyForm>()
+                            }
                             Column(Modifier.fillMaxSize()) {
                                 val managedTags = if (isManagedProject) buildMap {
                                     bookmarks.projectData?.name?.let { put(normalizeTag(it), "프로젝트") }
                                     projectConfig?.effectiveAutoTags(currentFolder?.key?.relativePath.orEmpty())?.forEach { put(it, "폴더 자동 태그") }
                                 } else emptyMap()
-                                DocumentInformationSection(
-                                    workspaceIdentity = "$currentWorkspaceKind:$currentProjectLocation",
-                                    file = currentFile,
-                                    note = (currentFile?.key?.let { fileLoadStates[it] } as? FileLoadUiState.Loaded)?.noteFile,
-                                    expanded = documentInfoExpanded,
-                                    maxExpandedHeight = propertyHeightLimit,
-                                    managedTags = managedTags,
-                                    sourceIsManaged = !isManagedProject && generalSourceState?.enabled == true,
-                                    protectedKeys = if (isManagedProject) emptySet() else setOf("source", "tags"),
-                                    onSave = { fileKey, expected, updated ->
-                                        if (viewModel.bookmarks.value.projectData?.toString() != currentProjectLocation ||
-                                            viewModel.bookmarks.value.workspaceKind != currentWorkspaceKind) "작업 공간이 변경되었습니다."
-                                        else viewModel.saveDocumentProperties(fileKey, expected, updated)
-                                    },
+                                PropertyDefinitionSyncBanner(
+                                    states = propertyDefinitionSync,
+                                    currentFileKey = currentFile?.key,
+                                    onRetry = viewModel::retryPropertyDefinitionSync,
                                 )
                                 documentInfoPreferenceError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                                 Box(Modifier.weight(1f)) {
-                                    if (fileList.isEmpty()) {
+                                    if (!hierarchy.isLoaded) {
+                                        Box(
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                CircularProgressIndicator()
+                                                Spacer(Modifier.height(12.dp))
+                                                Text(
+                                                    text = "파일 목록을 불러오는 중…",
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                            }
+                                        }
+                                    } else if (fileList.isEmpty()) {
                                         Box(
                                             modifier = Modifier.fillMaxSize(),
                                             contentAlignment = Alignment.Center,
@@ -371,14 +389,53 @@ fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
                                             },
                                         ) { page ->
                                             val projectFile = fileList.getOrNull(page) ?: return@HorizontalPager
-                                            EditorPage(
-                                                projectFile = projectFile,
-                                                documentKey = viewModel.editorSessionKey(projectFile.key),
-                                                loadState = fileLoadStates[projectFile.key],
-                                                onLoad = viewModel::loadPage,
-                                                onRetry = viewModel::retryPage,
-                                                onBodyChange = { body -> viewModel.updateBody(projectFile.key, body) },
-                                            )
+                                            val loadState = fileLoadStates[projectFile.key]
+                                            val documentIdentity = viewModel.editorSessionKey(projectFile.key)
+                                            Column(Modifier.fillMaxSize()) {
+                                                DocumentInformationSection(
+                                                    workspaceIdentity = "$currentWorkspaceKind:$currentProjectLocation",
+                                                    file = projectFile,
+                                                    note = (loadState as? FileLoadUiState.Loaded)?.noteFile,
+                                                    documentIdentity = documentIdentity,
+                                                    sharedForms = documentPropertyForms,
+                                                    saveScope = scope,
+                                                    expanded = documentInfoExpanded,
+                                                    maxExpandedHeight = propertyHeightLimit,
+                                                    managedTags = managedTags,
+                                                    propertyTypes = if (isManagedProject) projectConfig?.propertyTypes.orEmpty()
+                                                        else generalSourceState?.propertyTypes.orEmpty(),
+                                                    propertyScopeLabel = if (!isManagedProject) {
+                                                        "General 전체"
+                                                    } else if (currentFolder?.key == FolderKey.Base) {
+                                                        "Project 루트"
+                                                    } else {
+                                                        currentFolder?.key?.relativePath?.let { "$it 디렉터리" }.orEmpty()
+                                                    },
+                                                    // Until the General index resolves, keep source conservative and
+                                                    // read-only; an ungrouped workspace unlocks it when enabled=false arrives.
+                                                    sourceIsManaged = !isManagedProject && generalSourceState?.enabled != false,
+                                                    protectedKeys = if (isManagedProject) emptySet() else GENERAL_PROTECTED_PROPERTY_KEYS,
+                                                    onSave = { fileKey, change ->
+                                                        if (viewModel.bookmarks.value.projectData?.toString() != currentProjectLocation ||
+                                                            viewModel.bookmarks.value.workspaceKind != currentWorkspaceKind) "작업 공간이 변경되었습니다."
+                                                        else viewModel.saveDocumentProperties(
+                                                            fileKey,
+                                                            change,
+                                                            expectedEditorSessionKey = documentIdentity,
+                                                        )
+                                                    },
+                                                )
+                                                Box(Modifier.weight(1f)) {
+                                                    EditorPage(
+                                                        projectFile = projectFile,
+                                                        documentKey = documentIdentity,
+                                                        loadState = loadState,
+                                                        onLoad = viewModel::loadPage,
+                                                        onRetry = viewModel::retryPage,
+                                                        onBodyChange = { body -> viewModel.updateBody(projectFile.key, body) },
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
 
@@ -633,6 +690,44 @@ private fun restoreCopy(target: CommitRestoreTarget): RestoreDialogCopy = when (
             confirmLabel = "파일 전체 복원",
             busyLabel = "파일을 복원하는 중…",
         )
+    }
+}
+
+@Composable
+internal fun PropertyDefinitionSyncBanner(
+    states: Map<FileKey, PropertyDefinitionSyncUiState>,
+    currentFileKey: FileKey?,
+    onRetry: (FileKey) -> Unit,
+) {
+    val entry = currentFileKey?.let { key -> states[key]?.let { key to it } }
+        ?: states.entries.minByOrNull { it.key.relativePath }?.let { it.key to it.value }
+        ?: return
+    val (fileKey, sync) = entry
+    val remaining = states.size - 1
+    val status = sync.message ?: "이후 새 문서에 적용할 기본 속성 설정을 저장하는 중입니다."
+    Row(
+        Modifier.fillMaxWidth()
+            .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f))
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            buildString {
+                append(fileKey.relativePath)
+                append(": ")
+                append(status)
+                if (remaining > 0) append(" (추가 ${remaining}건)")
+            },
+            Modifier.weight(1f),
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        if (sync.message != null) {
+            TextButton(
+                onClick = { onRetry(fileKey) },
+                enabled = !sync.isRetrying,
+            ) { Text("다시 시도") }
+        }
     }
 }
 

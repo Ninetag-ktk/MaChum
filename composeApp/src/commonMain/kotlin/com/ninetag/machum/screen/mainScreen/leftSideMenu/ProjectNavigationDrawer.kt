@@ -7,7 +7,9 @@ import com.ninetag.machum.screen.mainScreen.HierarchyFolderContent
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -21,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.material.icons.Icons
@@ -40,6 +43,7 @@ import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,20 +52,29 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.isPrimaryPressed
 import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
@@ -79,8 +92,10 @@ import com.ninetag.machum.external.ProjectFolder
 import com.ninetag.machum.external.ProjectFolderDeletionPreview
 import com.ninetag.machum.external.numberedPrefix
 import com.ninetag.machum.screen.common.PopupUiMetrics
+import com.ninetag.machum.screen.mainScreen.FileMoveResult
 import com.ninetag.machum.theme.WorkspaceUiMetrics
 import com.ninetag.machum.theme.WorkspaceMotion
+import com.ninetag.machum.theme.platformUsesTouchUi
 import io.github.vinceglb.filekit.PlatformFile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -123,12 +138,41 @@ internal fun ProjectNavigationDrawer(
     onPlanGeneralSourceAssign: suspend (ProjectFile, String) -> GeneralSourcePlan,
     onApplyGeneralSourcePlan: suspend (GeneralSourcePlan) -> String?,
     onFileTrashRequested: (ProjectFile) -> Unit = {},
+    onMoveFile: suspend (ProjectFile, FolderKey, PlotStage?) -> FileMoveResult = { file, _, _ -> FileMoveResult(file.key) },
 ) {
     val focusManager = LocalFocusManager.current
     val inputModeManager = LocalInputModeManager.current
     val collapsedSourceGroups = remember { mutableStateMapOf<String, Set<String?>>() }
     val collapsedPlotGroups = remember { mutableStateMapOf<String, Set<Pair<FolderKey, PlotStage?>>>() }
     val sourceWorkspaceKey = currentProject?.toString().orEmpty()
+    val folderKeys = remember(folders) { folders.map(ProjectFolder::key) }
+    val childFolders = remember(folders) { folders.filterNot { it.key == FolderKey.Base } }
+    val availableFolderKeys = remember(folderKeys) {
+        folderKeys.filterNotTo(mutableSetOf()) { it == FolderKey.Base }
+    }
+    val existingDirectoryNames = remember(childFolders) {
+        childFolders.mapTo(mutableSetOf()) { it.key.relativePath }
+    }
+    val collapsedSourceGroupsForWorkspace = collapsedSourceGroups[sourceWorkspaceKey].orEmpty()
+    val collapsedPlotGroupsForWorkspace = collapsedPlotGroups[sourceWorkspaceKey].orEmpty()
+    val collapsedPlotStagesByFolder = remember(collapsedPlotGroupsForWorkspace) {
+        collapsedPlotGroupsForWorkspace.groupBy({ it.first }, { it.second })
+            .mapValues { (_, stages) -> stages.toSet() }
+    }
+    val moveDestinationsBySource = remember(isManagedProject, folderKeys, folderConfigs) {
+        val sourceStages = listOf<PlotStage?>(null) + PlotStage.entries
+        (listOf(FolderKey.Base) + folderKeys).distinct().associateWith { sourceFolder ->
+            sourceStages.associateWith { sourceStage ->
+                projectFileMoveDestinations(
+                    isManagedProject,
+                    sourceFolder,
+                    sourceStage,
+                    folders,
+                    folderConfigs,
+                )
+            }
+        }
+    }
     var groupCreateBusy by remember(currentProject?.toString()) { mutableStateOf(false) }
     var groupCreateError by remember(currentProject?.toString()) { mutableStateOf<String?>(null) }
     val tagDrafts = remember(currentProject?.toString(), isManagedProject) { mutableMapOf<FolderKey, FolderTagDraft>() }
@@ -156,38 +200,50 @@ internal fun ProjectNavigationDrawer(
     var orderErrors by remember(currentProject?.toString()) {
         mutableStateOf<Map<FolderKey, String>>(emptyMap())
     }
-    val scope = rememberCoroutineScope()
-    fun togglePlotGroup(folder: FolderKey, stage: PlotStage?) {
-        val collapsed = collapsedPlotGroups[sourceWorkspaceKey].orEmpty()
-        val target = folder to stage
-        collapsedPlotGroups[sourceWorkspaceKey] = if (target in collapsed) collapsed - target else collapsed + target
+    var movingFileKeys by remember(currentProject?.toString(), isManagedProject) {
+        mutableStateOf(emptySet<FileKey>())
     }
+    var moveErrors by remember(currentProject?.toString(), isManagedProject) {
+        mutableStateOf<Map<FileKey, String>>(emptyMap())
+    }
+    var fileMoveDrag by remember(currentProject?.toString(), isManagedProject) {
+        mutableStateOf<ProjectFileMoveDrag?>(null)
+    }
+    var hoveredMoveDestination by remember(currentProject?.toString(), isManagedProject) {
+        mutableStateOf<HierarchyFileMoveDestination?>(null)
+    }
+    var hoveredOrderInsertion by remember(currentProject?.toString(), isManagedProject) {
+        mutableStateOf<ProjectFileOrderInsertion?>(null)
+    }
+    var fileMovePointer by remember(currentProject?.toString(), isManagedProject) {
+        mutableStateOf<Offset?>(null)
+    }
+    var hierarchyViewport by remember(currentProject?.toString(), isManagedProject) {
+        mutableStateOf(Rect.Zero)
+    }
+    val hierarchyListState = remember(currentProject?.toString(), isManagedProject) { LazyListState() }
+    val moveDropTargetBounds = remember(currentProject?.toString(), isManagedProject) {
+        mutableMapOf<HierarchyFileMoveDestination, Rect>()
+    }
+    val moveSourceBounds = remember(currentProject?.toString(), isManagedProject) {
+        mutableMapOf<FileKey, Pair<ProjectFileMoveSource, Rect>>()
+    }
+    val scope = rememberCoroutineScope()
+    val workspaceIdentity = "$isManagedProject:$sourceWorkspaceKey"
+    val currentWorkspaceIdentity by rememberUpdatedState(workspaceIdentity)
+    val currentOnMoveFile by rememberUpdatedState(onMoveFile)
     val currentOnSaveDefaultOrder by rememberUpdatedState(onSaveDefaultOrder)
     val currentOnSavePlotOrder by rememberUpdatedState(onSavePlotOrder)
 
-    fun beginOrderDrag(
-        folderKey: FolderKey,
-        folderConfig: FolderConfig,
-        content: HierarchyFolderContent,
-    ) {
-        if (folderKey in orderSavingFolders) return
-        val draft = when {
-            folderConfig.isPlot -> plotHierarchyOrderDraft(folderKey, content.plotEntries)
-            folderConfig.type == FolderType.DEFAULT -> defaultHierarchyOrderDraft(folderKey, content.files)
-            else -> return
+    fun createOrderDraft(folderKey: FolderKey): HierarchyOrderDraft? {
+        val config = folderConfigs[folderKey.relativePath]
+            ?: if (folderKey == FolderKey.Base && isManagedProject) DEFAULT_BASE_FOLDER_CONFIG else FolderConfig()
+        val content = folderContents[folderKey] ?: HierarchyFolderContent()
+        return when {
+            config.isPlot -> plotHierarchyOrderDraft(folderKey, content.plotEntries)
+            config.type == FolderType.DEFAULT -> defaultHierarchyOrderDraft(folderKey, content.files)
+            else -> null
         }
-        orderErrors = orderErrors - folderKey
-        orderDrafts = orderDrafts + (folderKey to draft)
-    }
-
-    fun moveOrderDraft(folderKey: FolderKey, fileKey: FileKey, direction: Int) {
-        val draft = orderDrafts[folderKey] ?: return
-        val moved = draft.move(fileKey, direction)
-        if (moved != draft) orderDrafts = orderDrafts + (folderKey to moved)
-    }
-
-    fun cancelOrderDrag(folderKey: FolderKey) {
-        orderDrafts = orderDrafts - folderKey
     }
 
     fun finishOrderDrag(folderKey: FolderKey) {
@@ -213,30 +269,203 @@ internal fun ProjectNavigationDrawer(
             }
             orderDrafts = orderDrafts - folderKey
             orderSavingFolders -= folderKey
-            orderErrors = if (saved) {
-                orderErrors - folderKey
-            } else {
-                orderErrors + (
-                    folderKey to "순서를 저장하지 못해 원래 순서로 복원했습니다."
-                )
+            orderErrors = if (saved) orderErrors - folderKey else orderErrors + (
+                folderKey to "순서를 저장하지 못해 원래 순서로 복원했습니다."
+            )
+        }
+    }
+    fun moveFile(file: ProjectFile, destination: HierarchyFileMoveDestination) {
+        if (!isManagedProject || fileMoveDrag != null || movingFileKeys.isNotEmpty() || orderSavingFolders.isNotEmpty() || orderDrafts.isNotEmpty()) return
+        val requestedWorkspace = workspaceIdentity
+        movingFileKeys += file.key
+        moveErrors -= file.key
+        scope.launch {
+            val result = try {
+                currentOnMoveFile(file, destination.folderKey, destination.plotStage)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                FileMoveResult(file.key, error.message ?: "파일을 이동하지 못했습니다.")
+            } finally {
+                if (currentWorkspaceIdentity == requestedWorkspace) movingFileKeys -= file.key
+            }
+            if (currentWorkspaceIdentity == requestedWorkspace) {
+                moveErrors = if (result.errorMessage == null) moveErrors - file.key - result.finalKey
+                else (moveErrors - file.key) + (result.finalKey to result.errorMessage)
             }
         }
     }
-    LaunchedEffect(folders.map(ProjectFolder::key)) {
-        val availableKeys = folders
-            .asSequence()
-            .map(ProjectFolder::key)
-            .filterNot { it == FolderKey.Base }
-            .toMutableSet()
-        expandedFolderKeys = (expandedFolderKeys intersect availableKeys) +
-            (availableKeys - knownFolderKeys)
-        knownFolderKeys = availableKeys
+    fun startFileMoveDrag(
+        file: ProjectFile,
+        sourceFolder: FolderKey,
+        sourcePlotStage: PlotStage?,
+        orderable: Boolean,
+        pointer: Offset,
+    ) {
+        if (!isManagedProject || fileMoveDrag != null || movingFileKeys.isNotEmpty() || orderSavingFolders.isNotEmpty() || orderDrafts.isNotEmpty()) return
+        val allowed = projectFileMoveDestinations(
+            isManagedProject,
+            sourceFolder,
+            sourcePlotStage,
+            folders,
+            folderConfigs,
+        ).toSet()
+        val orderDraft = createOrderDraft(sourceFolder)?.takeIf { orderable && it.contains(file.key) }
+        if (allowed.isEmpty() && orderDraft == null) return
+        if (orderDraft != null) {
+            orderErrors = orderErrors - sourceFolder
+            orderDrafts = orderDrafts + (sourceFolder to orderDraft)
+        }
+        fileMoveDrag = ProjectFileMoveDrag(file, sourceFolder, sourcePlotStage, orderDraft != null, allowed)
+        fileMovePointer = pointer
+        hoveredMoveDestination = projectFileMoveDropDestination(allowed, pointer, moveDropTargetBounds)
+    }
+    fun updateFileMoveDrag(pointer: Offset) {
+        val drag = fileMoveDrag ?: return
+        fileMovePointer = pointer
+        val pointerOnSource = moveSourceBounds[drag.file.key]?.second?.contains(pointer) == true
+        val insertion = when {
+            !drag.orderable -> null
+            pointerOnSource -> null
+            else -> projectFileOrderInsertion(
+                sourceKey = drag.file.key,
+                sourceFolder = drag.sourceFolder,
+                sourcePlotStage = drag.sourcePlotStage,
+                pointer = pointer,
+                sources = moveSourceBounds,
+            )
+        }
+        hoveredOrderInsertion = insertion
+        hoveredMoveDestination = if (insertion == null && !pointerOnSource) {
+            projectFileMoveDropDestination(drag.allowedDestinations, pointer, moveDropTargetBounds)
+        } else null
+    }
+    fun removeMoveDropTarget(destination: HierarchyFileMoveDestination) {
+        moveDropTargetBounds.remove(destination)
+        val drag = fileMoveDrag
+        val pointer = fileMovePointer
+        if (drag != null && pointer != null) {
+            hoveredMoveDestination = projectFileMoveDropDestination(
+                drag.allowedDestinations,
+                pointer,
+                moveDropTargetBounds,
+            )
+        }
+    }
+    fun cancelFileMoveDrag() {
+        fileMoveDrag?.takeIf(ProjectFileMoveDrag::orderable)?.sourceFolder?.let { folderKey ->
+            orderDrafts = orderDrafts - folderKey
+        }
+        fileMoveDrag = null
+        fileMovePointer = null
+        hoveredMoveDestination = null
+        hoveredOrderInsertion = null
+    }
+    fun finishFileMoveDrag() {
+        val drag = fileMoveDrag
+        val pointer = fileMovePointer
+        val insertion = if (drag?.orderable == true && pointer != null) {
+            projectFileOrderInsertion(
+                sourceKey = drag.file.key,
+                sourceFolder = drag.sourceFolder,
+                sourcePlotStage = drag.sourcePlotStage,
+                pointer = pointer,
+                sources = moveSourceBounds,
+            )
+        } else null
+        val destination = if (insertion == null) {
+            projectFileMoveReleaseDestination(
+                drag?.allowedDestinations,
+                pointer,
+                moveDropTargetBounds,
+            )
+        } else null
+        fileMoveDrag = null
+        fileMovePointer = null
+        hoveredMoveDestination = null
+        hoveredOrderInsertion = null
+        when {
+            drag == null -> Unit
+            destination != null -> {
+                orderDrafts = orderDrafts - drag.sourceFolder
+                moveFile(drag.file, destination)
+            }
+            drag.orderable -> {
+                if (insertion != null) {
+                    val draft = orderDrafts[drag.sourceFolder]
+                    if (draft != null) {
+                        orderDrafts = orderDrafts + (
+                            drag.sourceFolder to moveHierarchyOrderDraftToInsertion(
+                                draft = draft,
+                                sourceKey = drag.file.key,
+                                targetKey = insertion.targetKey,
+                                after = insertion.edge == HierarchyOrderInsertionEdge.AFTER,
+                            )
+                        )
+                    }
+                }
+                finishOrderDrag(drag.sourceFolder)
+            }
+        }
+    }
+    fun togglePlotGroup(folder: FolderKey, stage: PlotStage?) {
+        val collapsed = collapsedPlotGroups[sourceWorkspaceKey].orEmpty()
+        val target = folder to stage
+        collapsedPlotGroups[sourceWorkspaceKey] = if (target in collapsed) collapsed - target else collapsed + target
+    }
+    LaunchedEffect(availableFolderKeys) {
+        expandedFolderKeys = (expandedFolderKeys intersect availableFolderKeys) +
+            (availableFolderKeys - knownFolderKeys)
+        knownFolderKeys = availableFolderKeys
     }
 
     LaunchedEffect(currentFolder?.key) {
         currentFolder?.key
             ?.takeUnless { it == FolderKey.Base }
             ?.let { key -> expandedFolderKeys += key }
+    }
+
+    val baseFolderConfig = folderConfigs[FolderKey.Base.relativePath]
+        ?: if (isManagedProject) DEFAULT_BASE_FOLDER_CONFIG else FolderConfig(type = FolderType.GENERAL)
+    val baseContent = folderContents[FolderKey.Base] ?: HierarchyFolderContent()
+    val rootDropDestination = HierarchyFileMoveDestination("프로젝트 루트", FolderKey.Base, null)
+        .takeIf { isManagedProject && !baseFolderConfig.isPlot }
+    val rootDropModifier = projectFileMoveTargetModifier(
+        destination = rootDropDestination,
+        onPositioned = { destination, bounds -> moveDropTargetBounds[destination] = bounds },
+        onDisposed = ::removeMoveDropTarget,
+    )
+    LaunchedEffect(movingFileKeys, orderSavingFolders) {
+        if (movingFileKeys.isNotEmpty() || orderSavingFolders.isNotEmpty()) cancelFileMoveDrag()
+    }
+    DisposableEffect(workspaceIdentity) {
+        onDispose { cancelFileMoveDrag() }
+    }
+    val density = LocalDensity.current
+    val dragAutoScrollEdgePx = with(density) { WorkspaceUiMetrics.hierarchyDragAutoScrollEdge.toPx() }
+    val dragAutoScrollMaxSpeedPx = with(density) { WorkspaceUiMetrics.hierarchyDragAutoScrollMaxSpeed.toPx() }
+    LaunchedEffect(fileMoveDrag != null, hierarchyListState, dragAutoScrollEdgePx, dragAutoScrollMaxSpeedPx) {
+        if (fileMoveDrag == null) return@LaunchedEffect
+        var previousFrame = withFrameNanos { it }
+        while (fileMoveDrag != null) {
+            val frame = withFrameNanos { it }
+            val pointer = fileMovePointer
+            if (pointer != null) {
+                val velocity = hierarchyDragAutoScrollVelocity(
+                    pointer = pointer,
+                    viewport = hierarchyViewport,
+                    edgePx = dragAutoScrollEdgePx,
+                    maxSpeedPxPerSecond = dragAutoScrollMaxSpeedPx,
+                )
+                if (velocity != 0f) {
+                    val elapsedSeconds = ((frame - previousFrame) / 1_000_000_000f).coerceAtMost(0.05f)
+                    hierarchyListState.scrollBy(velocity * elapsedSeconds)
+                    // Scrolling changes every visible target's bounds even when the pointer stays still.
+                    updateFileMoveDrag(pointer)
+                }
+            }
+            previousFrame = frame
+        }
     }
 
     ModalDrawerSheet(
@@ -262,8 +491,15 @@ internal fun ProjectNavigationDrawer(
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = WorkspaceUiMetrics.hierarchyToolbarHeight),
-                    color = MaterialTheme.colorScheme.surfaceContainer,
+                        .heightIn(min = WorkspaceUiMetrics.hierarchyToolbarHeight)
+                        .then(rootDropModifier),
+                    color = when {
+                        rootDropDestination != null && hoveredMoveDestination == rootDropDestination -> MaterialTheme.colorScheme.secondaryContainer
+                        fileMoveDrag?.allowedDestinations?.contains(rootDropDestination) == true ->
+                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
+                        else -> MaterialTheme.colorScheme.surfaceContainer
+                    },
+                    tonalElevation = if (rootDropDestination != null && hoveredMoveDestination == rootDropDestination) 2.dp else 0.dp,
                 ) {
                     Row(
                         modifier = Modifier
@@ -322,19 +558,35 @@ internal fun ProjectNavigationDrawer(
                 groupCreateError?.let { Text(it, Modifier.padding(8.dp), color = MaterialTheme.colorScheme.error) }
 
                 LazyColumn(
+                    state = hierarchyListState,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
-                        .padding(horizontal = 4.dp, vertical = 2.dp),
+                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                        .onGloballyPositioned { hierarchyViewport = it.boundsInRoot() }
+                        .then(hierarchyFileMoveDragModifier(
+                            touchUi = platformUsesTouchUi,
+                            sessionKey = workspaceIdentity,
+                            toRoot = { local -> hierarchyViewport.topLeft + local },
+                            onStart = { pointer ->
+                                val source = moveSourceBounds.values
+                                    .firstOrNull { (_, bounds) -> bounds.contains(pointer) }
+                                    ?.first
+                                if (source == null) false else {
+                                    startFileMoveDrag(source.file, source.folderKey, source.plotStage, source.orderable, pointer)
+                                    fileMoveDrag != null
+                                }
+                            },
+                            onDrag = ::updateFileMoveDrag,
+                            onEnd = ::finishFileMoveDrag,
+                            onCancel = ::cancelFileMoveDrag,
+                        )),
                 ) {
-                    val baseFolderConfig = folderConfigs[FolderKey.Base.relativePath]
-                        ?: if (isManagedProject) DEFAULT_BASE_FOLDER_CONFIG else FolderConfig(type = FolderType.GENERAL)
-                    val baseContent = folderContents[FolderKey.Base] ?: HierarchyFolderContent()
                     if (!isManagedProject && generalSourceState?.enabled == true) hierarchyMotionItem(key = "general-source-groups") {
                         androidx.compose.runtime.key(currentProject?.toString()) {
                             GeneralSourceControls(generalSourceState, currentFile, onFileSelected,
                                 onPlanGeneralSourceRename, onPlanGeneralSourceDelete, onPlanGeneralSourceAssign, onApplyGeneralSourcePlan,
-                                collapsedGroups = collapsedSourceGroups[sourceWorkspaceKey].orEmpty(),
+                                collapsedGroups = collapsedSourceGroupsForWorkspace,
                                 onToggleGroup = { group ->
                                     val collapsed = collapsedSourceGroups[sourceWorkspaceKey].orEmpty()
                                     collapsedSourceGroups[sourceWorkspaceKey] = if (group in collapsed) collapsed - group else collapsed + group
@@ -354,16 +606,25 @@ internal fun ProjectNavigationDrawer(
                         currentFile = currentFile,
                         onFileSelected = onFileSelected,
                         onFileTrashRequested = onFileTrashRequested,
+                        moveDestinationsForPlacement = { sourcePlotStage ->
+                            moveDestinationsBySource[FolderKey.Base]?.get(sourcePlotStage).orEmpty()
+                        },
+                        activeMoveDestinations = fileMoveDrag?.allowedDestinations.orEmpty(),
+                        moveInProgress = movingFileKeys.isNotEmpty(),
+                        movingFileKeys = movingFileKeys,
+                        moveErrors = moveErrors,
+                        fileMoveDragActive = fileMoveDrag != null,
+                        draggingFileKey = fileMoveDrag?.file?.key,
+                        onMoveSourcePositioned = { file, sourcePlotStage, orderable, bounds ->
+                            moveSourceBounds[file.key] = ProjectFileMoveSource(file, FolderKey.Base, sourcePlotStage, orderable) to bounds
+                        },
+                        onMoveSourceDisposed = { moveSourceBounds.remove(it) },
+                        hoveredMoveDestination = hoveredMoveDestination,
+                        hoveredOrderInsertion = hoveredOrderInsertion,
+                        onDropTargetPositioned = { destination, bounds -> moveDropTargetBounds[destination] = bounds },
+                        onDropTargetDisposed = ::removeMoveDropTarget,
                         onCreatePlotFile = onCreatePlotFile,
-                        onOrderDragStart = {
-                            beginOrderDrag(FolderKey.Base, baseFolderConfig, baseContent)
-                        },
-                        onOrderMove = { fileKey, direction ->
-                            moveOrderDraft(FolderKey.Base, fileKey, direction)
-                        },
-                        onOrderDragEnd = { finishOrderDrag(FolderKey.Base) },
-                        onOrderDragCancel = { cancelOrderDrag(FolderKey.Base) },
-                        collapsedPlotStages = collapsedPlotGroups[sourceWorkspaceKey].orEmpty().filter { it.first == FolderKey.Base }.map { it.second }.toSet(),
+                        collapsedPlotStages = collapsedPlotStagesByFolder[FolderKey.Base].orEmpty(),
                         onTogglePlotStage = { togglePlotGroup(FolderKey.Base, it) },
                     )
                     hierarchyOrderErrorItem(
@@ -372,11 +633,18 @@ internal fun ProjectNavigationDrawer(
                         message = orderErrors[FolderKey.Base],
                     )
 
-                    folders.filterNot { it.key == FolderKey.Base }.forEach { folder ->
+                    childFolders.forEach { folder ->
                         val folderConfig = if (!isManagedProject) FolderConfig(type = FolderType.GENERAL)
                             else folderConfigs[folder.key.relativePath] ?: FolderConfig()
                         val tagDraft = if (isManagedProject) tagDrafts.getOrPut(folder.key) { FolderTagDraft(folderConfig.autoTags) } else null
+                        val folderDropDestination = HierarchyFileMoveDestination(folder.key.relativePath, folder.key, null)
+                            .takeIf { isManagedProject && !folderConfig.isPlot }
                         hierarchyMotionItem(key = "folder:${folder.key.relativePath}", animate = orderDrafts.isEmpty() && orderSavingFolders.isEmpty()) {
+                            val targetModifier = projectFileMoveTargetModifier(
+                                destination = folderDropDestination,
+                                onPositioned = { destination, bounds -> moveDropTargetBounds[destination] = bounds },
+                                onDisposed = ::removeMoveDropTarget,
+                            )
                             FolderHierarchyRow(
                                 folder = folder,
                                 selected = folder.key == currentFolder?.key,
@@ -385,6 +653,9 @@ internal fun ProjectNavigationDrawer(
                                 contextMenuExpanded = contextMenuFolderKey == folder.key,
                                 isPlot = folderConfig.isPlot,
                                 orderSaving = folder.key in orderSavingFolders,
+                                modifier = targetModifier,
+                                dropAvailable = fileMoveDrag?.allowedDestinations?.contains(folderDropDestination) == true,
+                                dropHovered = folderDropDestination != null && hoveredMoveDestination == folderDropDestination,
                                 onToggleExpanded = {
                                     expandedFolderKeys = expandedFolderKeys.toggle(folder.key)
                                 },
@@ -428,16 +699,25 @@ internal fun ProjectNavigationDrawer(
                                 currentFile = currentFile,
                                 onFileSelected = onFileSelected,
                                 onFileTrashRequested = onFileTrashRequested,
+                                moveDestinationsForPlacement = { sourcePlotStage ->
+                                    moveDestinationsBySource[folder.key]?.get(sourcePlotStage).orEmpty()
+                                },
+                                activeMoveDestinations = fileMoveDrag?.allowedDestinations.orEmpty(),
+                                moveInProgress = movingFileKeys.isNotEmpty(),
+                                movingFileKeys = movingFileKeys,
+                                moveErrors = moveErrors,
+                                fileMoveDragActive = fileMoveDrag != null,
+                                draggingFileKey = fileMoveDrag?.file?.key,
+                                onMoveSourcePositioned = { file, sourcePlotStage, orderable, bounds ->
+                                    moveSourceBounds[file.key] = ProjectFileMoveSource(file, folder.key, sourcePlotStage, orderable) to bounds
+                                },
+                                onMoveSourceDisposed = { moveSourceBounds.remove(it) },
+                                hoveredMoveDestination = hoveredMoveDestination,
+                                hoveredOrderInsertion = hoveredOrderInsertion,
+                                onDropTargetPositioned = { destination, bounds -> moveDropTargetBounds[destination] = bounds },
+                                onDropTargetDisposed = ::removeMoveDropTarget,
                                 onCreatePlotFile = onCreatePlotFile,
-                                onOrderDragStart = {
-                                    beginOrderDrag(folder.key, folderConfig, content)
-                                },
-                                onOrderMove = { fileKey, direction ->
-                                    moveOrderDraft(folder.key, fileKey, direction)
-                                },
-                                onOrderDragEnd = { finishOrderDrag(folder.key) },
-                                onOrderDragCancel = { cancelOrderDrag(folder.key) },
-                                collapsedPlotStages = collapsedPlotGroups[sourceWorkspaceKey].orEmpty().filter { it.first == folder.key }.map { it.second }.toSet(),
+                                collapsedPlotStages = collapsedPlotStagesByFolder[folder.key].orEmpty(),
                                 onTogglePlotStage = { togglePlotGroup(folder.key, it) },
                             )
                         }
@@ -481,9 +761,7 @@ internal fun ProjectNavigationDrawer(
         EditProjectDirectoryDialog(
             showProjectSettings = isManagedProject,
             directoryName = folderKey.relativePath,
-            existingDirectoryNames = folders
-                .filterNot { it.key == FolderKey.Base }
-                .mapTo(mutableSetOf()) { it.key.relativePath },
+            existingDirectoryNames = existingDirectoryNames,
             initialConfig = folderConfigs[folderKey.relativePath] ?: FolderConfig(),
             onDismissRequest = { editingFolderKey = null },
             onSave = { updatedName, config -> onUpdateDirectory(folderKey, updatedName, config) },
@@ -510,35 +788,49 @@ private fun LazyListScope.hierarchyFolderContentItems(
     currentFile: ProjectFile?,
     onFileSelected: (ProjectFile) -> Unit,
     onCreatePlotFile: (FolderKey, PlotStage) -> Unit,
-    onOrderDragStart: () -> Unit,
-    onOrderMove: (FileKey, Int) -> Unit,
-    onOrderDragEnd: () -> Unit,
-    onOrderDragCancel: () -> Unit,
     collapsedPlotStages: Set<PlotStage?>,
     onTogglePlotStage: (PlotStage?) -> Unit,
     onFileTrashRequested: (ProjectFile) -> Unit,
+    moveDestinationsForPlacement: (PlotStage?) -> List<HierarchyFileMoveDestination>,
+    activeMoveDestinations: Set<HierarchyFileMoveDestination>,
+    moveInProgress: Boolean,
+    movingFileKeys: Set<FileKey>,
+    moveErrors: Map<FileKey, String>,
+    fileMoveDragActive: Boolean,
+    draggingFileKey: FileKey?,
+    onMoveSourcePositioned: (ProjectFile, PlotStage?, Boolean, Rect) -> Unit,
+    onMoveSourceDisposed: (FileKey) -> Unit,
+    hoveredMoveDestination: HierarchyFileMoveDestination?,
+    hoveredOrderInsertion: ProjectFileOrderInsertion?,
+    onDropTargetPositioned: (HierarchyFileMoveDestination, Rect) -> Unit,
+    onDropTargetDisposed: (HierarchyFileMoveDestination) -> Unit,
 ) {
     if (!folderConfig.isPlot) {
+        val moveDestinations = moveDestinationsForPlacement(null)
         val defaultDraft = orderDraft as? DefaultHierarchyOrderDraft
         val displayedFiles = defaultDraft?.reorder(content.files) ?: content.files
         val managedFileCount = content.files.count { it.numberedPrefix() != null }
         displayedFiles.forEach { file ->
+            val orderable = folderConfig.type == FolderType.DEFAULT &&
+                file.numberedPrefix() != null && managedFileCount > 1
             hierarchyMotionItem(key = "file:${file.key.relativePath}", animate = orderDraft == null && !orderSaving) {
                 HierarchyFileRow(
                     file = file,
                     displayName = defaultDraft?.displayName(file),
                     depth = contentDepth,
-                    draggable = !orderSaving &&
-                        folderConfig.type == FolderType.DEFAULT &&
-                        file.numberedPrefix() != null &&
-                        managedFileCount > 1,
                     selected = file.key == currentFile?.key,
                     onClick = { onFileSelected(file) },
-                    onTrashRequested = if (orderSaving) null else { { onFileTrashRequested(file) } },
-                    onDragStart = onOrderDragStart,
-                    onDragMove = { direction -> onOrderMove(file.key, direction) },
-                    onDragEnd = onOrderDragEnd,
-                    onDragCancel = onOrderDragCancel,
+                    onTrashRequested = if (orderSaving || moveInProgress || fileMoveDragActive) null else { { onFileTrashRequested(file) } },
+                    supportingText = moveErrors[file.key],
+                    moveBusy = file.key in movingFileKeys,
+                    moveDragging = file.key == draggingFileKey,
+                    moveDraggable = !orderSaving && !moveInProgress && (
+                        (fileMoveDragActive && orderable) ||
+                            (!fileMoveDragActive && orderDraft == null && (moveDestinations.isNotEmpty() || orderable))
+                    ),
+                    orderInsertionEdge = hoveredOrderInsertion?.takeIf { it.targetKey == file.key }?.edge,
+                    onMoveSourcePositioned = { bounds -> onMoveSourcePositioned(file, null, orderable, bounds) },
+                    onMoveSourceDisposed = { onMoveSourceDisposed(file.key) },
                 )
             }
         }
@@ -547,9 +839,16 @@ private fun LazyListScope.hierarchyFolderContentItems(
 
     val plotDraft = orderDraft as? PlotHierarchyOrderDraft
     val displayedPlotEntries = plotDraft?.reorder(content.plotEntries) ?: content.plotEntries
+    val plotEntriesByStage = displayedPlotEntries.groupBy { it.stage }
     PlotStage.entries.forEach { stage ->
-        val stageEntries = displayedPlotEntries.filter { it.stage == stage }
+        val stageEntries = plotEntriesByStage[stage].orEmpty()
         hierarchyMotionItem(key = "plot-stage:${folderKey.relativePath}:${stage.name}", animate = orderDraft == null && !orderSaving) {
+            val destination = HierarchyFileMoveDestination(
+                label = "${if (folderKey == FolderKey.Base) "프로젝트 루트" else folderKey.relativePath} · ${stage.frontmatterValue}",
+                folderKey = folderKey,
+                plotStage = stage,
+            )
+            val targetModifier = projectFileMoveTargetModifier(destination, onDropTargetPositioned, onDropTargetDisposed)
             HierarchyGroupRow(
                 label = stage.frontmatterValue,
                 depth = contentDepth,
@@ -559,6 +858,9 @@ private fun LazyListScope.hierarchyFolderContentItems(
                 onToggle = { onTogglePlotStage(stage) },
                 onCreate = { onCreatePlotFile(folderKey, stage) },
                 createEnabled = !orderSaving,
+                dropAvailable = fileMoveDragActive && destination in activeMoveDestinations,
+                dropHovered = hoveredMoveDestination == destination,
+                modifier = targetModifier,
             )
         }
         if (stage !in collapsedPlotStages) stageEntries.forEach { entry ->
@@ -570,23 +872,26 @@ private fun LazyListScope.hierarchyFolderContentItems(
                             ?: entry.title,
                         depth = contentDepth + 1,
                         groupChild = true,
-                        draggable = !orderSaving,
                         selected = entry.projectFile.key == currentFile?.key,
                         onClick = { onFileSelected(entry.projectFile) },
-                        onTrashRequested = if (orderSaving) null else { { onFileTrashRequested(entry.projectFile) } },
-                        onDragStart = onOrderDragStart,
-                        onDragMove = { direction ->
-                            onOrderMove(entry.projectFile.key, direction)
-                        },
-                        onDragEnd = onOrderDragEnd,
-                        onDragCancel = onOrderDragCancel,
+                        onTrashRequested = if (orderSaving || moveInProgress || fileMoveDragActive) null else { { onFileTrashRequested(entry.projectFile) } },
+                        supportingText = moveErrors[entry.projectFile.key],
+                        moveBusy = entry.projectFile.key in movingFileKeys,
+                        moveDragging = entry.projectFile.key == draggingFileKey,
+                        moveDraggable = !orderSaving && !moveInProgress && (
+                            fileMoveDragActive || orderDraft == null
+                        ),
+                        orderInsertionEdge = hoveredOrderInsertion?.takeIf { it.targetKey == entry.projectFile.key }?.edge,
+                        onMoveSourcePositioned = { bounds -> onMoveSourcePositioned(entry.projectFile, entry.stage, true, bounds) },
+                        onMoveSourceDisposed = { onMoveSourceDisposed(entry.projectFile.key) },
                     )
                 }
             }
     }
 
-    val unclassifiedEntries = displayedPlotEntries.filter { it.stage == null }
+    val unclassifiedEntries = plotEntriesByStage[null].orEmpty()
     if (unclassifiedEntries.isNotEmpty()) {
+        val moveDestinations = moveDestinationsForPlacement(null)
         hierarchyMotionItem(key = "plot-stage:${folderKey.relativePath}:unclassified", animate = orderDraft == null && !orderSaving) {
             HierarchyGroupRow(
                 label = "미분류",
@@ -605,14 +910,15 @@ private fun LazyListScope.hierarchyFolderContentItems(
                     displayName = entry.title,
                     depth = contentDepth + 1,
                     groupChild = true,
-                    draggable = !orderSaving,
                     selected = entry.projectFile.key == currentFile?.key,
                     onClick = { onFileSelected(entry.projectFile) },
-                    onTrashRequested = if (orderSaving) null else { { onFileTrashRequested(entry.projectFile) } },
-                    onDragStart = onOrderDragStart,
-                    onDragMove = { direction -> onOrderMove(entry.projectFile.key, direction) },
-                    onDragEnd = onOrderDragEnd,
-                    onDragCancel = onOrderDragCancel,
+                    onTrashRequested = if (orderSaving || moveInProgress || fileMoveDragActive) null else { { onFileTrashRequested(entry.projectFile) } },
+                    supportingText = moveErrors[entry.projectFile.key],
+                    moveBusy = entry.projectFile.key in movingFileKeys,
+                    moveDragging = entry.projectFile.key == draggingFileKey,
+                    moveDraggable = moveDestinations.isNotEmpty() && !orderSaving && orderDraft == null && !moveInProgress,
+                    onMoveSourcePositioned = { bounds -> onMoveSourcePositioned(entry.projectFile, null, false, bounds) },
+                    onMoveSourceDisposed = { onMoveSourceDisposed(entry.projectFile.key) },
                 )
             }
         }
@@ -679,20 +985,25 @@ internal fun FolderHierarchyRow(
     onContextMenuDismissed: () -> Unit,
     onDelete: () -> Unit,
     nameEditor: (@Composable () -> Unit)? = null,
+    modifier: Modifier = Modifier,
+    dropAvailable: Boolean = false,
+    dropHovered: Boolean = false,
 ) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .heightIn(min = WorkspaceUiMetrics.hierarchyFolderRowHeight),
     ) {
         Surface(
             modifier = Modifier.fillMaxWidth().heightIn(min = WorkspaceUiMetrics.hierarchyFolderRowHeight)
                 .then(if (nameEditor == null) Modifier.hierarchyClickable(onClick = onSelected, onContextMenu = onContextMenu) else Modifier),
-            color = if (selected) {
-                MaterialTheme.colorScheme.surfaceContainerHighest
-            } else {
-                Color.Transparent
+            color = when {
+                dropHovered -> MaterialTheme.colorScheme.secondaryContainer
+                dropAvailable -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
+                selected -> MaterialTheme.colorScheme.surfaceContainerHighest
+                else -> Color.Transparent
             },
+            tonalElevation = if (dropHovered) 2.dp else 0.dp,
             shape = MaterialTheme.shapes.small,
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -745,66 +1056,318 @@ internal fun HierarchyFileRow(
     file: ProjectFile,
     displayName: String? = null,
     depth: Int,
-    draggable: Boolean,
     selected: Boolean,
     onClick: () -> Unit,
-    onDragStart: () -> Unit,
-    onDragMove: (Int) -> Unit,
-    onDragEnd: () -> Unit,
-    onDragCancel: () -> Unit,
     groupChild: Boolean = false,
     onTrashRequested: (() -> Unit)? = null,
+    supportingText: String? = null,
+    moveBusy: Boolean = false,
+    moveDragging: Boolean = false,
+    moveDraggable: Boolean = false,
+    orderInsertionEdge: HierarchyOrderInsertionEdge? = null,
+    onMoveSourcePositioned: (Rect) -> Unit = {},
+    onMoveSourceDisposed: () -> Unit = {},
 ) {
     val fileName = displayName ?: file.key.fileName.let { name ->
         if (name.endsWith(".md", ignoreCase = true)) name.dropLast(3) else name
     }
 
-    val guideColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.42f)
-    val currentOnDragStart by rememberUpdatedState(onDragStart)
-    val currentOnDragMove by rememberUpdatedState(onDragMove)
-    val currentOnDragEnd by rememberUpdatedState(onDragEnd)
-    val currentOnDragCancel by rememberUpdatedState(onDragCancel)
-    val dragModifier = if (draggable) {
-        Modifier.pointerInput(file.key) {
-            val stepThreshold = PopupUiMetrics.RowMinHeight.toPx()
-            var dragDistance = 0f
-            detectDragGestures(
-                onDragStart = {
-                    dragDistance = 0f
-                    currentOnDragStart()
-                },
-                onDragEnd = {
-                    dragDistance = 0f
-                    currentOnDragEnd()
-                },
-                onDragCancel = {
-                    dragDistance = 0f
-                    currentOnDragCancel()
-                },
-                onDrag = { change, amount ->
-                    change.consume()
-                    dragDistance += amount.y
-                    while (dragDistance >= stepThreshold) {
-                        currentOnDragMove(1)
-                        dragDistance -= stepThreshold
-                    }
-                    while (dragDistance <= -stepThreshold) {
-                        currentOnDragMove(-1)
-                        dragDistance += stepThreshold
-                    }
-                },
-            )
-        }
-    } else {
-        Modifier
+    val insertionColor = MaterialTheme.colorScheme.primary
+    val moveSourceModifier = if (moveDraggable) {
+        Modifier.onGloballyPositioned { onMoveSourcePositioned(it.boundsInRoot()) }
+    } else Modifier
+    val currentOnMoveSourceDisposed by rememberUpdatedState(onMoveSourceDisposed)
+    DisposableEffect(file.key, moveDraggable) {
+        onDispose { currentOnMoveSourceDisposed() }
     }
     HierarchyDocumentRow(
         label = fileName, depth = depth, selected = selected, onClick = onClick,
         groupChild = groupChild,
-        dragModifier = dragModifier,
-        dragDescription = if (draggable) "$fileName 순서 변경 핸들" else null,
+        modifier = if (orderInsertionEdge == null) Modifier else Modifier.drawWithContent {
+            drawContent()
+            val strokeWidth = 2.dp.toPx()
+            val y = if (orderInsertionEdge == HierarchyOrderInsertionEdge.BEFORE) {
+                strokeWidth / 2f
+            } else {
+                size.height - strokeWidth / 2f
+            }
+            drawLine(insertionColor, Offset(0f, y), Offset(size.width, y), strokeWidth)
+        },
         onTrashRequested = onTrashRequested,
+        supportingText = supportingText,
+        moveDragging = moveDragging,
+        bodyDragModifier = moveSourceModifier,
+        showMenuAction = platformUsesTouchUi && !moveBusy && !moveDragging,
+        contextMenuOnLongPress = false,
+        trailingAction = if (moveBusy) {{
+            Box(Modifier.size(WorkspaceUiMetrics.hierarchyFolderRowHeight), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            }
+        }} else null,
     )
+}
+
+@Composable
+internal fun hierarchyFileMoveDragModifier(
+    touchUi: Boolean,
+    sessionKey: Any?,
+    toRoot: (Offset) -> Offset,
+    onStart: (Offset) -> Boolean,
+    onDrag: (Offset) -> Unit,
+    onEnd: () -> Unit,
+    onCancel: () -> Unit,
+): Modifier {
+    val currentToRoot by rememberUpdatedState(toRoot)
+    val currentOnStart by rememberUpdatedState(onStart)
+    val currentOnDrag by rememberUpdatedState(onDrag)
+    val currentOnEnd by rememberUpdatedState(onEnd)
+    val currentOnCancel by rememberUpdatedState(onCancel)
+    return Modifier.pointerInput(touchUi, sessionKey) {
+        var active = false
+        val start: (Offset) -> Boolean = { local ->
+            currentOnStart(currentToRoot(local)).also { active = it }
+        }
+        val drag: (Offset) -> Unit = { local ->
+            if (active) currentOnDrag(currentToRoot(local))
+        }
+        val end: () -> Unit = {
+            if (active) {
+                active = false
+                currentOnEnd()
+            }
+        }
+        val cancel: () -> Unit = {
+            if (active) {
+                active = false
+                currentOnCancel()
+            }
+        }
+        if (touchUi) {
+            detectDragGesturesAfterLongPress(
+                onDragStart = { start(it) },
+                onDragEnd = end,
+                onDragCancel = cancel,
+                onDrag = { change, _ ->
+                    if (active) {
+                        change.consume()
+                        drag(change.position)
+                    }
+                },
+            )
+        } else {
+            detectPrimaryMouseDragGestures(
+                onDragStart = start,
+                onDragEnd = end,
+                onDragCancel = cancel,
+                onDrag = drag,
+            )
+        }
+    }
+}
+
+private suspend fun PointerInputScope.detectPrimaryMouseDragGestures(
+    onDragStart: (Offset) -> Boolean,
+    onDragEnd: () -> Unit,
+    onDragCancel: () -> Unit,
+    onDrag: (Offset) -> Unit,
+) {
+    var dragActive = false
+    try {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            if (!currentEvent.buttons.isPrimaryPressed) return@awaitEachGesture
+            while (true) {
+                val change = awaitPointerEvent(PointerEventPass.Initial).changes
+                    .firstOrNull { it.id == down.id }
+                if (change == null) {
+                    if (dragActive) {
+                        dragActive = false
+                        onDragCancel()
+                    }
+                    return@awaitEachGesture
+                }
+                if (!change.pressed) {
+                    if (dragActive) {
+                        dragActive = false
+                        onDragEnd()
+                    }
+                    return@awaitEachGesture
+                }
+                if (!dragActive && (change.position - down.position).getDistance() < viewConfiguration.touchSlop) {
+                    continue
+                }
+                if (!dragActive) {
+                    dragActive = onDragStart(down.position)
+                    if (!dragActive) return@awaitEachGesture
+                }
+                change.consume()
+                onDrag(change.position)
+            }
+        }
+    } finally {
+        if (dragActive) onDragCancel()
+    }
+}
+
+private data class ProjectFileMoveDrag(
+    val file: ProjectFile,
+    val sourceFolder: FolderKey,
+    val sourcePlotStage: PlotStage?,
+    val orderable: Boolean,
+    val allowedDestinations: Set<HierarchyFileMoveDestination>,
+)
+
+internal data class ProjectFileMoveSource(
+    val file: ProjectFile,
+    val folderKey: FolderKey,
+    val plotStage: PlotStage?,
+    val orderable: Boolean,
+)
+
+internal enum class HierarchyOrderInsertionEdge { BEFORE, AFTER }
+
+internal data class ProjectFileOrderInsertion(
+    val targetKey: FileKey,
+    val edge: HierarchyOrderInsertionEdge,
+)
+
+internal fun projectFileOrderInsertion(
+    sourceKey: FileKey,
+    sourceFolder: FolderKey,
+    sourcePlotStage: PlotStage?,
+    pointer: Offset,
+    sources: Map<FileKey, Pair<ProjectFileMoveSource, Rect>>,
+): ProjectFileOrderInsertion? = sources.values
+    .firstOrNull { (target, bounds) ->
+        target.file.key != sourceKey && target.orderable &&
+            target.folderKey == sourceFolder && target.plotStage == sourcePlotStage &&
+            bounds.contains(pointer)
+    }
+    ?.let { (target, bounds) ->
+        ProjectFileOrderInsertion(
+            targetKey = target.file.key,
+            edge = if (pointer.y < bounds.center.y) HierarchyOrderInsertionEdge.BEFORE
+                else HierarchyOrderInsertionEdge.AFTER,
+        )
+    }
+
+internal fun moveHierarchyOrderDraftToInsertion(
+    draft: HierarchyOrderDraft,
+    sourceKey: FileKey,
+    targetKey: FileKey,
+    after: Boolean,
+): HierarchyOrderDraft {
+    val groupKeys = when (draft) {
+        is DefaultHierarchyOrderDraft -> draft.currentKeys
+        is PlotHierarchyOrderDraft -> {
+            val sourceStage = draft.currentItems.firstOrNull { it.fileKey == sourceKey }?.stage ?: return draft
+            val targetStage = draft.currentItems.firstOrNull { it.fileKey == targetKey }?.stage ?: return draft
+            if (sourceStage != targetStage) return draft
+            draft.currentItems.filter { it.stage == sourceStage }.map(HierarchyPlotOrderItem::fileKey)
+        }
+    }
+    val sourceIndex = groupKeys.indexOf(sourceKey)
+    val targetIndex = groupKeys.indexOf(targetKey)
+    if (sourceIndex < 0 || targetIndex < 0 || sourceIndex == targetIndex) return draft
+    val rawInsertionIndex = targetIndex + if (after) 1 else 0
+    val finalIndex = rawInsertionIndex - if (sourceIndex < rawInsertionIndex) 1 else 0
+    if (finalIndex == sourceIndex) return draft
+    val direction = if (finalIndex > sourceIndex) 1 else -1
+    var moved = draft
+    repeat(kotlin.math.abs(finalIndex - sourceIndex)) {
+        moved = moved.move(sourceKey, direction)
+    }
+    return moved
+}
+
+internal fun projectFileMoveDropDestination(
+    allowedDestinations: Set<HierarchyFileMoveDestination>,
+    pointer: Offset,
+    targetBounds: Map<HierarchyFileMoveDestination, Rect>,
+): HierarchyFileMoveDestination? = targetBounds.entries
+    .firstOrNull { (destination, bounds) -> destination in allowedDestinations && bounds.contains(pointer) }
+    ?.key
+
+internal fun projectFileMoveReleaseDestination(
+    allowedDestinations: Set<HierarchyFileMoveDestination>?,
+    pointer: Offset?,
+    targetBounds: Map<HierarchyFileMoveDestination, Rect>,
+): HierarchyFileMoveDestination? = if (allowedDestinations != null && pointer != null) {
+    projectFileMoveDropDestination(allowedDestinations, pointer, targetBounds)
+} else {
+    null
+}
+
+internal fun hierarchyDragAutoScrollVelocity(
+    pointer: Offset,
+    viewport: Rect,
+    edgePx: Float,
+    maxSpeedPxPerSecond: Float,
+): Float {
+    if (
+        edgePx <= 0f || maxSpeedPxPerSecond <= 0f ||
+        viewport.width <= 0f || viewport.height <= 0f ||
+        !viewport.contains(pointer)
+    ) return 0f
+
+    val effectiveEdge = edgePx.coerceAtMost(viewport.height / 2f)
+    return when {
+        pointer.y < viewport.top + effectiveEdge -> {
+            val proximity = ((viewport.top + effectiveEdge - pointer.y) / effectiveEdge).coerceIn(0f, 1f)
+            -maxSpeedPxPerSecond * proximity
+        }
+        pointer.y > viewport.bottom - effectiveEdge -> {
+            val proximity = ((pointer.y - (viewport.bottom - effectiveEdge)) / effectiveEdge).coerceIn(0f, 1f)
+            maxSpeedPxPerSecond * proximity
+        }
+        else -> 0f
+    }
+}
+
+@Composable
+private fun projectFileMoveTargetModifier(
+    destination: HierarchyFileMoveDestination?,
+    onPositioned: (HierarchyFileMoveDestination, Rect) -> Unit,
+    onDisposed: (HierarchyFileMoveDestination) -> Unit,
+): Modifier {
+    val currentOnDisposed by rememberUpdatedState(onDisposed)
+    DisposableEffect(destination) {
+        onDispose { destination?.let(currentOnDisposed) }
+    }
+    return if (destination == null) Modifier else Modifier
+        .testTag("project-file-drop:${destination.folderKey.relativePath}:${destination.plotStage?.name ?: "folder"}")
+        .onGloballyPositioned { onPositioned(destination, it.boundsInRoot()) }
+}
+
+internal fun projectFileMoveDestinations(
+    isManagedProject: Boolean,
+    sourceFolder: FolderKey,
+    sourcePlotStage: PlotStage?,
+    folders: List<ProjectFolder>,
+    folderConfigs: Map<String, FolderConfig>,
+): List<HierarchyFileMoveDestination> {
+    if (!isManagedProject) return emptyList()
+    val availableFolderKeys = (listOf(FolderKey.Base) + folders.map(ProjectFolder::key)).distinct()
+    return availableFolderKeys.flatMap { folderKey ->
+        val folderLabel = if (folderKey == FolderKey.Base) "프로젝트 루트" else folderKey.relativePath
+        val config = folderConfigs[folderKey.relativePath]
+            ?: if (folderKey == FolderKey.Base) DEFAULT_BASE_FOLDER_CONFIG else FolderConfig()
+        if (config.isPlot) {
+            PlotStage.entries
+                .filterNot { stage -> folderKey == sourceFolder && stage == sourcePlotStage }
+                .map { stage ->
+                    HierarchyFileMoveDestination(
+                        label = "$folderLabel · ${stage.frontmatterValue}",
+                        folderKey = folderKey,
+                        plotStage = stage,
+                    )
+                }
+        } else if (folderKey == sourceFolder && sourcePlotStage == null) {
+            emptyList()
+        } else {
+            listOf(HierarchyFileMoveDestination(folderLabel, folderKey, null))
+        }
+    }
 }
 @Composable
 private fun CompactIconAction(
@@ -905,6 +1468,7 @@ private fun FolderContextMenu(
 internal fun Modifier.hierarchyClickable(
     onClick: () -> Unit,
     onContextMenu: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = onContextMenu,
 ): Modifier {
     val pointerModifier = if (onContextMenu == null) {
         Modifier
@@ -924,8 +1488,8 @@ internal fun Modifier.hierarchyClickable(
         .then(pointerModifier)
         .combinedClickable(
             onClick = onClick,
-            onLongClickLabel = onContextMenu?.let { "메뉴 열기" },
-            onLongClick = onContextMenu,
+            onLongClickLabel = onLongClick?.let { "메뉴 열기" },
+            onLongClick = onLongClick,
         )
 }
 

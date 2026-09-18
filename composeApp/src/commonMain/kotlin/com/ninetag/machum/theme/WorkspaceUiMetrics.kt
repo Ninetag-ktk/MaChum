@@ -42,4 +42,6 @@ internal object WorkspaceUiMetrics {
     val hierarchyIndentStep = 20.dp
     val hierarchyGuideOffset = if (platformUsesTouchUi) 14.dp else hierarchyActionSize / 2
     val hierarchyGuideStrokeWidth = 1.dp
+    val hierarchyDragAutoScrollEdge = 48.dp
+    val hierarchyDragAutoScrollMaxSpeed = 720.dp
 }

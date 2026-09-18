@@ -23,10 +23,19 @@ internal class FolderFileSelectionMemory {
     }
 
     fun renameFile(oldKey: FileKey, newKey: FileKey) {
-        if (selections[oldKey.folder] == oldKey) {
-            selections.remove(oldKey.folder)
-            selections[newKey.folder] = newKey
+        renameFiles(mapOf(oldKey to newKey))
+    }
+
+    /** Applies a rename batch from one snapshot so a new key cannot be mistaken for another old key. */
+    fun renameFiles(keys: Map<FileKey, FileKey>) {
+        val renamedSelections = selections.mapNotNull { (folder, selected) ->
+            keys[selected]?.let { renamed -> folder to renamed }
         }
+        renamedSelections.forEach { (folder, _) -> selections.remove(folder) }
+        renamedSelections.filter { (folder, renamed) -> folder == renamed.folder }
+            .forEach { (_, renamed) -> selections[renamed.folder] = renamed }
+        renamedSelections.filter { (folder, renamed) -> folder != renamed.folder }
+            .forEach { (_, renamed) -> selections.putIfAbsent(renamed.folder, renamed) }
     }
 
     fun renameFolder(oldKey: FolderKey, newKey: FolderKey) {

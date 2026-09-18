@@ -5,6 +5,7 @@ import kotlinx.serialization.Serializable
 
 internal const val WORKSPACE_TRASH_NAME = ".machum-trash"
 internal const val WORKSPACE_TRASH_RECEIPT = ".receipt.json"
+internal const val WORKSPACE_TRASH_RECEIPT_RECOVERY = ".receipt-recovery.json"
 internal const val WORKSPACE_TRASH_CONFIG_RECOVERY = ".project-config-recovery.json"
 internal const val WORKSPACE_TRASH_RETENTION_MS = 30L * 24 * 60 * 60 * 1000
 internal val workspaceTrashIdPattern = Regex("[0-9a-f]{32}")
@@ -13,7 +14,7 @@ data class WorkspaceTrashResult(val directory: PlatformFile, val cleanupWarning:
 data class ProjectFileTrashResult(val file: PlatformFile, val cleanupWarning: String? = null)
 
 @Serializable
-internal enum class WorkspaceTrashKind { WORKSPACE, FILE }
+internal enum class WorkspaceTrashKind { WORKSPACE, FILE, FOLDER }
 
 /** Written before the move; an incomplete receipt is deliberately never eligible for expiry. */
 @Serializable

@@ -1,15 +1,7 @@
 package com.ninetag.machum.external
 
-enum class DocumentPropertyType {
-    TEXT,
-    LIST,
-    NUMBER,
-    BOOLEAN,
-    DATE,
-    DATE_TIME,
-    TAGS,
-    UNSUPPORTED,
-}
+import com.ninetag.machum.entity.DocumentPropertyType
+import com.ninetag.machum.entity.documentPropertyKeyError
 
 sealed interface DocumentPropertyValue {
     data class Text(val value: String) : DocumentPropertyValue
@@ -31,7 +23,14 @@ data class DocumentProperty(
     val value: DocumentPropertyValue?,
     val readOnly: Boolean = false,
     val error: String? = null,
-)
+    /** Type represented by the YAML token itself. Null means an intentionally empty `key:` value. */
+    val sourceType: DocumentPropertyType? = type,
+    /** True when [type] came from the workspace registry instead of semantic/YAML fallback. */
+    val typeFromSettings: Boolean = false,
+) {
+    val hasTypeMismatch: Boolean
+        get() = sourceType != null && sourceType != type && sourceType != DocumentPropertyType.UNSUPPORTED
+}
 
 data class DocumentProperties(
     val properties: List<DocumentProperty>,
@@ -44,7 +43,10 @@ sealed interface DocumentPropertyResult {
     data class Failure(val message: String) : DocumentPropertyResult
 }
 
-fun parseDocumentProperties(raw: String): DocumentProperties = parseDocumentPropertiesInternal(raw).publicResult
+fun parseDocumentProperties(
+    raw: String,
+    typeHints: Map<String, DocumentPropertyType> = emptyMap(),
+): DocumentProperties = parseDocumentPropertiesInternal(raw, typeHints).publicResult
 
 /** Returns the exact source block for one unambiguous top-level property. */
 fun documentPropertySource(raw: String, key: String): String? {
@@ -56,13 +58,12 @@ fun documentPropertySource(raw: String, key: String): String? {
 fun setDocumentProperty(
     raw: String,
     key: String,
-    value: DocumentPropertyValue,
+    value: DocumentPropertyValue?,
 ): DocumentPropertyResult {
-    val keyError = validatePropertyKey(key)
+    val keyError = documentPropertyKeyError(key)
     if (keyError != null) return DocumentPropertyResult.Failure(keyError)
     val rendered = renderPropertyValue(value)
     if (rendered is RenderedValue.Failure) return DocumentPropertyResult.Failure(rendered.message)
-    rendered as RenderedValue.Success
 
     val parsed = parseDocumentPropertiesInternal(raw)
     parsed.publicResult.error?.let { return DocumentPropertyResult.Failure(it) }
@@ -73,15 +74,15 @@ fun setDocumentProperty(
     }
 
     val lineEnding = parsed.lineEnding
-    val newLine = "$key: ${rendered.raw}$lineEnding"
+    val newEntry = renderNewEntry(key, rendered, lineEnding)
     val result = if (!parsed.hasFrontMatter) {
         val bom = if (raw.startsWith(BOM)) BOM else ""
         val content = raw.removePrefix(BOM)
-        "$bom---$lineEnding$newLine---$lineEnding$content"
+        "$bom---$lineEnding$newEntry---$lineEnding$content"
     } else if (matches.isEmpty()) {
-        raw.substring(0, parsed.closingStart) + newLine + raw.substring(parsed.closingStart)
+        raw.substring(0, parsed.closingStart) + newEntry + raw.substring(parsed.closingStart)
     } else {
-        replaceEntryValue(raw, matches.single(), rendered.raw)
+        replaceEntryValue(raw, matches.single(), value, rendered, lineEnding)
     }
     return DocumentPropertyResult.Success(result)
 }
@@ -99,7 +100,7 @@ fun deleteDocumentProperty(raw: String, key: String): DocumentPropertyResult {
 }
 
 fun renameDocumentProperty(raw: String, oldKey: String, newKey: String): DocumentPropertyResult {
-    val keyError = validatePropertyKey(newKey)
+    val keyError = documentPropertyKeyError(newKey)
     if (keyError != null) return DocumentPropertyResult.Failure(keyError)
     val parsed = parseDocumentPropertiesInternal(raw)
     parsed.publicResult.error?.let { return DocumentPropertyResult.Failure(it) }
@@ -138,7 +139,10 @@ private data class InternalParse(
     val lineEnding: String,
 )
 
-private fun parseDocumentPropertiesInternal(raw: String): InternalParse {
+private fun parseDocumentPropertiesInternal(
+    raw: String,
+    typeHints: Map<String, DocumentPropertyType> = emptyMap(),
+): InternalParse {
     val lines = splitLines(raw)
     val first = lines.firstOrNull()
     val marker = first?.content?.removePrefix(BOM)
@@ -185,12 +189,22 @@ private fun parseDocumentPropertiesInternal(raw: String): InternalParse {
         val valueText = line.content.substring(colon + 1)
         val continuation = lines.subList(index + 1, next).map { it.content }
         val parsedValue = parseValue(key, valueText, continuation)
+        val fixedType = fixedPropertyType(key)
+        val effectiveType = when {
+            parsedValue.error != null -> DocumentPropertyType.UNSUPPORTED
+            fixedType != null -> fixedType
+            typeHints[key] != null && typeHints[key] != DocumentPropertyType.UNSUPPORTED -> typeHints.getValue(key)
+            parsedValue.type != null -> parsedValue.type
+            else -> DocumentPropertyType.TEXT
+        }
         val property = DocumentProperty(
             key = key,
-            type = if (keyDecodeError != null) DocumentPropertyType.UNSUPPORTED else parsedValue.type,
+            type = if (keyDecodeError != null) DocumentPropertyType.UNSUPPORTED else effectiveType,
             value = if (keyDecodeError != null) null else parsedValue.value,
             readOnly = keyDecodeError != null || parsedValue.error != null,
             error = keyDecodeError ?: parsedValue.error,
+            sourceType = if (keyDecodeError != null) DocumentPropertyType.UNSUPPORTED else parsedValue.type,
+            typeFromSettings = fixedType == null && key in typeHints,
         )
         entries += ParsedEntry(
             key, property, line.start, if (continuation.isEmpty()) line.end else lines[next - 1].end,
@@ -216,10 +230,14 @@ private fun parseDocumentPropertiesInternal(raw: String): InternalParse {
     )
 }
 
-private data class ParsedValue(val type: DocumentPropertyType, val value: DocumentPropertyValue?, val error: String? = null)
+private data class ParsedValue(
+    val type: DocumentPropertyType?,
+    val value: DocumentPropertyValue?,
+    val error: String? = null,
+)
 
 private fun parseValue(key: String, afterColon: String, continuation: List<String>): ParsedValue {
-    val (token, _) = splitInlineComment(afterColon)
+    val (token, _) = splitYamlInlineComment(afterColon)
     val trimmed = token.trim()
     if (continuation.isNotEmpty()) {
         if (trimmed.isNotEmpty()) return unsupported("Nested or ambiguous YAML value")
@@ -235,26 +253,34 @@ private fun parseValue(key: String, afterColon: String, continuation: List<Strin
             return unsupported("Nested or ambiguous YAML value")
         }
         val items = meaningful.map { it.removePrefix(indentation).removePrefix("- ").trim() }
-        if (items.any { splitInlineComment(it).second.isNotEmpty() }) {
+        if (items.any { splitYamlInlineComment(it).second.isNotEmpty() }) {
             return unsupported("Commented block lists are preserved as read-only")
         }
         val parsedItems = items.map { parseListItem(it) ?: return unsupported("Unsupported list item") }
         return listResult(key, parsedItems)
     }
-    if (trimmed.isEmpty() || trimmed == "null" || trimmed == "~" || trimmed.startsWith("{") || trimmed.startsWith("&") || trimmed.startsWith("*")) {
-        return unsupported("Empty, nested, or ambiguous YAML value")
+    if (trimmed.isEmpty()) {
+        val emptyList = if (fixedPropertyType(key) in setOf(DocumentPropertyType.LIST, DocumentPropertyType.TAGS)) {
+            DocumentPropertyValue.ListValue(emptyList())
+        } else {
+            null
+        }
+        return ParsedValue(null, emptyList)
+    }
+    if (trimmed == "null" || trimmed == "~" || trimmed.startsWith("{") || trimmed.startsWith("&") || trimmed.startsWith("*")) {
+        return unsupported("Nested or ambiguous YAML value")
     }
     if (trimmed.startsWith("[")) {
         if (!trimmed.endsWith("]")) return unsupported("Malformed inline list")
         val inside = trimmed.substring(1, trimmed.length - 1)
         if (inside.isBlank()) return listResult(key, emptyList())
-        val parts = splitInlineList(inside) ?: return unsupported("Unsupported inline list")
+        val parts = splitYamlInlineList(inside) ?: return unsupported("Unsupported inline list")
         val items = parts.map { parseListItem(it.trim()) ?: return unsupported("Unsupported list item") }
         return listResult(key, items)
     }
     val quoted = parseQuoted(trimmed)
     if (quoted != null) {
-        return if (key == "tags") listResult(key, listOf(DocumentPropertyListItem.Text(quoted)))
+        return if (isSemanticListKey(key)) listResult(key, listOf(DocumentPropertyListItem.Text(quoted)))
         else ParsedValue(DocumentPropertyType.TEXT, DocumentPropertyValue.Text(quoted))
     }
     if (trimmed.startsWith("\"") || trimmed.startsWith("'")) return unsupported("Malformed quoted value")
@@ -270,7 +296,7 @@ private fun parseValue(key: String, afterColon: String, continuation: List<Strin
         ParsedValue(DocumentPropertyType.DATE_TIME, DocumentPropertyValue.DateTimeValue(trimmed))
     } else unsupported("Invalid date-time value")
     if (trimmed.startsWith("|") || trimmed.startsWith(">") || trimmed.contains("!!")) return unsupported("Unsupported YAML value")
-    return if (key == "tags") listResult(key, listOf(DocumentPropertyListItem.Text(trimmed)))
+    return if (isSemanticListKey(key)) listResult(key, listOf(DocumentPropertyListItem.Text(trimmed)))
     else ParsedValue(DocumentPropertyType.TEXT, DocumentPropertyValue.Text(trimmed))
 }
 
@@ -281,8 +307,17 @@ private fun listResult(key: String, items: List<DocumentPropertyListItem>) = Par
     DocumentPropertyValue.ListValue(items),
 )
 
+private fun fixedPropertyType(key: String): DocumentPropertyType? = when (key) {
+    "tags" -> DocumentPropertyType.TAGS
+    "aliases" -> DocumentPropertyType.LIST
+    else -> null
+}
+
+private fun isSemanticListKey(key: String): Boolean = fixedPropertyType(key) in
+    setOf(DocumentPropertyType.LIST, DocumentPropertyType.TAGS)
+
 private fun parseListItem(raw: String): DocumentPropertyListItem? {
-    val (token, _) = splitInlineComment(raw)
+    val (token, _) = splitYamlInlineComment(raw)
     val value = token.trim()
     parseQuoted(value)?.let { return DocumentPropertyListItem.Text(it) }
     if (NUMBER.matches(value)) return DocumentPropertyListItem.NumberValue(value)
@@ -300,50 +335,131 @@ private fun parseListItem(raw: String): DocumentPropertyListItem? {
 }
 
 private sealed interface RenderedValue {
-    data class Success(val raw: String) : RenderedValue
+    data object Empty : RenderedValue
+    data class Scalar(val raw: String) : RenderedValue
+    data class ListItems(val items: List<DocumentPropertyListItem>) : RenderedValue
     data class Failure(val message: String) : RenderedValue
 }
 
-private fun renderPropertyValue(value: DocumentPropertyValue): RenderedValue {
+private fun renderPropertyValue(value: DocumentPropertyValue?): RenderedValue {
     return when (value) {
-        is DocumentPropertyValue.Text -> RenderedValue.Success(quote(value.value))
+        null -> RenderedValue.Empty
+        is DocumentPropertyValue.Text -> if (value.value.isEmpty()) {
+            RenderedValue.Empty
+        } else {
+            RenderedValue.Scalar(encodeYamlText(value.value))
+        }
         is DocumentPropertyValue.ListValue -> {
             val invalidNumber = value.items.filterIsInstance<DocumentPropertyListItem.NumberValue>()
                 .firstOrNull { !NUMBER.matches(it.value) }
             if (invalidNumber != null) {
                 RenderedValue.Failure("Invalid numeric list item")
+            } else if (value.items.isEmpty()) {
+                RenderedValue.Empty
             } else {
-                RenderedValue.Success(value.items.joinToString(prefix = "[", postfix = "]") { item ->
-                    when (item) {
-                        is DocumentPropertyListItem.Text -> quote(item.value)
-                        is DocumentPropertyListItem.NumberValue -> item.value
-                    }
-                })
+                RenderedValue.ListItems(value.items)
             }
         }
-        is DocumentPropertyValue.NumberValue -> if (NUMBER.matches(value.value)) RenderedValue.Success(value.value) else RenderedValue.Failure("Number value cannot be empty or invalid")
-        is DocumentPropertyValue.BooleanValue -> RenderedValue.Success(value.value.toString())
-        is DocumentPropertyValue.DateValue -> if (isValidDate(value.value)) RenderedValue.Success(value.value) else RenderedValue.Failure("Date value cannot be empty or invalid")
-        is DocumentPropertyValue.DateTimeValue -> if (isValidDateTime(value.value)) RenderedValue.Success(value.value) else RenderedValue.Failure("Date-time value cannot be empty or invalid")
+        is DocumentPropertyValue.NumberValue -> when {
+            value.value.isEmpty() -> RenderedValue.Empty
+            NUMBER.matches(value.value) -> RenderedValue.Scalar(value.value)
+            else -> RenderedValue.Failure("Number value is invalid")
+        }
+        is DocumentPropertyValue.BooleanValue -> RenderedValue.Scalar(value.value.toString())
+        is DocumentPropertyValue.DateValue -> when {
+            value.value.isEmpty() -> RenderedValue.Empty
+            isValidDate(value.value) -> RenderedValue.Scalar(value.value)
+            else -> RenderedValue.Failure("Date value is invalid")
+        }
+        is DocumentPropertyValue.DateTimeValue -> when {
+            value.value.isEmpty() -> RenderedValue.Empty
+            isValidDateTime(value.value) -> RenderedValue.Scalar(value.value)
+            else -> RenderedValue.Failure("Date-time value is invalid")
+        }
     }
 }
 
-private fun replaceEntryValue(raw: String, entry: ParsedEntry, rendered: String): String {
-    val firstLineEnd = raw.indexOfAny(charArrayOf('\r', '\n'), entry.colon).let { if (it < 0) raw.length else it }
-    val afterColon = raw.substring(entry.colon + 1, firstLineEnd)
-    val (_, comment) = splitInlineComment(afterColon)
-    val prefixWhitespace = afterColon.takeWhile { it == ' ' || it == '\t' }.ifEmpty { " " }
-    val replacement = prefixWhitespace + rendered + comment
-    return raw.replaceRange(entry.colon + 1, entry.end, replacement + raw.substring(firstLineEnd, entry.end).takeLastWhile { it == '\r' || it == '\n' })
+private fun renderNewEntry(key: String, rendered: RenderedValue, lineEnding: String): String = when (rendered) {
+    RenderedValue.Empty -> "$key:$lineEnding"
+    is RenderedValue.Scalar -> "$key: ${rendered.raw}$lineEnding"
+    is RenderedValue.ListItems -> buildString {
+        append(key).append(':').append(lineEnding)
+        rendered.items.forEach { item ->
+            append("  - ").append(renderListItem(item, flowCollection = false)).append(lineEnding)
+        }
+    }
+    is RenderedValue.Failure -> error("A failed value cannot be rendered")
 }
 
-private fun validatePropertyKey(key: String): String? = when {
-    key.isEmpty() -> "Property key cannot be empty"
-    key != key.trim() -> "Property key cannot start or end with whitespace"
-    key.any { it == ':' || it == '#' || it == '\r' || it == '\n' } -> "Property key contains unsupported characters"
-    key.first() in "-?:,[]{}&*!|>'\"%@`" -> "Property key starts with an unsupported YAML indicator"
-    else -> null
+private fun replaceEntryValue(
+    raw: String,
+    entry: ParsedEntry,
+    value: DocumentPropertyValue?,
+    rendered: RenderedValue,
+    lineEnding: String,
+): String {
+    val firstLineEnd = raw.indexOfAny(charArrayOf('\r', '\n'), entry.colon).let { if (it < 0) raw.length else it }
+    val afterColon = raw.substring(entry.colon + 1, firstLineEnd)
+    val (oldToken, comment) = splitYamlInlineComment(afterColon)
+    val existingTerminator = when {
+        raw.substring(entry.start, entry.end).endsWith("\r\n") -> "\r\n"
+        raw.substring(entry.start, entry.end).endsWith("\n") -> "\n"
+        raw.substring(entry.start, entry.end).endsWith("\r") -> "\r"
+        else -> ""
+    }
+    val commentPrefix = if (comment.isEmpty()) "" else {
+        afterColon.takeWhile { it == ' ' || it == '\t' }.ifEmpty { " " } + comment.trimStart()
+    }
+    val replacement = when (rendered) {
+        RenderedValue.Empty -> commentPrefix + existingTerminator
+        is RenderedValue.Scalar -> {
+            val token = if (value is DocumentPropertyValue.Text) {
+                renderTextUsingExistingStyle(value.value, oldToken.trim())
+            } else {
+                rendered.raw
+            }
+            val whitespace = afterColon.takeWhile { it == ' ' || it == '\t' }.ifEmpty { " " }
+            whitespace + token + comment + existingTerminator
+        }
+        is RenderedValue.ListItems -> {
+            if (oldToken.trim().startsWith("[")) {
+                val items = rendered.items.joinToString(", ") { renderListItem(it, flowCollection = true) }
+                val whitespace = afterColon.takeWhile { it == ' ' || it == '\t' }.ifEmpty { " " }
+                whitespace + "[$items]" + comment + existingTerminator
+            } else {
+                val indentation = raw.substring(firstLineEnd, entry.end)
+                    .split(lineEnding)
+                    .firstOrNull { it.trimStart().startsWith("- ") }
+                    ?.takeWhile { it == ' ' || it == '\t' }
+                    .takeUnless { it.isNullOrEmpty() }
+                    ?: "  "
+                buildString {
+                    append(commentPrefix).append(lineEnding)
+                    rendered.items.forEachIndexed { index, item ->
+                        append(indentation).append("- ").append(renderListItem(item, flowCollection = false))
+                        if (index != rendered.items.lastIndex || existingTerminator.isNotEmpty()) append(lineEnding)
+                    }
+                }
+            }
+        }
+        is RenderedValue.Failure -> error("A failed value cannot be rendered")
+    }
+    return raw.replaceRange(entry.colon + 1, entry.end, replacement)
 }
+
+private fun renderListItem(item: DocumentPropertyListItem, flowCollection: Boolean): String = when (item) {
+    is DocumentPropertyListItem.Text -> encodeYamlText(item.value, flowCollection)
+    is DocumentPropertyListItem.NumberValue -> item.value
+}
+
+private fun renderTextUsingExistingStyle(value: String, existingToken: String): String = when {
+    existingToken.length >= 2 && existingToken.first() == '\'' && existingToken.last() == '\'' ->
+        "'${value.replace("'", "''")}'"
+    existingToken.length >= 2 && existingToken.first() == '"' && existingToken.last() == '"' ->
+        encodeDoubleQuotedYamlText(value)
+    else -> encodeYamlText(value)
+}
+
 
 private fun isYamlSpecialNumber(value: String): Boolean =
     value.equals(".nan", true) || value.equals(".inf", true) || value.equals("+.inf", true) || value.equals("-.inf", true)
@@ -390,66 +506,11 @@ private fun isValidDateTime(value: String): Boolean {
         )
 }
 
-private fun splitInlineComment(raw: String): Pair<String, String> {
-    var quote: Char? = null
-    var escaped = false
-    raw.forEachIndexed { index, char ->
-        if (escaped) escaped = false
-        else if (char == '\\' && quote == '"') escaped = true
-        else if (quote != null && char == quote) quote = null
-        else if (quote == null && (char == '\'' || char == '"')) quote = char
-        else if (quote == null && char == '#' && (index == 0 || raw[index - 1].isWhitespace())) {
-            var commentStart = index
-            while (commentStart > 0 && raw[commentStart - 1].isWhitespace()) commentStart--
-            return raw.substring(0, commentStart) to raw.substring(commentStart)
-        }
-    }
-    return raw to ""
-}
-
-private fun splitInlineList(raw: String): List<String>? {
-    val result = mutableListOf<String>()
-    var start = 0
-    var quote: Char? = null
-    var escaped = false
-    raw.forEachIndexed { index, char ->
-        if (escaped) escaped = false
-        else if (char == '\\' && quote == '"') escaped = true
-        else if (quote != null && char == quote) quote = null
-        else if (quote == null && (char == '\'' || char == '"')) quote = char
-        else if (quote == null && char == ',') {
-            result += raw.substring(start, index)
-            start = index + 1
-        }
-    }
-    if (quote != null) return null
-    result += raw.substring(start)
-    return result
-}
-
 private fun parseQuoted(raw: String): String? {
     if (raw.length < 2) return null
     if (raw.first() == '\'' && raw.last() == '\'') return raw.substring(1, raw.length - 1).replace("''", "'")
     if (raw.first() != '"' || raw.last() != '"') return null
-    val body = raw.substring(1, raw.length - 1)
-    val result = StringBuilder()
-    var index = 0
-    while (index < body.length) {
-        if (body[index] != '\\') result.append(body[index++])
-        else {
-            if (++index >= body.length) return null
-            result.append(when (body[index++]) { 'n' -> '\n'; 'r' -> '\r'; 't' -> '\t'; '"' -> '"'; '\\' -> '\\'; else -> return null })
-        }
-    }
-    return result.toString()
-}
-
-private fun quote(value: String): String = buildString {
-    append('"')
-    value.forEach { char ->
-        append(when (char) { '\\' -> "\\\\"; '"' -> "\\\""; '\n' -> "\\n"; '\r' -> "\\r"; '\t' -> "\\t"; else -> char })
-    }
-    append('"')
+    return decodeDoubleQuotedYamlTextOrNull(raw)
 }
 
 private fun splitLines(raw: String): List<SourceLine> {

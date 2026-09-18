@@ -3,11 +3,16 @@ package com.ninetag.machum.external
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import com.ninetag.machum.entity.BASE_FOLDER_PATH
 import com.ninetag.machum.entity.DEFAULT_PROJECT_FOLDERS
+import com.ninetag.machum.entity.DocumentPropertyDefinitionChange
+import com.ninetag.machum.entity.DocumentPropertyType
 import com.ninetag.machum.entity.FolderConfig
 import com.ninetag.machum.entity.FolderType
 import com.ninetag.machum.entity.PlotStage
 import com.ninetag.machum.entity.ProjectConfig
+import com.ninetag.machum.entity.documentPropertyDefaults
+import com.ninetag.machum.entity.withDefaultBaseFolder
 import io.github.vinceglb.filekit.PlatformFile
+import io.github.vinceglb.filekit.readString
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -17,11 +22,20 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import okio.Path.Companion.toPath
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -31,6 +45,109 @@ class FileManagerProjectConfigTest {
 
     private val json = Json {
         ignoreUnknownKeys = true
+    }
+
+    @Test
+    fun propertyDefinitionWritePreservesUnknownFieldsAndRejectsExternalKnownChanges() = runBlocking {
+        val testRoot = Files.createTempDirectory("machum-property-config").toFile()
+        val projectDirectory = File(testRoot, "Project").apply { mkdirs() }
+        File(projectDirectory, "Drafts").mkdirs()
+        val existingDocument = File(projectDirectory, "Drafts/Existing.md").apply { writeText("existing body") }
+        val configFile = File(projectDirectory, ".machum.json").apply {
+            writeText(
+                """{"folders":{"":{"type":"default","plotEnabled":true,"autoTags":[],"defaultPropertyKeys":[],"futureFolder":"keep"},"Drafts":{"type":"general","plotEnabled":false,"autoTags":[],"defaultPropertyKeys":[]}},"fileIds":{},"propertyTypes":{},"futureRoot":{"value":1}}""",
+            )
+        }
+        val dataStoreScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val dataStore = PreferenceDataStoreFactory.createWithPath(scope = dataStoreScope) {
+            File(testRoot, "preferences.preferences_pb").absolutePath.toPath()
+        }
+
+        try {
+            val fileManager = FileManager(dataStore)
+            fileManager.openProjectThroughWorkspaceFlow(testRoot, projectDirectory, expectConfirmation = false)
+            withTimeout(5_000.milliseconds) { fileManager.projectConfig.filterNotNull().first() }
+            val existingAfterWorkspaceOpen = existingDocument.readText()
+
+            fileManager.updateDocumentPropertyDefinition(
+                "Drafts",
+                DocumentPropertyDefinitionChange(null, "rating", DocumentPropertyType.NUMBER),
+            )
+            assertEquals(existingAfterWorkspaceOpen, existingDocument.readText())
+
+            val raw = Json.parseToJsonElement(configFile.readText()).jsonObject
+            assertEquals(1, raw.getValue("futureRoot").jsonObject.getValue("value").jsonPrimitive.content.toInt())
+            assertEquals(
+                "keep",
+                raw.getValue("folders").jsonObject.getValue("").jsonObject
+                    .getValue("futureFolder").jsonPrimitive.content,
+            )
+            assertEquals(
+                "number",
+                raw.getValue("propertyTypes").jsonObject.getValue("rating").jsonPrimitive.content,
+            )
+
+            fileManager.updateDocumentPropertyDefinitions(
+                "Drafts",
+                listOf(
+                    DocumentPropertyDefinitionChange(null, "aliases", DocumentPropertyType.LIST),
+                    DocumentPropertyDefinitionChange(null, "source", DocumentPropertyType.TEXT),
+                    DocumentPropertyDefinitionChange(null, "id", DocumentPropertyType.TEXT),
+                    DocumentPropertyDefinitionChange(null, "plot", DocumentPropertyType.TEXT),
+                    DocumentPropertyDefinitionChange(null, "tags", DocumentPropertyType.TAGS),
+                ),
+            )
+            val defaults = fileManager.projectConfig.value!!.documentPropertyDefaults("Drafts")
+            assertEquals(listOf("rating", "aliases", "source"), defaults.defaultPropertyKeys)
+            assertTrue(defaults.propertyTypes.keys.none { it in setOf("id", "plot", "tags") })
+            val drafts = fileManager.listFolders(PlatformFile(projectDirectory)).single { it.key.relativePath == "Drafts" }
+            val created = assertNotNull(fileManager.createProjectFile(drafts, "New note"))
+            val createdRaw = created.platformFile.readString()
+            assertTrue(Regex("(?m)^rating:$").containsMatchIn(createdRaw))
+            assertTrue(Regex("(?m)^aliases:$").containsMatchIn(createdRaw))
+            assertTrue(Regex("(?m)^source:$").containsMatchIn(createdRaw))
+            assertEquals(1, Regex("(?m)^id:").findAll(createdRaw).count())
+            assertFalse(Regex("(?m)^plot:").containsMatchIn(createdRaw))
+            assertEquals(listOf("Project"), NoteFile.parse(createdRaw).tags)
+            assertFalse(createdRaw.contains("New note"), "file name must not be copied into aliases")
+
+            val changedBeforeCreation = fileManager.projectConfig.value!!.let { current ->
+                current.copy(
+                    folders = current.folders + (
+                        "Drafts" to current.folders.getValue("Drafts").copy(
+                            defaultPropertyKeys = current.folders.getValue("Drafts").defaultPropertyKeys + "late",
+                        )
+                    ),
+                    propertyTypes = current.propertyTypes + ("late" to DocumentPropertyType.TEXT),
+                )
+            }
+            configFile.writeText(Json { encodeDefaults = true }.encodeToString(changedBeforeCreation))
+            val createdAfterExternalChange = assertNotNull(fileManager.createProjectFile(drafts, "After external change"))
+            assertTrue(Regex("(?m)^late:$").containsMatchIn(createdAfterExternalChange.platformFile.readString()))
+            assertEquals(
+                changedBeforeCreation.withDefaultBaseFolder(),
+                fileManager.projectConfig.value,
+                "file creation must refresh the live config from disk before applying defaults",
+            )
+
+            val external = fileManager.projectConfig.value!!.copy(
+                propertyTypes = fileManager.projectConfig.value!!.propertyTypes +
+                    ("external" to DocumentPropertyType.TEXT),
+            )
+            val externalRaw = Json { encodeDefaults = true }.encodeToString(external)
+            configFile.writeText(externalRaw)
+            assertFailsWith<IllegalStateException> {
+                fileManager.updateDocumentPropertyDefinition(
+                    "Drafts",
+                    DocumentPropertyDefinitionChange(null, "after-external", DocumentPropertyType.TEXT),
+                )
+            }
+            assertEquals(externalRaw, configFile.readText())
+        } finally {
+            dataStoreScope.cancel()
+            testRoot.deleteRecursively()
+        }
+        Unit
     }
 
     @Test
@@ -176,8 +293,9 @@ class FileManagerProjectConfigTest {
             fileManager.setFolderConfig("Character", FolderConfig(type = FolderType.GENERAL))
 
             val persistedText = configFile.readText()
-            assertTrue(persistedText.contains("\"type\": \"default\""))
-            assertTrue(persistedText.contains("\"plotEnabled\": true"))
+            val persisted = Json { ignoreUnknownKeys = true }.decodeFromString<ProjectConfig>(persistedText)
+            assertEquals(FolderType.DEFAULT, persisted.folders[BASE_FOLDER_PATH]?.type)
+            assertEquals(true, persisted.folders["Scene"]?.plotEnabled)
             assertTrue(!persistedText.contains("\"type\": \"numbered\""))
             assertTrue(!persistedText.contains("\"type\": \"plot\""))
         } finally {
@@ -204,6 +322,10 @@ class FileManagerProjectConfigTest {
             withTimeout(5_000.milliseconds) {
                 fileManager.projectConfig.filterNotNull().first()
             }
+            fileManager.updateDocumentPropertyDefinition(
+                BASE_FOLDER_PATH,
+                DocumentPropertyDefinitionChange(null, "aliases", DocumentPropertyType.LIST),
+            )
 
             val created = fileManager.setFile(PlatformFile(projectDirectory))
 
@@ -212,6 +334,7 @@ class FileManagerProjectConfigTest {
                 PlotStage.PROLOGUE,
                 NoteFile.parse(created.file.readText()).plotStage,
             )
+            assertTrue(Regex("(?m)^aliases:$").containsMatchIn(created.file.readText()))
         } finally {
             dataStoreScope.cancel()
             testRoot.deleteRecursively()
@@ -441,6 +564,16 @@ class FileManagerProjectConfigTest {
                     fileIds = mapOf("hero-id" to "Character/Hero.md"),
                 )
             }
+            val configFile = File(projectDirectory, ".machum.json")
+            val configRaw = Json.parseToJsonElement(configFile.readText()).jsonObject
+            val foldersRaw = configRaw.getValue("folders").jsonObject
+            val characterRaw = foldersRaw.getValue("Character").jsonObject
+            configFile.writeText(Json.encodeToString(
+                JsonElement.serializer(),
+                JsonObject(configRaw + ("folders" to JsonObject(
+                    foldersRaw + ("Character" to JsonObject(characterRaw + ("futureFolder" to JsonPrimitive("keep")))),
+                ))),
+            ))
             fileManager.setPreferences(
                 fileManager.bookmarks.value.copy(
                     fileData = PlatformFile(heroFile),
@@ -459,12 +592,41 @@ class FileManagerProjectConfigTest {
             assertTrue(!characterDirectory.exists())
             assertNull(fileManager.projectConfig.value?.folders?.get("Character"))
             assertEquals(folderConfig, fileManager.projectConfig.value?.folders?.get("Renamed Character"))
+            val renamedRaw = Json.parseToJsonElement(configFile.readText()).jsonObject
+            assertEquals(
+                "keep",
+                renamedRaw.getValue("folders").jsonObject.getValue("Renamed Character").jsonObject
+                    .getValue("futureFolder").jsonPrimitive.content,
+            )
             assertEquals(
                 "Renamed Character/Hero.md",
                 fileManager.projectConfig.value?.fileIds?.get("hero-id"),
             )
             assertEquals("Renamed Character/Hero.md", fileManager.bookmarks.value.fileRelativePath)
             assertEquals("Renamed Character/Hero.md", renamed.selectedFileKey?.relativePath)
+
+            val beforeExternalRename = Json.parseToJsonElement(configFile.readText()).jsonObject
+            val externalRaw = Json.encodeToString(
+                JsonElement.serializer(),
+                JsonObject(
+                    beforeExternalRename + ("propertyTypes" to JsonObject(
+                        beforeExternalRename.getValue("propertyTypes").jsonObject +
+                            ("external" to JsonPrimitive("text")),
+                    )),
+                ),
+            )
+            configFile.writeText(externalRaw)
+            assertNull(
+                fileManager.renameProjectFolder(
+                    folder = renamed.projectFolder,
+                    newName = "Another Name",
+                    folderConfig = folderConfig,
+                ),
+            )
+            assertEquals(externalRaw, configFile.readText())
+            assertTrue(File(projectDirectory, "Renamed Character/Hero.md").isFile)
+            assertFalse(File(projectDirectory, "Another Name").exists())
+            assertEquals(DocumentPropertyType.TEXT, fileManager.projectConfig.value?.propertyTypes?.get("external"))
 
             File(projectDirectory, "Existing").mkdirs()
             assertNull(

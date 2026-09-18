@@ -3,7 +3,9 @@
 공통 실행 지침은 [OpenAI 모델 가이드](https://developers.openai.com/api/docs/guides/latest-model)의 작업 완수·위임·검증 권고를 프로젝트에 맞게 적용한다. 아래 모델 배치는 사용자와 합의한 프로젝트 정책이다.
 
 - 주 에이전트는 복잡한 설계, 의사결정, 작업 조율과 최종 검토를 담당한다.
-- 기본 모델·추론 강도는 메인 `gpt-6-astra / medium`, 일반 서브에이전트 `gpt-5.6-sol / medium`, `spark_worker`는 `gpt-5.3-codex-spark / medium`, `hero_worker`는 `gpt-6-astra / medium`, `code_reviewer`는 `gpt-6-astra / high`로 운용한다. 역할별 모델·추론 강도는 `.codex/agents/*.toml`에 명시하며 `ultra`를 기본값으로 사용하지 않는다.
+- 기본 모델·추론 강도는 메인 `gpt-5.6-sol / high`, 일반 서브에이전트 `gpt-5.6-sol / medium`, `spark_worker`는 `gpt-5.6-luna / medium`, `hero_worker`는 `gpt-5.6-sol / high`, `code_reviewer`는 `gpt-5.6-sol / xhigh`로 운용한다. 메인·일반 서브에이전트 기본값은 `.codex/config.toml`, 역할별 모델·추론 강도는 `.codex/agents/*.toml`에 명시하며 `ultra`를 기본값으로 사용하지 않는다.
+- 2026-09-14 모델 변경: 위 Sol 추론 강도는 복합 구현·설계 및 독립 검토 품질을 우선한 시작 설정이다. 모델 간 동등 성능을 보장하는 환산값은 아니며, 대표 구현·저장 동시성·코드 검토 작업의 결함 누락·재작업·시간·토큰 사용을 비교해 조정한다. `max`는 기본값으로 사용하지 않는다. 지원 범위와 조정 근거는 [GPT-5.6 공식 가이드](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.6)를 따른다.
+- 2026-09-18 모델 변경: 현재 라이선스에서 Spark 모델을 사용할 수 없어 빠른 소규모 구현·탐색 역할인 `spark_worker`의 모델을 `gpt-5.6-luna / medium`으로 교체했다. 역할명과 배정 기준은 기존 자동화·문서 호환을 위해 유지한다.
 - 사용자 의도와 완료 조건에 따라 이미 승인되었거나 요청에 포함된 작업을 끝까지 수행한다. 구현 요청을 계획 제시만으로 끝내지 않으며, 검토·수정 준비 요청은 그 범위의 산출물을 완성한다. 일상적인 가역적 판단은 자율적으로 하고 중요한 누락 정보가 있을 때만 질문한다. 답변에 의존하지 않는 작업은 계속한다.
 - 시스템·개발자 지침과 실제 권한 안에서 사용자의 명시적 지시를 로컬 지침과 스킬의 일반 가이드보다 우선한다. 스킬 때문에 중단하거나 승인을 요청하면 정확한 SKILL.md 경로와 해당 지시, 적용 이유를 밝힌다. 이미 승인된 작업에 중복 승인을 요구하지 않는다.
 - 작업 중 추가 지시는 기존 목표에 병합한다. 사용자가 목표를 취소하거나 대체하지 않는 한 질문에 답한 뒤 기존 작업을 이어간다. 보고는 결과·근거·남은 위험을 간결하게 전달하고 실제 실행하지 않은 검증을 성공으로 표현하지 않는다.
@@ -26,3 +28,25 @@
 - 이후 사용자가 지시하는 세션 운영 정책은 이 문서에 계속 병합한다.
 - 설계 문서의 같은 정책은 한 기준 문서에서 관리하고 다른 문서는 참조한다. 최신 명시 합의로 해소되지 않은 내용 충돌은 임의로 선택하지 않고 사용자에게 질문한다. 답변을 기다리는 동안 충돌과 무관한 중복 정리는 계속한다.
 
+## 서브에이전트의 graphify·ponytail 활용
+
+- 코드 탐색·영향 범위 분석을 맡은 서브에이전트는 `graphify-out/graph.json`이 있으면 `graphify query`, `graphify path`, `graphify explain`으로 범위를 먼저 좁힌 뒤 현재 소스와 diff를 확인한다.
+- graphify 결과는 탐색 보조 자료다. 그래프에 아직 반영되지 않은 미커밋 변경이 있을 수 있으므로 최종 판단은 현재 소스와 diff를 기준으로 한다.
+- 여러 에이전트가 동시에 `graphify update .`를 실행하지 않는다. 코드 변경과 검증이 합쳐진 뒤 주 에이전트 또는 명시적으로 지정된 한 담당자만 한 번 실행한다.
+- `spark_worker`와 `hero_worker`는 기존 공통 함수·컴포넌트와 표준 라이브러리·플랫폼 기능을 먼저 찾고, ponytail 원칙에 따라 요구사항을 충족하는 가장 작은 변경을 선택한다. 불필요한 추상화·의존성·미래 확장용 구조를 추가하지 않는다.
+- ponytail은 입력 검증, rollback, 데이터 무결성, 보안, 접근성, 사용자가 요구한 기능과 영향 범위에 필요한 테스트를 생략하는 근거로 사용하지 않는다.
+- `code_reviewer`는 정확성·동시성·부분 실패·데이터 손실 검토를 우선한다. 과도한 복잡도는 확인된 결함과 구분해 선택적 개선으로 보고하며, `ponytail-review`는 부모가 검토 범위에 명시한 경우에만 적용한다.
+- 읽기 전용 탐색·검토 담당자는 graphify 산출물이나 소스 파일을 수정하지 않고 `graphify update .`도 실행하지 않는다.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- Dirty graphify-out/ files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, the parent or one explicitly assigned update owner runs `graphify update .` once after concurrent changes are integrated and verified (AST-only, no API cost).

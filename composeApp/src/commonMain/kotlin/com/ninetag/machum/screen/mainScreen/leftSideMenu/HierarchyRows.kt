@@ -1,5 +1,6 @@
 package com.ninetag.machum.screen.mainScreen.leftSideMenu
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.LocalIndication
@@ -14,6 +15,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -34,6 +36,8 @@ import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ninetag.machum.theme.WorkspaceUiMetrics
+import com.ninetag.machum.entity.PlotStage
+import com.ninetag.machum.external.FolderKey
 import com.ninetag.machum.screen.common.DrawerDropdownMenu
 import com.ninetag.machum.screen.common.PopupUiMetrics
 
@@ -48,12 +52,15 @@ internal fun HierarchyGroupRow(
     hasChildren: Boolean,
     createEnabled: Boolean = true,
     highlighted: Boolean = false,
+    dropAvailable: Boolean = false,
+    dropHovered: Boolean = false,
     selected: Boolean = false,
     onContextMenu: (() -> Unit)? = null,
     nameEditor: (@Composable () -> Unit)? = null,
+    modifier: Modifier = Modifier,
 ) {
     val guide = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.42f)
-    Box(Modifier.fillMaxWidth().hierarchyDepthGuides(depth, guide)
+    Box(modifier.fillMaxWidth().hierarchyDepthGuides(depth, guide)
         .then(if (expanded && hasChildren) Modifier.groupConnectionGuide(depth, guide, header = true) else Modifier)) {
         Surface(
             modifier = Modifier.fillMaxWidth().padding(start = WorkspaceUiMetrics.hierarchyIndentStep * depth)
@@ -64,14 +71,24 @@ internal fun HierarchyGroupRow(
                     } else false
                 }
                 .semantics {
-                    stateDescription = if (!hasChildren) "빈 구분" else if (expanded) "펼쳐짐" else "접힘"
+                    stateDescription = buildString {
+                        append(if (!hasChildren) "빈 구분" else if (expanded) "펼쳐짐" else "접힘")
+                        if (dropHovered) append(", 파일 이동 위치")
+                        else if (dropAvailable) append(", 파일 이동 대상")
+                    }
                     this.selected = selected
                     onContextMenu?.let { open -> customActions = listOf(CustomAccessibilityAction("구분 메뉴") { open(); true }) }
                 }
                 .then(if (nameEditor == null && (hasChildren || onContextMenu != null)) Modifier.hierarchyClickable(
                     onClick = { if (hasChildren) onToggle() }, onContextMenu = onContextMenu,
                 ) else Modifier),
-            color = when { highlighted -> MaterialTheme.colorScheme.secondaryContainer; selected -> MaterialTheme.colorScheme.surfaceContainerHighest; else -> Color.Transparent },
+            color = when {
+                dropHovered -> MaterialTheme.colorScheme.secondaryContainer
+                highlighted || dropAvailable -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
+                selected -> MaterialTheme.colorScheme.surfaceContainerHighest
+                else -> Color.Transparent
+            },
+            tonalElevation = if (dropHovered) 2.dp else 0.dp,
             shape = MaterialTheme.shapes.small,
         ) {
             Row(Modifier.fillMaxWidth().heightIn(min = WorkspaceUiMetrics.hierarchyFolderRowHeight), verticalAlignment = Alignment.CenterVertically) {
@@ -113,6 +130,10 @@ internal fun HierarchyDocumentRow(
     trailingAction: (@Composable () -> Unit)? = null,
     groupChild: Boolean = false,
     onTrashRequested: (() -> Unit)? = null,
+    @Suppress("ModifierParameter") bodyDragModifier: Modifier = Modifier,
+    showMenuAction: Boolean = false,
+    contextMenuOnLongPress: Boolean = true,
+    moveDragging: Boolean = false,
 ) {
     var menuExpanded by remember(label) { mutableStateOf(false) }
     val openMenu: (() -> Unit)? = onTrashRequested?.let { { menuExpanded = true } }
@@ -130,21 +151,45 @@ internal fun HierarchyDocumentRow(
                     } else false
                 }.semantics {
                     this.selected = selected
+                    if (moveDragging) stateDescription = "파일 이동 중"
                     openMenu?.let { open -> customActions = listOf(CustomAccessibilityAction("파일 메뉴") { open(); true }) }
-                }.hierarchyClickable(onClick, onContextMenu = openMenu),
-            color = if (selected) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Transparent,
+                }.hierarchyClickable(
+                    onClick = onClick,
+                    onContextMenu = openMenu,
+                    onLongClick = openMenu.takeIf { contextMenuOnLongPress },
+                ),
+            color = when {
+                moveDragging -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f)
+                selected -> MaterialTheme.colorScheme.surfaceContainerHighest
+                else -> Color.Transparent
+            },
             shape = MaterialTheme.shapes.small,
+            border = if (moveDragging) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
+            tonalElevation = if (moveDragging) 2.dp else 0.dp,
         ) {
             Row(Modifier.fillMaxWidth().heightIn(min = WorkspaceUiMetrics.hierarchyFolderRowHeight), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(WorkspaceUiMetrics.hierarchyActionSize).then(dragModifier), contentAlignment = Alignment.Center) {
-                    Icon(Icons.Default.Description, dragDescription, Modifier.size(WorkspaceUiMetrics.hierarchyIconSize).testTag("hierarchy-file-icon:$label"),
-                        tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(Modifier.weight(1f).then(bodyDragModifier), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(WorkspaceUiMetrics.hierarchyActionSize).then(dragModifier), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.Description, dragDescription, Modifier.size(WorkspaceUiMetrics.hierarchyIconSize).testTag("hierarchy-file-icon:$label"),
+                            tint = if (selected || moveDragging) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Column(Modifier.weight(1f).padding(start = 2.dp, end = 8.dp)) {
+                        Text(label, modifier = Modifier.testTag("hierarchy-label:$label"), style = WorkspaceUiMetrics.secondaryTextStyle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        supportingText?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                    }
                 }
-                Column(Modifier.weight(1f).padding(start = 2.dp, end = 8.dp)) {
-                    Text(label, modifier = Modifier.testTag("hierarchy-label:$label"), style = WorkspaceUiMetrics.secondaryTextStyle, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    supportingText?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                if (trailingAction != null || (showMenuAction && openMenu != null)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        trailingAction?.invoke()
+                        if (showMenuAction && openMenu != null) HierarchyIconButton(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "$label 파일 메뉴",
+                            onClick = openMenu,
+                        )
+                    }
+                } else {
+                    Spacer(Modifier.size(WorkspaceUiMetrics.hierarchyFolderRowHeight))
                 }
-                if (trailingAction != null) trailingAction() else Spacer(Modifier.size(WorkspaceUiMetrics.hierarchyFolderRowHeight))
             }
         }
         DrawerDropdownMenu(menuExpanded && onTrashRequested != null, { menuExpanded = false }, PopupUiMetrics.MenuWidth) {
@@ -156,6 +201,12 @@ internal fun HierarchyDocumentRow(
         }
     }
 }
+
+internal data class HierarchyFileMoveDestination(
+    val label: String,
+    val folderKey: FolderKey,
+    val plotStage: PlotStage?,
+)
 
 /** Owns hierarchy action geometry and icon rendering on both Desktop and touch UI. */
 @Composable

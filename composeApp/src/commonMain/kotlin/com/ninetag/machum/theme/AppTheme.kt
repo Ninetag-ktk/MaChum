@@ -47,12 +47,16 @@ fun AppTheme(
         ContrastLevel.High -> if (darkTheme) highContrastDarkColorScheme else highContrastLightColorScheme
     }
     val semanticColors = if (darkTheme) darkSemanticColors else lightSemanticColors
+    val fontFamily = customFontFamily()
+    val typography = remember(fontFamily) {
+        Typography().withFontFamily(fontFamily).withPlatformUiSizes()
+    }
 
     CompositionLocalProvider(LocalSemanticColors provides semanticColors) {
         MaterialTheme(
             colorScheme = colorScheme,
             shapes = workspaceShapes,
-            typography = Typography().withFontFamily(customFontFamily()).withPlatformUiSizes(),
+            typography = typography,
             content = content
         )
     }

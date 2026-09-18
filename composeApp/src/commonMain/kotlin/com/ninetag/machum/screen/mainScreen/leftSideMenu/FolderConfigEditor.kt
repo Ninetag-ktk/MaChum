@@ -34,6 +34,8 @@ import com.ninetag.machum.entity.normalizeTags
 import com.ninetag.machum.screen.common.PopupUiMetrics
 
 internal class FolderConfigEditorState(initialConfig: FolderConfig) {
+    private val defaultPropertyKeys = initialConfig.defaultPropertyKeys
+
     var type by mutableStateOf(initialConfig.type)
         private set
 
@@ -50,6 +52,7 @@ internal class FolderConfigEditorState(initialConfig: FolderConfig) {
             type = type,
             plotEnabled = plotEnabled,
             autoTags = autoTags,
+            defaultPropertyKeys = defaultPropertyKeys,
         )
 
     fun selectType(type: FolderType) {

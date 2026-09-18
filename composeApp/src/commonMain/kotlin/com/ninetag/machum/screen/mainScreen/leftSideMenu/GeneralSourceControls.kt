@@ -22,6 +22,7 @@ import com.ninetag.machum.external.*
 import com.ninetag.machum.screen.common.PolicyDialog
 import com.ninetag.machum.screen.common.PopupUiMetrics
 import com.ninetag.machum.theme.WorkspaceUiMetrics
+import com.ninetag.machum.theme.platformUsesTouchUi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
@@ -52,6 +53,14 @@ internal fun GeneralSourceControls(
     val targets = remember { mutableMapOf<String, Rect>() }
     var hover by remember { mutableStateOf<String?>(null) }
     val latestState by rememberUpdatedState(state)
+    val sortedGroups = remember(state.groups) { state.groups.sorted() }
+    val groups: List<String?> = remember(sortedGroups) { sortedGroups + null }
+    val filesByGroup = remember(state.files) {
+        buildMap {
+            putAll(state.files.groupBy { it.value })
+            put(null, state.files.filter { it.value.isNullOrEmpty() })
+        }
+    }
     LaunchedEffect(currentFile?.key) {
         if (!busy && !confirmation && !applied) renaming = null
     }
@@ -95,9 +104,8 @@ internal fun GeneralSourceControls(
             Text(message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             if (!confirmation && plan != null) TextButton(enabled = !busy, onClick = { plan?.let(::execute) }) { Text("남은 적용 다시 시도") }
         }
-        val groups: List<String?> = state.groups.sorted() + listOf(null)
         groups.forEach { group ->
-            val entries = state.files.filter { if (group == null) it.value.isNullOrEmpty() else it.value == group }
+            val entries = filesByGroup[group].orEmpty()
             key(group) {
                 Column(Modifier.fillMaxWidth().then(if (group == null) Modifier else Modifier.onGloballyPositioned { targets[group] = it.boundsInRoot() })) {
                     GeneralSourceTreeRow(
@@ -157,8 +165,10 @@ internal fun GeneralSourceControls(
                             onTrashRequested = if (busy || (applied && plan != null)) null else { { onFileTrashRequested(entry.file) } },
                             dragModifier = Modifier.onGloballyPositioned { bounds = it.boundsInRoot() }.then(drag),
                             dragDescription = "${entry.file.key.fileName} 구분 이동 핸들", supportingText = entry.error,
-                            trailingAction = {
-                                if (currentFile?.key == entry.file.key) Box {
+                            showMenuAction = platformUsesTouchUi,
+                            contextMenuOnLongPress = false,
+                            trailingAction = if (currentFile?.key == entry.file.key) {{
+                                Box {
                                     HierarchyIconButton(
                                         contentDescription = "${entry.file.key.fileName} 구분 변경",
                                         imageVector = Icons.AutoMirrored.Filled.DriveFileMove,
@@ -166,13 +176,13 @@ internal fun GeneralSourceControls(
                                         enabled = !busy,
                                     )
                                     DrawerDropdownMenu(moveMenu, { moveMenu = false }, PopupUiMetrics.MenuWidth) {
-                                        state.groups.sorted().forEach { target ->
+                                        sortedGroups.forEach { target ->
                                             DropdownMenuItem(text = { Text(target) }, enabled = target != entry.value,
                                                 onClick = { moveMenu = false; prepare({ onPlanAssign(entry.file, target) }, false) })
                                         }
                                     }
-                                } else Spacer(Modifier.size(WorkspaceUiMetrics.hierarchyFolderRowHeight))
-                            },
+                                }
+                            }} else null,
                         )
                     } }
                     }

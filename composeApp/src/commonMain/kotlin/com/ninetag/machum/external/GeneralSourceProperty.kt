@@ -1,38 +1,36 @@
 package com.ninetag.machum.external
 
-import kotlinx.serialization.json.Json
-
 /** A missing key is null; unsupported YAML is preserved and never silently converted. */
 data class GeneralSourceValue(val value: String?, val error: String? = null)
 
 /** Replaces only the source line, preserving all other Markdown bytes and line endings. */
 object GeneralSourceProperty {
     private val sourceKey = Regex("^(?:source|\"source\"|'source')\\s*:")
-    private val nonText = Regex("(?i)(?:null|~|true|false|yes|no|on|off|[-+]?(?:[0-9][0-9_]*(?:\\.[0-9_]*)?(?:[eE][-+]?[0-9]+)?|\\.[0-9]+)|[0-9]{4}-[0-9]{2}-[0-9]{2}.*|[-+]?\\.(?:inf|nan))")
-    private val nonDecimalNumber = Regex("(?i)[-+]?(?:0[xob][0-9a-f_]+|[0-9][0-9_]*(?::[0-9_]+)+(?:\\.[0-9_]*)?)")
     private data class Located(val start: Int, val end: Int, val text: String, val newline: String, val insertAt: Int)
 
     fun read(raw: String): GeneralSourceValue = runCatching {
         val source = locate(raw) ?: return@runCatching GeneralSourceValue(null)
         if (source.start < 0) return@runCatching GeneralSourceValue(null)
         val value = source.text.substringAfter(':').trim()
+        if (value.isEmpty() || value.startsWith('#')) return@runCatching GeneralSourceValue("")
         if (value.startsWith('"')) {
             // JSON quoting is a YAML subset. Unknown YAML escapes stay untouched.
             val match = Regex("^\"(?:[^\"\\\\]|\\\\.)*\"").find(value)
                 ?: error("source 문자열의 따옴표를 확인해 주세요.")
             val trailing = value.substring(match.value.length).trim()
             check(trailing.isEmpty() || trailing.startsWith('#')) { "source는 텍스트 값 하나여야 합니다." }
-            GeneralSourceValue(Json.decodeFromString<String>(match.value))
+            GeneralSourceValue(
+                decodeDoubleQuotedYamlTextOrNull(match.value)
+                    ?: error("source 문자열의 이스케이프를 확인해 주세요."),
+            )
         } else if (value.startsWith('\'')) {
             val match = Regex("^'(?:[^']|'')*'").find(value) ?: error("source 문자열의 따옴표를 확인해 주세요.")
             val trailing = value.substring(match.value.length).trim()
             check(trailing.isEmpty() || trailing.startsWith('#')) { "source는 텍스트 값 하나여야 합니다." }
-            GeneralSourceValue(match.value.drop(1).dropLast(1).replace("''", "'"))
+            GeneralSourceValue(decodeYamlText(match.value))
         } else {
             val plain = value.substringBefore(" #").trim()
-            check(plain.isNotEmpty() && plain.first() !in "[{|>!&*#@`" &&
-                !nonText.matches(plain) && !nonDecimalNumber.matches(plain) &&
-                ": " !in plain && !plain.startsWith("- ") && !plain.startsWith("? ")) {
+            check(isSafeYamlPlainText(plain)) {
                 "source의 기존 비텍스트 값을 보존했습니다. 텍스트 값 하나로 직접 정리해 주세요."
             }
             GeneralSourceValue(plain)
@@ -44,7 +42,7 @@ object GeneralSourceProperty {
         check(previous.error == null) { previous.error.orEmpty() }
         if (previous.value == value) return raw
         val source = locate(raw)
-        val line = "source: " + Json.encodeToString(value)
+        val line = if (value.isEmpty()) "source:" else "source: ${encodeYamlText(value)}"
         if (source == null) {
             val bom = if (raw.startsWith('\uFEFF')) "\uFEFF" else ""
             val body = raw.removePrefix(bom)

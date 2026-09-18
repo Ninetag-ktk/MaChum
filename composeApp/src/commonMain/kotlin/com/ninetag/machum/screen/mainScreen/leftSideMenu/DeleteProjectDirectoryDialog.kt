@@ -43,7 +43,7 @@ internal fun DeleteProjectDirectoryDialog(
                         contentColor = MaterialTheme.colorScheme.onError,
                     ),
                 ) {
-                    Text("영구 삭제")
+                    Text("휴지통으로 이동")
                 }
             }
         },
@@ -64,7 +64,10 @@ internal fun DeleteProjectDirectoryDialog(
             } else {
                 "Markdown 파일 ${preview.markdownFiles.size}개가 포함되어 있습니다."
             }
-            Text("'$folderName'을 삭제합니다. $fileDescription 이 작업은 되돌릴 수 없습니다.")
+            Text(
+                "'$folderName'을 Vault 내부 휴지통으로 이동합니다. " +
+                    "$fileDescription 휴지통으로 이동한 지 30일이 지나면 영구 삭제됩니다."
+            )
         } else {
             val entries = preview.unsupportedEntries.take(5).joinToString(", ")
             Text(

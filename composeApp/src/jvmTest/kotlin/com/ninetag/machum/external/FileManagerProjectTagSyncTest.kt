@@ -1,6 +1,7 @@
 package com.ninetag.machum.external
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import com.ninetag.machum.entity.PlotStage
 import io.github.vinceglb.filekit.PlatformFile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -12,11 +13,13 @@ import kotlinx.coroutines.runBlocking
 import okio.Path.Companion.toPath
 import java.io.File
 import java.nio.file.Files
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -146,13 +149,47 @@ class FileManagerProjectTagSyncTest {
             assertTrue(rootFile.readText().endsWith("루트 본문"))
             assertTrue(characterFile.readText().endsWith("인물 본문"))
             assertIs<ProjectIndexState.Ready>(indexer.state.value)
+            val hierarchySnapshot = assertNotNull(result.hierarchySnapshot)
+            assertEquals(project.toString(), hierarchySnapshot.projectLocation)
+            assertEquals(
+                listOf(FolderKey.Base, FolderKey.of("Character")),
+                hierarchySnapshot.folders.map(ProjectFolder::key),
+            )
+            assertEquals(
+                setOf(FileKey.of("Root.md"), FileKey.of("Character/Hero.md")),
+                hierarchySnapshot.filesByFolder.values.flatten().map(ProjectFile::key).toSet(),
+            )
 
             indexer.prepare(project)
             val secondResult = indexer.index(project)
 
             assertEquals(0, secondResult.updated)
             assertEquals(2, secondResult.unchanged)
+            assertTrue(
+                assertNotNull(secondResult.hierarchySnapshot).activationGeneration >
+                    hierarchySnapshot.activationGeneration,
+            )
             assertIs<ProjectIndexState.Ready>(indexer.state.value)
+            assertNull(
+                indexer.takeHierarchySnapshot(
+                    project.toString(),
+                    hierarchySnapshot.activationGeneration,
+                ),
+                "a previous activation must not consume the current hierarchy snapshot",
+            )
+            assertNotNull(
+                indexer.takeHierarchySnapshot(
+                    project.toString(),
+                    secondResult.activationGeneration,
+                ),
+            )
+            assertNull(
+                indexer.takeHierarchySnapshot(
+                    project.toString(),
+                    secondResult.activationGeneration,
+                ),
+                "the same activation snapshot must be consumed only once",
+            )
         } finally {
             dataStoreScope.cancel()
             testRoot.deleteRecursively()
@@ -187,6 +224,67 @@ class FileManagerProjectTagSyncTest {
             assertEquals(1, indexed.count { it == '\uFEFF' })
             assertTrue(indexed.endsWith("---\r\n\r\n첫 줄\r\n둘째 줄"))
             assertEquals(listOf("프로젝트"), NoteFile.parse(indexed).tags)
+        } finally {
+            dataStoreScope.cancel()
+            testRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun projectIndexRetriesWhenTheFileChangesBetweenItsBodyAndModificationTimeReads() = runBlocking {
+        val testRoot = Files.createTempDirectory("machum-project-index-stable-mtime").toFile()
+        val projectDirectory = File(testRoot, "Project").apply { mkdirs() }
+        val note = File(projectDirectory, "Scene.md").apply {
+            writeText(
+                """---
+id: stable-id
+tags:
+  - Project
+plot: 1) 발단
+---
+
+scene""",
+            )
+        }
+        val dataStoreScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val dataStore = PreferenceDataStoreFactory.createWithPath(scope = dataStoreScope) {
+            File(testRoot, "preferences.preferences_pb").absolutePath.toPath()
+        }
+
+        try {
+            val fileManager = FileManager(dataStore)
+            val project = PlatformFile(projectDirectory)
+            fileManager.setPreferences(Bookmarks(projectData = project))
+            val modifiedReads = AtomicInteger()
+            fileManager.lastModifiedReader = {
+                when (modifiedReads.incrementAndGet()) {
+                    1 -> 100L
+                    2 -> {
+                        note.writeText(
+                            NoteFile.parse(note.readText())
+                                .withPlotStage(PlotStage.DEVELOPMENT)
+                                .inject(),
+                        )
+                        200L
+                    }
+                    else -> 200L
+                }
+            }
+            val indexer = ProjectIndexer(fileManager)
+            indexer.prepare(project)
+
+            val result = indexer.index(project)
+
+            assertEquals(0, result.failed)
+            assertEquals(4, modifiedReads.get())
+            val indexed = checkNotNull(
+                fileManager.workspaceMetadataIndex
+                    .snapshot(project, WorkspaceKind.PROJECT)
+                    ?.entries
+                    ?.get(FileKey.of(note.name)),
+            )
+            assertEquals(200L, indexed.modifiedAt)
+            assertEquals(PlotStage.DEVELOPMENT, indexed.plot?.stage)
         } finally {
             dataStoreScope.cancel()
             testRoot.deleteRecursively()

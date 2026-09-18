@@ -3,6 +3,7 @@ package com.ninetag.machum.external
 import android.content.Context
 import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
+import io.github.vinceglb.filekit.AndroidFile
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.dialogs.toAndroidUri
 import io.github.vinceglb.filekit.name
@@ -13,10 +14,82 @@ import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
 import kotlin.getValue
 
-private fun trashContext(): Context = object : KoinComponent { val context: Context by inject() }.context
+private object AndroidFileContext : KoinComponent {
+    val value: Context by inject()
+}
+
+private fun trashContext(): Context = AndroidFileContext.value
 private fun trashDocument(context: Context, file: PlatformFile): DocumentFile =
     DocumentFile.fromTreeUri(context, file.toAndroidUri("com.ninetag.machum.fileprovider"))
         ?: error("저장소 폴더를 읽지 못했습니다.")
+
+internal actual suspend fun listDirectoryEntries(
+    directory: PlatformFile,
+): List<PlatformDirectoryEntry> = withContext(Dispatchers.IO) {
+    when (val androidFile = directory.androidFile) {
+        is AndroidFile.FileWrapper -> androidFile.file.listFiles().orEmpty().map { child ->
+            PlatformDirectoryEntry(
+                platformFile = PlatformFile(child),
+                name = child.name,
+                isDirectory = child.isDirectory,
+            )
+        }
+
+        is AndroidFile.UriWrapper -> {
+            val context = trashContext()
+            val parentDocumentId = try {
+                DocumentsContract.getDocumentId(androidFile.uri)
+            } catch (_: IllegalArgumentException) {
+                DocumentsContract.getTreeDocumentId(androidFile.uri)
+            }
+            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+                androidFile.uri,
+                parentDocumentId,
+            )
+            context.contentResolver.query(
+                childrenUri,
+                DIRECTORY_ENTRY_PROJECTION,
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                val idIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                check(idIndex >= 0 && nameIndex >= 0 && mimeIndex >= 0) {
+                    "저장소가 파일 목록 메타데이터를 제공하지 않았습니다."
+                }
+                buildList {
+                    while (cursor.moveToNext()) {
+                        if (cursor.isNull(idIndex) || cursor.isNull(nameIndex)) continue
+                        val documentId = cursor.getString(idIndex)
+                        val name = cursor.getString(nameIndex)
+                        if (name.isNullOrBlank()) continue
+                        val mimeType = if (cursor.isNull(mimeIndex)) null else cursor.getString(mimeIndex)
+                        add(
+                            PlatformDirectoryEntry(
+                                platformFile = PlatformFile(
+                                    DocumentsContract.buildDocumentUriUsingTree(
+                                        androidFile.uri,
+                                        documentId,
+                                    ),
+                                ),
+                                name = name,
+                                isDirectory = mimeType == DocumentsContract.Document.MIME_TYPE_DIR,
+                            ),
+                        )
+                    }
+                }
+            } ?: error("저장소 파일 목록을 읽지 못했습니다.")
+        }
+    }
+}
+
+private val DIRECTORY_ENTRY_PROJECTION = arrayOf(
+    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+    DocumentsContract.Document.COLUMN_MIME_TYPE,
+)
 
 internal actual suspend fun validateWorkspaceTrashChild(parent: PlatformFile, child: PlatformFile): Unit = withContext(Dispatchers.IO) {
     validateWorkspaceTrashDocument(parent, child, directory = true)
@@ -87,9 +160,9 @@ internal actual suspend fun FileManager.createFile(
     name: String,
     content: String,
 ): PlatformFile? = withContext(Dispatchers.IO) {
-    val koin = object : KoinComponent { val context: Context by inject() }
+    val context = trashContext()
     val parentDoc = DocumentFile.fromTreeUri(
-        koin.context, parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"),
+        context, parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"),
     ) ?: return@withContext null
     val before = parentDoc.listFiles()
     val names = before.map { it.name.orEmpty().lowercase() }.toSet()
@@ -121,11 +194,9 @@ internal actual suspend fun FileManager.createFolder(
     name: String
 ): PlatformFile? = withContext(Dispatchers.IO) {
     try {
-        val koin = object : KoinComponent {
-            val context: Context by inject()
-        }
+        val context = trashContext()
         val parentDoc = DocumentFile.fromTreeUri(
-            koin.context,
+            context,
             parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"))
             ?:return@withContext null
         val existing = parentDoc.findFile(name)
@@ -143,11 +214,9 @@ internal actual suspend fun FileManager.setConfig(
     fileName: String,
 ): PlatformFile? = withContext(Dispatchers.IO) {
     try {
-        val koin = object : KoinComponent {
-            val context: Context by inject()
-        }
+        val context = trashContext()
         val parentDoc = DocumentFile.fromTreeUri(
-            koin.context,
+            context,
             parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"))
             ?:return@withContext null
         val existing = parentDoc.findFile(fileName)
@@ -161,10 +230,8 @@ internal actual suspend fun FileManager.setConfig(
 
 internal actual suspend fun FileManager.validPermission(file: PlatformFile): Boolean {
     return try {
-        val koin = object : KoinComponent {
-            val context: Context by inject()
-        }
-        koin.context.contentResolver
+        val context = trashContext()
+        context.contentResolver
             .persistedUriPermissions
             .any {
                 it.isReadPermission &&
@@ -178,10 +245,8 @@ internal actual suspend fun FileManager.validPermission(file: PlatformFile): Boo
 
 internal actual fun PlatformFile.getLastModified(): Long? {
     return try {
-        val koin = object : KoinComponent {
-            val context: Context by inject()
-        }
-        val cursor = koin.context.contentResolver.query(
+        val context = trashContext()
+        val cursor = context.contentResolver.query(
             toAndroidUri("com.ninetag.machum.fileprovider"),
             arrayOf(DocumentsContract.Document.COLUMN_LAST_MODIFIED),
             null, null, null
@@ -201,9 +266,9 @@ internal actual suspend fun FileManager.createFolderExclusive(
     parentDirectory: PlatformFile,
     name: String,
 ): PlatformFile? = withContext(Dispatchers.IO) {
-    val koin = object : KoinComponent { val context: Context by inject() }
+    val context = trashContext()
     val parent = DocumentFile.fromTreeUri(
-        koin.context, parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"),
+        context, parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"),
     ) ?: return@withContext null
     val before = parent.listFiles()
     if (before.any { it.name.orEmpty().equals(name, ignoreCase = true) }) return@withContext null
@@ -228,18 +293,16 @@ internal actual suspend fun FileManager.renameMarkdownExact(
     name: String,
 ): PlatformFile? = withContext(Dispatchers.IO) {
     try {
-        val koin = object : KoinComponent {
-            val context: Context by inject()
-        }
+        val context = trashContext()
         val parentDoc = DocumentFile.fromTreeUri(
-            koin.context,
+            context,
             parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"),
         ) ?: return@withContext null
         val extension = file.name.substringAfterLast('.', missingDelimiterValue = "md")
         val targetName = "$name.$extension"
         if (parentDoc.findFile(targetName) != null) return@withContext null
         val doc = DocumentFile.fromTreeUri(
-            koin.context,
+            context,
             file.toAndroidUri("com.ninetag.machum.fileprovider"),
         ) ?: return@withContext null
         if (!doc.renameTo(targetName)) return@withContext null
@@ -249,22 +312,68 @@ internal actual suspend fun FileManager.renameMarkdownExact(
     }
 }
 
+internal actual suspend fun moveProjectFileNative(
+    project: PlatformFile,
+    sourceParent: PlatformFile,
+    source: PlatformFile,
+    targetParent: PlatformFile,
+): PlatformFile = withContext(Dispatchers.IO) {
+    val context = trashContext()
+    val resolver = context.contentResolver
+    val projectDoc = trashDocument(context, project)
+    check(projectDoc.isDirectory) { "현재 Project 경로가 올바르지 않습니다." }
+    fun validatedProjectDirectory(directory: PlatformFile): DocumentFile {
+        val document = trashDocument(context, directory)
+        check(document.isDirectory && document.uri.authority == projectDoc.uri.authority) {
+            "Project 폴더가 올바르지 않습니다."
+        }
+        check(document.uri == projectDoc.uri || projectDoc.listFiles().any { child ->
+            child.isDirectory && child.uri == document.uri
+        }) { "Project 루트 또는 직속 폴더가 아닙니다." }
+        return document
+    }
+
+    val sourceDirectory = validatedProjectDirectory(sourceParent)
+    val targetDirectory = validatedProjectDirectory(targetParent)
+    check(sourceDirectory.uri != targetDirectory.uri) { "같은 폴더로 이동할 수 없습니다." }
+    val sourceDoc = trashDocument(context, source)
+    check(sourceDoc.isFile && !sourceDoc.isVirtual && sourceDoc.uri.authority == projectDoc.uri.authority &&
+        sourceDoc.name.orEmpty().endsWith(".md", ignoreCase = true) &&
+        sourceDirectory.listFiles().any { child -> child.isFile && child.uri == sourceDoc.uri }) {
+        "Project 폴더의 직속 Markdown 파일이 아닙니다."
+    }
+    val sourceName = sourceDoc.name ?: error("문서 이름을 읽지 못했습니다.")
+    check(targetDirectory.listFiles().none { child ->
+        child.name.orEmpty().equals(sourceName, ignoreCase = true)
+    }) { "대상 폴더에 같은 이름의 항목이 있습니다." }
+    requireTrashProviderFlag(context, sourceDoc, DocumentsContract.Document.FLAG_SUPPORTS_MOVE)
+
+    // Provider-native move only. Never emulate it with copy followed by deletion.
+    val movedUri = DocumentsContract.moveDocument(
+        resolver,
+        sourceDoc.uri,
+        sourceDirectory.uri,
+        targetDirectory.uri,
+    ) ?: error("저장소가 문서 이동을 거부했습니다.")
+    // Post-move verification belongs to the common transaction so a verification failure still
+    // has the returned handle needed for provider-native rollback.
+    PlatformFile(movedUri)
+}
+
 internal actual suspend fun FileManager.renameDirectoryExact(
     parentDirectory: PlatformFile,
     directory: PlatformFile,
     name: String,
 ): PlatformFile? = withContext(Dispatchers.IO) {
     try {
-        val koin = object : KoinComponent {
-            val context: Context by inject()
-        }
+        val context = trashContext()
         val parentDoc = DocumentFile.fromTreeUri(
-            koin.context,
+            context,
             parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"),
         ) ?: return@withContext null
         if (parentDoc.findFile(name) != null) return@withContext null
         val directoryDoc = DocumentFile.fromTreeUri(
-            koin.context,
+            context,
             directory.toAndroidUri("com.ninetag.machum.fileprovider"),
         ) ?: return@withContext null
         if (!directoryDoc.isDirectory || !directoryDoc.renameTo(name)) return@withContext null
@@ -278,11 +387,9 @@ internal actual suspend fun FileManager.deleteDirectoryExact(
     directory: PlatformFile,
 ): Boolean = withContext(Dispatchers.IO) {
     try {
-        val koin = object : KoinComponent {
-            val context: Context by inject()
-        }
+        val context = trashContext()
         val directoryDoc = DocumentFile.fromTreeUri(
-            koin.context,
+            context,
             directory.toAndroidUri("com.ninetag.machum.fileprovider"),
         ) ?: return@withContext false
         val children = directoryDoc.listFiles()

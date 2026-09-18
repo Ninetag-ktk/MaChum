@@ -30,3 +30,6 @@ outputs
 **/*test*
 **/*.log
 /.codex-remote-attachments/
+
+/graphify-out/2026-09-18/
+/graphify-out/cache/

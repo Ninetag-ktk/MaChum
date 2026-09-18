@@ -52,4 +52,16 @@ class FolderConfigMigrationTest {
 
         assertEquals(FolderConfig(type = FolderType.GENERAL), normalized.folders[BASE_FOLDER_PATH])
     }
+
+    @Test
+    fun legacyFolderTypePreservesDefaultPropertyKeys() {
+        val legacy = """
+            { "folders": { "": { "type": "plot", "autoTags": ["원고"], "defaultPropertyKeys": [" title ", "", "title"] } } }
+            """.trimIndent()
+
+        val normalized = json.decodeFromString(ProjectConfig.serializer(), legacy).withDefaultBaseFolder()
+
+        assertEquals(true, normalized.folders[BASE_FOLDER_PATH]?.isPlot)
+        assertEquals(listOf("title"), normalized.folders[BASE_FOLDER_PATH]?.defaultPropertyKeys)
+    }
 }

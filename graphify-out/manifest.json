@@ -1,0 +1,1634 @@
+{
+  ".claude/settings.local.json": {
+    "mtime": 1786196132.5792105,
+    "seen": 1789693941.0997748,
+    "ast_hash": "007be8818ebebbe56cbcdffcad7260ed",
+    "semantic_hash": "007be8818ebebbe56cbcdffcad7260ed"
+  },
+  "androidApp/build.gradle.kts": {
+    "mtime": 1784384359.219,
+    "seen": 1789693941.0997784,
+    "ast_hash": "4521de143b00a18ce186fd3884f45226",
+    "semantic_hash": "4521de143b00a18ce186fd3884f45226"
+  },
+  "androidApp/src/main/kotlin/com/ninetag/machum/MainActivity.kt": {
+    "mtime": 1789176554.0338607,
+    "seen": 1789693941.0997796,
+    "ast_hash": "bb2c7ce3107d7b1e0d83fb978b5ae93d",
+    "semantic_hash": "bb2c7ce3107d7b1e0d83fb978b5ae93d"
+  },
+  "build.gradle.kts": {
+    "mtime": 1774617592.5499854,
+    "seen": 1789693941.0997806,
+    "ast_hash": "d011d0ec31d8a5dff8108f23eaf5c6a8",
+    "semantic_hash": "d011d0ec31d8a5dff8108f23eaf5c6a8"
+  },
+  "composeApp/build.gradle.kts": {
+    "mtime": 1788951609.741175,
+    "seen": 1789693941.0997815,
+    "ast_hash": "5155336a7e8a52a74b9b81ecd76e77c7",
+    "semantic_hash": "5155336a7e8a52a74b9b81ecd76e77c7"
+  },
+  "composeApp/src/androidMain/kotlin/com/ninetag/machum/backup/BackupPlatform.android.kt": {
+    "mtime": 1788174057.225494,
+    "seen": 1789693941.0997822,
+    "ast_hash": "3c07a12cc36c9b72f65bf4db7b59ac18",
+    "semantic_hash": "3c07a12cc36c9b72f65bf4db7b59ac18"
+  },
+  "composeApp/src/androidMain/kotlin/com/ninetag/machum/commit/CommitPlatform.android.kt": {
+    "mtime": 1789182402.3752775,
+    "seen": 1789693941.099783,
+    "ast_hash": "05193c8dbad75891f5712d46c6f5e648",
+    "semantic_hash": "05193c8dbad75891f5712d46c6f5e648"
+  },
+  "composeApp/src/androidMain/kotlin/com/ninetag/machum/external/ClipEntryFactory.android.kt": {
+    "mtime": 1788167813.8828783,
+    "seen": 1789693941.099784,
+    "ast_hash": "b6e3550bc932630d8c26b6ce5636e2c7",
+    "semantic_hash": "b6e3550bc932630d8c26b6ce5636e2c7"
+  },
+  "composeApp/src/androidMain/kotlin/com/ninetag/machum/external/FileManager.android.kt": {
+    "mtime": 1789698398.0524251,
+    "seen": 1789698514.3956683,
+    "ast_hash": "51d0b97753b1e02a5b5eecd73de063e6",
+    "semantic_hash": ""
+  },
+  "composeApp/src/androidMain/kotlin/com/ninetag/machum/markdown/ui/diagnostics/EditorRecompositionDiagnostics.android.kt": {
+    "mtime": 1788161982.663095,
+    "seen": 1789693941.0997853,
+    "ast_hash": "4f8616063b5c229f435c869251b115e9",
+    "semantic_hash": "4f8616063b5c229f435c869251b115e9"
+  },
+  "composeApp/src/androidMain/kotlin/com/ninetag/machum/screen/common/PolicyScrollbar.android.kt": {
+    "mtime": 1788852203.3769066,
+    "seen": 1789693941.099786,
+    "ast_hash": "88bd8ecd7ad4991888b0aa479e11f86e",
+    "semantic_hash": "88bd8ecd7ad4991888b0aa479e11f86e"
+  },
+  "composeApp/src/androidMain/kotlin/com/ninetag/machum/screen/common/WorkspaceBackHandler.android.kt": {
+    "mtime": 1789196524.3432543,
+    "seen": 1789693941.099787,
+    "ast_hash": "d565cd97112dd38d3de65e13295fac21",
+    "semantic_hash": "d565cd97112dd38d3de65e13295fac21"
+  },
+  "composeApp/src/androidMain/kotlin/com/ninetag/machum/screen/vaultScreen/VaultPickerUI.android.kt": {
+    "mtime": 1787978989.7196543,
+    "seen": 1789693941.0997877,
+    "ast_hash": "50bd83d8f5a955906c0eb183d6b68110",
+    "semantic_hash": "50bd83d8f5a955906c0eb183d6b68110"
+  },
+  "composeApp/src/androidMain/kotlin/com/ninetag/machum/theme/WorkspaceUiPlatform.android.kt": {
+    "mtime": 1788951506.9141128,
+    "seen": 1789693941.0997882,
+    "ast_hash": "2f3ab3b6208336687fdd5c9fd39e2f4d",
+    "semantic_hash": "2f3ab3b6208336687fdd5c9fd39e2f4d"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/App.kt": {
+    "mtime": 1789176525.2164822,
+    "seen": 1789693941.099789,
+    "ast_hash": "e3e2d4acf8de93c1dbe17d60061bfb90",
+    "semantic_hash": "e3e2d4acf8de93c1dbe17d60061bfb90"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/backup/BackupKeyedMutexRegistry.kt": {
+    "mtime": 1788174058.0831666,
+    "seen": 1789693941.0997896,
+    "ast_hash": "c530292657fb17cce507005569c4a132",
+    "semantic_hash": "c530292657fb17cce507005569c4a132"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/backup/BackupPlatform.kt": {
+    "mtime": 1788174055.1743584,
+    "seen": 1789693941.09979,
+    "ast_hash": "e9f91b514526dc4bbd57b6f7c6f3c87e",
+    "semantic_hash": "e9f91b514526dc4bbd57b6f7c6f3c87e"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/backup/CommitBackupModels.kt": {
+    "mtime": 1788174103.1189535,
+    "seen": 1789693941.0997906,
+    "ast_hash": "50888a4fb8e3aca7024a6593161e708a",
+    "semantic_hash": "50888a4fb8e3aca7024a6593161e708a"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/backup/CommitBackupPlanSource.kt": {
+    "mtime": 1788174115.5131707,
+    "seen": 1789693941.0997913,
+    "ast_hash": "a6897c0f7e490a994a3956785dcc70e6",
+    "semantic_hash": "a6897c0f7e490a994a3956785dcc70e6"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/backup/PersistentBackupWorker.kt": {
+    "mtime": 1788174482.9340363,
+    "seen": 1789693941.0997918,
+    "ast_hash": "9342deead19cb40e6c6f4100e87e1b36",
+    "semantic_hash": "9342deead19cb40e6c6f4100e87e1b36"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/backup/PersistentProjectBackupQueue.kt": {
+    "mtime": 1788174482.3135028,
+    "seen": 1789693941.0997925,
+    "ast_hash": "87d9d831ad785c29ddbd016460f48a95",
+    "semantic_hash": "87d9d831ad785c29ddbd016460f48a95"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/backup/ProjectBackupService.kt": {
+    "mtime": 1788174116.023416,
+    "seen": 1789693941.0997932,
+    "ast_hash": "a745849c59aa9438672c2c2c8c1d8057",
+    "semantic_hash": "a745849c59aa9438672c2c2c8c1d8057"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/backup/ProjectCommitBackupCoordinator.kt": {
+    "mtime": 1788173023.7323694,
+    "seen": 1789693941.099794,
+    "ast_hash": "dc81aba7daf71ce51bfa5dba31d3c5e8",
+    "semantic_hash": "dc81aba7daf71ce51bfa5dba31d3c5e8"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/backup/ProjectRepositoryIdentityStore.kt": {
+    "mtime": 1788174143.7562141,
+    "seen": 1789693941.0997946,
+    "ast_hash": "1f54cc93b2cded73c2ed916dc856c62a",
+    "semantic_hash": "1f54cc93b2cded73c2ed916dc856c62a"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/backup/RemoteProjectBackupStore.kt": {
+    "mtime": 1788174103.7290785,
+    "seen": 1789693941.099795,
+    "ast_hash": "e992ccaca6fda4914e2ce30a87023868",
+    "semantic_hash": "e992ccaca6fda4914e2ce30a87023868"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/commit/CommitModels.kt": {
+    "mtime": 1789204785.7477524,
+    "seen": 1789693941.099796,
+    "ast_hash": "aea5e280d205e5247cd81a9a4945a677",
+    "semantic_hash": "aea5e280d205e5247cd81a9a4945a677"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/commit/CommitObjectCodec.kt": {
+    "mtime": 1788785795.5526412,
+    "seen": 1789693941.0997965,
+    "ast_hash": "4933611eeaa3f168f61320a8a819ebee",
+    "semantic_hash": "4933611eeaa3f168f61320a8a819ebee"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/commit/CommitPlanner.kt": {
+    "mtime": 1788144340.1836627,
+    "seen": 1789693941.0997972,
+    "ast_hash": "d8c783e929a35343f88d6506d4625a5c",
+    "semantic_hash": "d8c783e929a35343f88d6506d4625a5c"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/commit/CommitPlatform.kt": {
+    "mtime": 1788144340.6657522,
+    "seen": 1789693941.099798,
+    "ast_hash": "8f1ea13e3d1acb6bd20e736d2ed7fe89",
+    "semantic_hash": "8f1ea13e3d1acb6bd20e736d2ed7fe89"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/commit/FileCommitStore.kt": {
+    "mtime": 1789182421.4414113,
+    "seen": 1789693941.0997984,
+    "ast_hash": "35860c81050951268a963214ce89739a",
+    "semantic_hash": "35860c81050951268a963214ce89739a"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/commit/LineDiffCounter.kt": {
+    "mtime": 1788144696.2194712,
+    "seen": 1789693941.0997992,
+    "ast_hash": "b547905d417dd2b93a7ae2aa9839bead",
+    "semantic_hash": "b547905d417dd2b93a7ae2aa9839bead"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/commit/LineDiffEngine.kt": {
+    "mtime": 1788145922.882022,
+    "seen": 1789693941.0997996,
+    "ast_hash": "2d39bbb23fba16dba7e0ed7e8f77a167",
+    "semantic_hash": "2d39bbb23fba16dba7e0ed7e8f77a167"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/commit/ProjectCommitService.kt": {
+    "mtime": 1789203975.1206398,
+    "seen": 1789693941.0998,
+    "ast_hash": "1e1e80a4a587ce40c4cac9c26d29e198",
+    "semantic_hash": "1e1e80a4a587ce40c4cac9c26d29e198"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/di/commonModule.kt": {
+    "mtime": 1789176525.2204864,
+    "seen": 1789693941.0998008,
+    "ast_hash": "0fe5f235edd4e094e06f3cf5271aaba4",
+    "semantic_hash": "0fe5f235edd4e094e06f3cf5271aaba4"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/entity/DocumentPropertyDefaults.kt": {
+    "mtime": 1789378089.626259,
+    "seen": 1789693941.0998013,
+    "ast_hash": "5a8a5455e7b2ec89e63e9c317e9f1031",
+    "semantic_hash": "5a8a5455e7b2ec89e63e9c317e9f1031"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/entity/DocumentPropertyKey.kt": {
+    "mtime": 1789374894.435787,
+    "seen": 1789693941.0998018,
+    "ast_hash": "9c03dd309eb8245023421880e749e719",
+    "semantic_hash": "9c03dd309eb8245023421880e749e719"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/entity/DocumentPropertyType.kt": {
+    "mtime": 1789347794.291444,
+    "seen": 1789693941.0998027,
+    "ast_hash": "0fb0ffe8b9986499eed26c4149dd5ac8",
+    "semantic_hash": "0fb0ffe8b9986499eed26c4149dd5ac8"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/entity/PlotStage.kt": {
+    "mtime": 1788412637.2821183,
+    "seen": 1789693941.0998032,
+    "ast_hash": "20dc53a867fd17e735c94c509653f434",
+    "semantic_hash": "20dc53a867fd17e735c94c509653f434"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/entity/ProjectConfig.kt": {
+    "mtime": 1789348022.8902895,
+    "seen": 1789693941.099804,
+    "ast_hash": "1783f2cde79a2e69e0e82d1cb6932498",
+    "semantic_hash": "1783f2cde79a2e69e0e82d1cb6932498"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/entity/Tag.kt": {
+    "mtime": 1788068822.0061362,
+    "seen": 1789693941.0998044,
+    "ast_hash": "e1600f66546fcafa9723290c37ebec7c",
+    "semantic_hash": "e1600f66546fcafa9723290c37ebec7c"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/external/ClipEntryFactory.kt": {
+    "mtime": 1788167812.9320807,
+    "seen": 1789693941.0998049,
+    "ast_hash": "71c8c0de51c3d7ed6ff1f46d9c12bb7b",
+    "semantic_hash": "71c8c0de51c3d7ed6ff1f46d9c12bb7b"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/external/DefaultDocumentProperties.kt": {
+    "mtime": 1789372464.3870451,
+    "seen": 1789693941.0998054,
+    "ast_hash": "fd20d07c89d9cf4275e86a2d8de0acb6",
+    "semantic_hash": "fd20d07c89d9cf4275e86a2d8de0acb6"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/external/DocumentInfoPreferences.kt": {
+    "mtime": 1789084803.0646133,
+    "seen": 1789693941.099806,
+    "ast_hash": "8a3fe29d39c1243e468d07b41042d041",
+    "semantic_hash": "8a3fe29d39c1243e468d07b41042d041"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/external/DocumentProperties.kt": {
+    "mtime": 1789375098.2053144,
+    "seen": 1789693941.0998073,
+    "ast_hash": "22d2b5f7913347f771d0b815c3b7b1ff",
+    "semantic_hash": "22d2b5f7913347f771d0b815c3b7b1ff"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/external/DocumentPropertyProtectionPolicy.kt": {
+    "mtime": 1789203375.0040123,
+    "seen": 1789693941.0998077,
+    "ast_hash": "5d35b3203b13bdc02bb3540e90b9ee10",
+    "semantic_hash": "5d35b3203b13bdc02bb3540e90b9ee10"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/external/FileManager.kt": {
+    "mtime": 1789702794.0118237,
+    "seen": 1789702980.2976687,
+    "ast_hash": "c14d8f2501b8febee6846dbf1c80468e",
+    "semantic_hash": ""
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/external/GeneralSourceProperty.kt": {
+    "mtime": 1789348597.2501764,
+    "seen": 1789693941.099809,
+    "ast_hash": "c63939ec440cc40a8bce966bcaf2ca36",
+    "semantic_hash": "c63939ec440cc40a8bce966bcaf2ca36"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/external/GeneralSourceService.kt": {
+    "mtime": 1789698397.581913,
+    "seen": 1789698514.3956974,
+    "ast_hash": "add8776d385418c5131cfaeebe4082d3",
+    "semantic_hash": ""
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/external/JsonConfigMerge.kt": {
+    "mtime": 1789372142.4269185,
+    "seen": 1789693941.0998101,
+    "ast_hash": "a1c3a5bbc772dc2940ae800423cb52c0",
+    "semantic_hash": "a1c3a5bbc772dc2940ae800423cb52c0"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/external/NoteFile.kt": {
+    "mtime": 1789699293.5419543,
+    "seen": 1789699373.8879821,
+    "ast_hash": "aaa7c70f7406d98255a86a782df2da8c",
+    "semantic_hash": ""
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/external/ProjectFile.kt": {
+    "mtime": 1787976987.6655223,
+    "seen": 1789693941.0998116,
+    "ast_hash": "9d740c976f42f0de1d925b01acb79873",
+    "semantic_hash": "9d740c976f42f0de1d925b01acb79873"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/external/ProjectFileOrdering.kt": {
+    "mtime": 1789569315.5419948,
+    "seen": 1789693941.099812,
+    "ast_hash": "a0af6676d6d4b97411bfb52e47014c31",
+    "semantic_hash": "a0af6676d6d4b97411bfb52e47014c31"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/external/ProjectIndexer.kt": {
+    "mtime": 1789702793.551767,
+    "seen": 1789702980.297674,
+    "ast_hash": "1a429f1683808d49bad31e0722febe43",
+    "semantic_hash": ""
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/external/WorkspaceLoadDiagnostics.kt": {
+    "mtime": 1789567220.6396763,
+    "seen": 1789693941.0998135,
+    "ast_hash": "0f38a8810aa4a811d980dd6e6a7c39b3",
+    "semantic_hash": "0f38a8810aa4a811d980dd6e6a7c39b3"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/external/WorkspaceMetadataIndex.kt": {
+    "mtime": 1789542726.776375,
+    "seen": 1789693941.099814,
+    "ast_hash": "bbea502f40d0c299834574c625c0eb52",
+    "semantic_hash": "bbea502f40d0c299834574c625c0eb52"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/external/WorkspaceSelection.kt": {
+    "mtime": 1789013764.816238,
+    "seen": 1789693941.0998144,
+    "ast_hash": "4ab28e0ad995d90d172f39c39fb53f5b",
+    "semantic_hash": "4ab28e0ad995d90d172f39c39fb53f5b"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/external/WorkspaceTrash.kt": {
+    "mtime": 1789382106.4554648,
+    "seen": 1789693941.0998151,
+    "ast_hash": "98e574b32aba6e277a31a8cb579273a0",
+    "semantic_hash": "98e574b32aba6e277a31a8cb579273a0"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/external/YamlText.kt": {
+    "mtime": 1789349426.893114,
+    "seen": 1789693941.0998156,
+    "ast_hash": "55c6f5664949c4bc985dd36c2cf7967d",
+    "semantic_hash": "55c6f5664949c4bc985dd36c2cf7967d"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/service/MarkdownStyleConfig.kt": {
+    "mtime": 1787970322.7725518,
+    "seen": 1789693941.099816,
+    "ast_hash": "d4fe3a554b5a75442ec027ff117f77fa",
+    "semantic_hash": "d4fe3a554b5a75442ec027ff117f77fa"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/service/util/EditorKeyboardShortcuts.kt": {
+    "mtime": 1776088559.1448503,
+    "seen": 1789693941.099817,
+    "ast_hash": "6eb80e2f1180fe97d1467277ae2bad35",
+    "semantic_hash": "6eb80e2f1180fe97d1467277ae2bad35"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/state/BlockOperations.kt": {
+    "mtime": 1788792406.5232024,
+    "seen": 1789693941.0998175,
+    "ast_hash": "56cdd9978c910472f7527bb73b8d8241",
+    "semantic_hash": "56cdd9978c910472f7527bb73b8d8241"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/state/CalloutBodyPolicy.kt": {
+    "mtime": 1788160649.9482844,
+    "seen": 1789693941.099818,
+    "ast_hash": "349fff128fa62e12b62ecfb83bfbccd6",
+    "semantic_hash": "349fff128fa62e12b62ecfb83bfbccd6"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/state/DocumentSelection.kt": {
+    "mtime": 1788177318.2336905,
+    "seen": 1789693941.0998187,
+    "ast_hash": "e712f7947a6956fbfabe62efa72b3c0f",
+    "semantic_hash": "e712f7947a6956fbfabe62efa72b3c0f"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/state/EditorBlock.kt": {
+    "mtime": 1787967545.2582047,
+    "seen": 1789693941.0998192,
+    "ast_hash": "9b890e4e0dc67302409a7e1a1cd1e77a",
+    "semantic_hash": "9b890e4e0dc67302409a7e1a1cd1e77a"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/state/EditorBlockSnapshot.kt": {
+    "mtime": 1788167152.0496879,
+    "seen": 1789693941.0998197,
+    "ast_hash": "b3defbd9e574066b9df6120c71c56fa9",
+    "semantic_hash": "b3defbd9e574066b9df6120c71c56fa9"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/state/EditorDocumentValueCoordinator.kt": {
+    "mtime": 1788140294.5983176,
+    "seen": 1789693941.0998206,
+    "ast_hash": "224fc3a8c3beeb91dc2f155a34ae216b",
+    "semantic_hash": "224fc3a8c3beeb91dc2f155a34ae216b"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/state/EditorFocusCoordinator.kt": {
+    "mtime": 1788159392.2591164,
+    "seen": 1789693941.099821,
+    "ast_hash": "8e53976b40c4f7d6fe816ac30e43d737",
+    "semantic_hash": "8e53976b40c4f7d6fe816ac30e43d737"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/state/EditorHistory.kt": {
+    "mtime": 1788167152.5361257,
+    "seen": 1789693941.0998218,
+    "ast_hash": "b0fd1860cfd973265b18d97ea9846dc1",
+    "semantic_hash": "b0fd1860cfd973265b18d97ea9846dc1"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/state/EditorInputTransformation.kt": {
+    "mtime": 1776088559.1513588,
+    "seen": 1789693941.0998223,
+    "ast_hash": "e41fa3939a41b80c4c475aae82281279",
+    "semantic_hash": "e41fa3939a41b80c4c475aae82281279"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/state/EditorMutationDispatcher.kt": {
+    "mtime": 1788159393.2360039,
+    "seen": 1789693941.099823,
+    "ast_hash": "2523cacf5dd1089cc7b629ad13c3515e",
+    "semantic_hash": "2523cacf5dd1089cc7b629ad13c3515e"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/state/EditorSelectionCoordinator.kt": {
+    "mtime": 1788161945.817219,
+    "seen": 1789693941.0998237,
+    "ast_hash": "36c2e107e6c431b1c293873550202666",
+    "semantic_hash": "36c2e107e6c431b1c293873550202666"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/state/InlineStyleScanner.kt": {
+    "mtime": 1788164580.2531786,
+    "seen": 1789693941.0998244,
+    "ast_hash": "3559cbfe5c6fcef1638bab56f0a5f6f1",
+    "semantic_hash": "3559cbfe5c6fcef1638bab56f0a5f6f1"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/state/MarkdownBlockParser.kt": {
+    "mtime": 1788173901.7114246,
+    "seen": 1789693941.0998251,
+    "ast_hash": "e787e1a492a50bfc17bf4fa7f05aba7c",
+    "semantic_hash": "e787e1a492a50bfc17bf4fa7f05aba7c"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/state/MarkdownPatternScanner.kt": {
+    "mtime": 1777905267.3515997,
+    "seen": 1789693941.0998259,
+    "ast_hash": "7272bf9f87da722f5d60ac8c95cb2d82",
+    "semantic_hash": "7272bf9f87da722f5d60ac8c95cb2d82"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/state/RawMarkdownOutputTransformation.kt": {
+    "mtime": 1788181286.8916261,
+    "seen": 1789693941.0998263,
+    "ast_hash": "64387d79f2614e9d5d560a240dfa34ae",
+    "semantic_hash": "64387d79f2614e9d5d560a240dfa34ae"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/state/RawStyleToggle.kt": {
+    "mtime": 1776088559.1683822,
+    "seen": 1789693941.0998273,
+    "ast_hash": "504238c049416e0445d49dcdc152d5ef",
+    "semantic_hash": "504238c049416e0445d49dcdc152d5ef"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/ui/BlockDecorationDrawer.kt": {
+    "mtime": 1787970323.3052616,
+    "seen": 1789693941.099828,
+    "ast_hash": "41a9cb7b4cde5c5115779b7166d235e2",
+    "semantic_hash": "41a9cb7b4cde5c5115779b7166d235e2"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/ui/BlockNavigation.kt": {
+    "mtime": 1788159880.0249012,
+    "seen": 1789693941.0998285,
+    "ast_hash": "92d4c5dfd3b072cdd98adb6e10922716",
+    "semantic_hash": "92d4c5dfd3b072cdd98adb6e10922716"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/ui/MarkdownBlockEditor.kt": {
+    "mtime": 1788180989.592748,
+    "seen": 1789693941.0998294,
+    "ast_hash": "aa4a483630587ad64fa61c62e2f6567b",
+    "semantic_hash": "aa4a483630587ad64fa61c62e2f6567b"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/ui/MarkdownBlockTextField.kt": {
+    "mtime": 1788422084.729,
+    "seen": 1789693941.09983,
+    "ast_hash": "be7b825ae0feb7233f05ebd8ff8bef52",
+    "semantic_hash": "be7b825ae0feb7233f05ebd8ff8bef52"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/ui/TextBlockEditor.kt": {
+    "mtime": 1788180989.0068333,
+    "seen": 1789693941.0998306,
+    "ast_hash": "95220804b9939575fdc39e50602cfda8",
+    "semantic_hash": "95220804b9939575fdc39e50602cfda8"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/ui/block/CalloutBlockEditor.kt": {
+    "mtime": 1788167316.4020922,
+    "seen": 1789693941.0998313,
+    "ast_hash": "0e9289c62fdd5155477f57579e1aebdc",
+    "semantic_hash": "0e9289c62fdd5155477f57579e1aebdc"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/ui/block/CodeBlockEditor.kt": {
+    "mtime": 1788167263.3682208,
+    "seen": 1789693941.099832,
+    "ast_hash": "2fc72e8702ef71d44f809e8e9eb87b0b",
+    "semantic_hash": "2fc72e8702ef71d44f809e8e9eb87b0b"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/ui/block/TableBlockEditor.kt": {
+    "mtime": 1788167284.836481,
+    "seen": 1789693941.0998325,
+    "ast_hash": "219bf488b756b544ee4fe91f261043e1",
+    "semantic_hash": "219bf488b756b544ee4fe91f261043e1"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/ui/diagnostics/EditorRecompositionDiagnostics.kt": {
+    "mtime": 1788174292.4412174,
+    "seen": 1789693941.099833,
+    "ast_hash": "99d8c97a0a5aea06548d07aae3c004ce",
+    "semantic_hash": "99d8c97a0a5aea06548d07aae3c004ce"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/markdown/ui/selection/SelectionUiHelpers.kt": {
+    "mtime": 1788177699.913716,
+    "seen": 1789693941.099834,
+    "ast_hash": "033f76cbae251d9d5c08d6bb08333006",
+    "semantic_hash": "033f76cbae251d9d5c08d6bb08333006"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/commitScreen/CommitDialog.kt": {
+    "mtime": 1789201747.2672122,
+    "seen": 1789693941.099835,
+    "ast_hash": "91edd3613673c57786dfe95faca34dba",
+    "semantic_hash": "91edd3613673c57786dfe95faca34dba"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/commitScreen/CommitHistoryScreen.kt": {
+    "mtime": 1789204340.3817892,
+    "seen": 1789693941.0998354,
+    "ast_hash": "388b912acfdce23875a9291f1b4c49ea",
+    "semantic_hash": "388b912acfdce23875a9291f1b4c49ea"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/commitScreen/CommitWorkspaceScreen.kt": {
+    "mtime": 1789204268.5678675,
+    "seen": 1789693941.099836,
+    "ast_hash": "efea47cd4d5a05126504f66154f1f20c",
+    "semantic_hash": "efea47cd4d5a05126504f66154f1f20c"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/common/AboveAnchorDropdownMenu.kt": {
+    "mtime": 1789186194.6332407,
+    "seen": 1789693941.0998366,
+    "ast_hash": "514b4d95411c2da69476cabca05e6162",
+    "semantic_hash": "514b4d95411c2da69476cabca05e6162"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/common/DirectoryNameValidation.kt": {
+    "mtime": 1788837370.6821246,
+    "seen": 1789693941.0998373,
+    "ast_hash": "dea0eaa2ff073bd754adbaedd965faec",
+    "semantic_hash": "dea0eaa2ff073bd754adbaedd965faec"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/common/DrawerDropdownMenu.kt": {
+    "mtime": 1789186194.1510954,
+    "seen": 1789693941.099838,
+    "ast_hash": "d5e7a12078725cdd94011a052214bff9",
+    "semantic_hash": "d5e7a12078725cdd94011a052214bff9"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/common/MenuMotion.kt": {
+    "mtime": 1789193725.184,
+    "seen": 1789693941.0998385,
+    "ast_hash": "b2e96098c9a899050d869fb007493b27",
+    "semantic_hash": "b2e96098c9a899050d869fb007493b27"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/common/PolicyDialog.kt": {
+    "mtime": 1788951620.8901732,
+    "seen": 1789693941.099839,
+    "ast_hash": "9003245943eb70b3661ab791b4009912",
+    "semantic_hash": "9003245943eb70b3661ab791b4009912"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/common/PolicyScrollbar.kt": {
+    "mtime": 1788852201.7728794,
+    "seen": 1789693941.0998397,
+    "ast_hash": "c05bb9e3879d8e5c8948b1ed6e33a398",
+    "semantic_hash": "c05bb9e3879d8e5c8948b1ed6e33a398"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/common/PopupUiMetrics.kt": {
+    "mtime": 1789117530.669497,
+    "seen": 1789693941.0998402,
+    "ast_hash": "9e901f8c7e97639ae08f940f32b80894",
+    "semantic_hash": "9e901f8c7e97639ae08f940f32b80894"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/common/SingleLineSubmitGate.kt": {
+    "mtime": 1788180113.6876798,
+    "seen": 1789693941.099841,
+    "ast_hash": "e26f8cef46e7f1e89f3fb59f1b63452c",
+    "semantic_hash": "e26f8cef46e7f1e89f3fb59f1b63452c"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/common/WorkspaceBackHandler.kt": {
+    "mtime": 1788951606.6711485,
+    "seen": 1789693941.0998416,
+    "ast_hash": "7191124c178449ad7504522e181a55ff",
+    "semantic_hash": "7191124c178449ad7504522e181a55ff"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/common/WorkspaceDisclosure.kt": {
+    "mtime": 1789187245.907253,
+    "seen": 1789693941.0998423,
+    "ast_hash": "dc726e0569d897a1758775c85a5e786f",
+    "semantic_hash": "dc726e0569d897a1758775c85a5e786f"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/CreateFileAction.kt": {
+    "mtime": 1789176525.3309176,
+    "seen": 1789693941.0998428,
+    "ast_hash": "8b81151f8993ab2cc36f8a1a1cfdd19c",
+    "semantic_hash": "8b81151f8993ab2cc36f8a1a1cfdd19c"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/CreateFileRequest.kt": {
+    "mtime": 1789176525.333916,
+    "seen": 1789693941.0998435,
+    "ast_hash": "9b396ca4b0f0ca8df36c257f80b760b6",
+    "semantic_hash": "9b396ca4b0f0ca8df36c257f80b760b6"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/DebouncedSaveCoordinator.kt": {
+    "mtime": 1789708950.4710188,
+    "seen": 1789709046.3017006,
+    "ast_hash": "e4de982c56b259f927d554e9dd2d597f",
+    "semantic_hash": ""
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/DocumentInformationSection.kt": {
+    "mtime": 1789706041.434541,
+    "seen": 1789706203.4210322,
+    "ast_hash": "d3e4a9d409e3bebeae8e0ad590524b7e",
+    "semantic_hash": ""
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/DocumentPropertyForm.kt": {
+    "mtime": 1789381644.696792,
+    "seen": 1789693941.0998454,
+    "ast_hash": "7d4d49e293300de7dd5d1f2482de2bc4",
+    "semantic_hash": "7d4d49e293300de7dd5d1f2482de2bc4"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/EditorPage.kt": {
+    "mtime": 1789176525.375982,
+    "seen": 1789693941.099846,
+    "ast_hash": "f05780867d548f55f58b28473083ec84",
+    "semantic_hash": "f05780867d548f55f58b28473083ec84"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/EditorTopBar.kt": {
+    "mtime": 1789198888.8723845,
+    "seen": 1789693941.0998464,
+    "ast_hash": "9cb7e139870c2d38c1dfcfd443ba0810",
+    "semantic_hash": "9cb7e139870c2d38c1dfcfd443ba0810"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/FileTrashDialog.kt": {
+    "mtime": 1789190167.7059486,
+    "seen": 1789693941.0998468,
+    "ast_hash": "b51efd247d78c421120441e8220077ed",
+    "semantic_hash": "b51efd247d78c421120441e8220077ed"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/FolderFileSelectionMemory.kt": {
+    "mtime": 1789696897.3701758,
+    "seen": 1789698514.3957412,
+    "ast_hash": "4a23062452eb466747f34871ff49901c",
+    "semantic_hash": ""
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/FolderSettingsService.kt": {
+    "mtime": 1789176525.4373064,
+    "seen": 1789693941.0998483,
+    "ast_hash": "6715975d147b9bb115910d7dd15115ae",
+    "semantic_hash": "6715975d147b9bb115910d7dd15115ae"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/LatestNavigationGate.kt": {
+    "mtime": 1789176525.467853,
+    "seen": 1789693941.0998487,
+    "ast_hash": "c3d596b05c888803257720c406ea1d85",
+    "semantic_hash": "c3d596b05c888803257720c406ea1d85"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/MainScreen.kt": {
+    "mtime": 1789707921.6203759,
+    "seen": 1789709046.3017077,
+    "ast_hash": "d3249657fce10bc3fd72413c6b3c5485",
+    "semantic_hash": ""
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/MainViewModel.kt": {
+    "mtime": 1789708818.9454894,
+    "seen": 1789709046.3017087,
+    "ast_hash": "04713bd8d1631b0a1a62caead8d181f9",
+    "semantic_hash": ""
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/ProjectFileTitlePolicy.kt": {
+    "mtime": 1789176525.5681057,
+    "seen": 1789693941.0998504,
+    "ast_hash": "a4802d062f0df9a404142897668c280e",
+    "semantic_hash": "a4802d062f0df9a404142897668c280e"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/WorkspaceSaveCoordinator.kt": {
+    "mtime": 1789176553.4906473,
+    "seen": 1789693941.099851,
+    "ast_hash": "315ca45c0e87a858d033f36747ec9ede",
+    "semantic_hash": "315ca45c0e87a858d033f36747ec9ede"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/leftSideMenu/DeleteProjectDirectoryDialog.kt": {
+    "mtime": 1789380376.1266356,
+    "seen": 1789693941.0998516,
+    "ast_hash": "c966f2465be39a00b601b42db00fbd84",
+    "semantic_hash": "c966f2465be39a00b601b42db00fbd84"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/leftSideMenu/EditProjectDirectoryDialog.kt": {
+    "mtime": 1789176525.4022303,
+    "seen": 1789693941.099852,
+    "ast_hash": "6c5a4f787e60482d8c0eff5e062ef763",
+    "semantic_hash": "6c5a4f787e60482d8c0eff5e062ef763"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/leftSideMenu/FolderConfigEditor.kt": {
+    "mtime": 1789370547.3722267,
+    "seen": 1789693941.0998528,
+    "ast_hash": "b9ab9cf0fae4f64d6e3212d89c883ce9",
+    "semantic_hash": "b9ab9cf0fae4f64d6e3212d89c883ce9"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/leftSideMenu/FolderDirectControls.kt": {
+    "mtime": 1789188680.8294203,
+    "seen": 1789693941.0998533,
+    "ast_hash": "1fe73dd824de4baae9ebb0594879ad67",
+    "semantic_hash": "1fe73dd824de4baae9ebb0594879ad67"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/leftSideMenu/FolderInlineRename.kt": {
+    "mtime": 1789194581.1810503,
+    "seen": 1789693941.0998538,
+    "ast_hash": "fb163f5b5b45dc0d4da66bcaaa12cec6",
+    "semantic_hash": "fb163f5b5b45dc0d4da66bcaaa12cec6"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/leftSideMenu/GeneralSourceControls.kt": {
+    "mtime": 1789698195.827556,
+    "seen": 1789698514.39575,
+    "ast_hash": "416d6f6198fb7bec748c9d0b6aa7d375",
+    "semantic_hash": ""
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/leftSideMenu/HierarchyOrderDraft.kt": {
+    "mtime": 1789176525.4548209,
+    "seen": 1789693941.0998552,
+    "ast_hash": "f4a219627f2b46b9aee1f58c74ceef0c",
+    "semantic_hash": "f4a219627f2b46b9aee1f58c74ceef0c"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/leftSideMenu/HierarchyRows.kt": {
+    "mtime": 1789646460.632961,
+    "seen": 1789693941.0998557,
+    "ast_hash": "ef7d16978259153bb6dc1f7a085a400f",
+    "semantic_hash": "ef7d16978259153bb6dc1f7a085a400f"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/leftSideMenu/ProjectNavigationDrawer.kt": {
+    "mtime": 1789698398.5606215,
+    "seen": 1789698514.3957522,
+    "ast_hash": "94ec148228a624072b8551abedb74323",
+    "semantic_hash": ""
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/mainScreen/leftSideMenu/SidebarWorkspaceMenus.kt": {
+    "mtime": 1789179032.1002152,
+    "seen": 1789693941.0998566,
+    "ast_hash": "c1be3ef0d7da81c668af8368a43f5f86",
+    "semantic_hash": "c1be3ef0d7da81c668af8368a43f5f86"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/projectScreen/ProjectIndexingScreen.kt": {
+    "mtime": 1788185761.2644951,
+    "seen": 1789693941.0998573,
+    "ast_hash": "eb66051bcefbb8b2b63b5731593e722f",
+    "semantic_hash": "eb66051bcefbb8b2b63b5731593e722f"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/projectScreen/ProjectSelectionScreen.kt": {
+    "mtime": 1789193203.931,
+    "seen": 1789693941.0998578,
+    "ast_hash": "86b291b2ba0796951cc80b41f0635856",
+    "semantic_hash": "86b291b2ba0796951cc80b41f0635856"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/projectScreen/RenameProjectDialog.kt": {
+    "mtime": 1789176553.4991784,
+    "seen": 1789693941.0998588,
+    "ast_hash": "ec8bc78744525c4f62d1807d7c9b57b6",
+    "semantic_hash": "ec8bc78744525c4f62d1807d7c9b57b6"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/projectScreen/WorkspaceChoiceOpener.kt": {
+    "mtime": 1789008195.492163,
+    "seen": 1789693941.0998592,
+    "ast_hash": "f6de76dc38423d132a818ac93064adc5",
+    "semantic_hash": "f6de76dc38423d132a818ac93064adc5"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/projectScreen/WorkspaceSelectionContent.kt": {
+    "mtime": 1789202742.5783503,
+    "seen": 1789693941.09986,
+    "ast_hash": "632839ccb149513992cc69e63dac91c7",
+    "semantic_hash": "632839ccb149513992cc69e63dac91c7"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/projectScreen/WorkspaceSetupDialog.kt": {
+    "mtime": 1788852497.5403697,
+    "seen": 1789693941.0998604,
+    "ast_hash": "d4542526c3efd86ecbceacfe4ea69103",
+    "semantic_hash": "d4542526c3efd86ecbceacfe4ea69103"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/projectScreen/WorkspaceTransitions.kt": {
+    "mtime": 1789698116.5392385,
+    "seen": 1789698514.3957582,
+    "ast_hash": "a8f6a60729df0be0d788ca8b596174e3",
+    "semantic_hash": ""
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/projectScreen/WorkspaceTrashDialog.kt": {
+    "mtime": 1789189421.9007666,
+    "seen": 1789693941.0998619,
+    "ast_hash": "ed11425596242dfcf509a910ce5f00bf",
+    "semantic_hash": "ed11425596242dfcf509a910ce5f00bf"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/vaultScreen/VaultPickerUI.kt": {
+    "mtime": 1771332154.3084185,
+    "seen": 1789693941.0998623,
+    "ast_hash": "bca00e948f0cb47f4e450dee8b310d95",
+    "semantic_hash": "bca00e948f0cb47f4e450dee8b310d95"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/screen/vaultScreen/VaultSelectionScreen.kt": {
+    "mtime": 1789008503.3523953,
+    "seen": 1789693941.0998628,
+    "ast_hash": "5f6a69413d1219e7c4934a942de0f699",
+    "semantic_hash": "5f6a69413d1219e7c4934a942de0f699"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/theme/AppTheme.kt": {
+    "mtime": 1789698196.3680837,
+    "seen": 1789698514.395761,
+    "ast_hash": "5cdf25a83dc96564d827e60b49bffcdb",
+    "semantic_hash": ""
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/theme/CustomColorPalette.kt": {
+    "mtime": 1787970238.3670528,
+    "seen": 1789693941.0998638,
+    "ast_hash": "600676bfadb65b5c9483f30b2734c537",
+    "semantic_hash": "600676bfadb65b5c9483f30b2734c537"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/theme/CustomColorScheme.kt": {
+    "mtime": 1787970266.453067,
+    "seen": 1789693941.0998645,
+    "ast_hash": "4206517396a7c0d9d6186926e0e5e2c6",
+    "semantic_hash": "4206517396a7c0d9d6186926e0e5e2c6"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/theme/CustomTypography.kt": {
+    "mtime": 1789117529.4219513,
+    "seen": 1789693941.0998654,
+    "ast_hash": "487f61c41ff86853ab9640594174e62b",
+    "semantic_hash": "487f61c41ff86853ab9640594174e62b"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/theme/SemanticColors.kt": {
+    "mtime": 1787970282.3201904,
+    "seen": 1789693941.099866,
+    "ast_hash": "1449e15e2fc21925f4fc14449183bfbe",
+    "semantic_hash": "1449e15e2fc21925f4fc14449183bfbe"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/theme/WorkspaceMotion.kt": {
+    "mtime": 1789187465.4063797,
+    "seen": 1789693941.0998666,
+    "ast_hash": "5c8a3639ca634440b9b47c00d00c1526",
+    "semantic_hash": "5c8a3639ca634440b9b47c00d00c1526"
+  },
+  "composeApp/src/commonMain/kotlin/com/ninetag/machum/theme/WorkspaceUiMetrics.kt": {
+    "mtime": 1789636568.3554006,
+    "seen": 1789693941.0998669,
+    "ast_hash": "9fd377b054047fcd5b99c3f2212ea9ff",
+    "semantic_hash": "9fd377b054047fcd5b99c3f2212ea9ff"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/ComposeAppCommonTest.kt": {
+    "mtime": 1770254588.0310946,
+    "seen": 1789693941.0998676,
+    "ast_hash": "0f8fa13f52669291425c6dfa017b0b3e",
+    "semantic_hash": "0f8fa13f52669291425c6dfa017b0b3e"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/commit/CommitPlannerTest.kt": {
+    "mtime": 1788144473.664301,
+    "seen": 1789693941.099868,
+    "ast_hash": "0fb3434b17455f795dce1be13897d881",
+    "semantic_hash": "0fb3434b17455f795dce1be13897d881"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/commit/LineDiffCounterTest.kt": {
+    "mtime": 1788422084.698,
+    "seen": 1789693941.0998688,
+    "ast_hash": "11e78c6287fec22fe048c488d2eeebbb",
+    "semantic_hash": "11e78c6287fec22fe048c488d2eeebbb"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/commit/LineDiffEngineTest.kt": {
+    "mtime": 1788145923.3673394,
+    "seen": 1789693941.0998693,
+    "ast_hash": "00b8fc2f6b434c544dafe744f2905866",
+    "semantic_hash": "00b8fc2f6b434c544dafe744f2905866"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/entity/DocumentPropertyDefaultsTest.kt": {
+    "mtime": 1789378090.4195654,
+    "seen": 1789693941.09987,
+    "ast_hash": "ef4fc61beaecdcfd2f26d18aa40a5604",
+    "semantic_hash": "ef4fc61beaecdcfd2f26d18aa40a5604"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/entity/FolderConfigMigrationTest.kt": {
+    "mtime": 1789348084.5752752,
+    "seen": 1789693941.0998704,
+    "ast_hash": "b4a07929dd35dc40cc353dcd330b2c20",
+    "semantic_hash": "b4a07929dd35dc40cc353dcd330b2c20"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/entity/PlotStageTest.kt": {
+    "mtime": 1788412776.380418,
+    "seen": 1789693941.099871,
+    "ast_hash": "6c06c03eb182fc8ac1375c3482ef633f",
+    "semantic_hash": "6c06c03eb182fc8ac1375c3482ef633f"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/entity/ProjectConfigTest.kt": {
+    "mtime": 1789347972.7034855,
+    "seen": 1789693941.0998716,
+    "ast_hash": "033426da21d0532ec99669deb691723b",
+    "semantic_hash": "033426da21d0532ec99669deb691723b"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/external/DefaultDocumentPropertiesTest.kt": {
+    "mtime": 1789372464.8183203,
+    "seen": 1789693941.0998724,
+    "ast_hash": "3b7c13436ea6a569eb6509dd59aeecb7",
+    "semantic_hash": "3b7c13436ea6a569eb6509dd59aeecb7"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/external/DocumentPropertiesTest.kt": {
+    "mtime": 1789349260.5755568,
+    "seen": 1789693941.0998728,
+    "ast_hash": "e5e7f21a18694709d57c15c7944a7ea3",
+    "semantic_hash": "e5e7f21a18694709d57c15c7944a7ea3"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/external/FileKeyTest.kt": {
+    "mtime": 1787976988.7820737,
+    "seen": 1789693941.0998733,
+    "ast_hash": "f0928a85a9e05fdaf6493430980fe720",
+    "semantic_hash": "f0928a85a9e05fdaf6493430980fe720"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/external/GeneralSourceConfigTest.kt": {
+    "mtime": 1789372040.8841538,
+    "seen": 1789693941.0998738,
+    "ast_hash": "c6865f2e1bb9b7687eae98378571c19d",
+    "semantic_hash": "c6865f2e1bb9b7687eae98378571c19d"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/external/JsonConfigMergeSpec.kt": {
+    "mtime": 1789372142.8043952,
+    "seen": 1789693941.0998745,
+    "ast_hash": "1c47e4e4865043c59fc1dc4989749ace",
+    "semantic_hash": "1c47e4e4865043c59fc1dc4989749ace"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/external/ManagedTagMergeTest.kt": {
+    "mtime": 1787994454.587726,
+    "seen": 1789693941.099875,
+    "ast_hash": "7eaea5212d310256d1136be770028573",
+    "semantic_hash": "7eaea5212d310256d1136be770028573"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/external/NoteFileTest.kt": {
+    "mtime": 1789699294.0386324,
+    "seen": 1789699373.8880675,
+    "ast_hash": "03ce5dfd5c748eb6511adc828c5521c9",
+    "semantic_hash": ""
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/external/ProjectFileNameValidationTest.kt": {
+    "mtime": 1787993590.9716272,
+    "seen": 1789693941.0998764,
+    "ast_hash": "f89b8a57738b680b4cd9508cbb926b9f",
+    "semantic_hash": "f89b8a57738b680b4cd9508cbb926b9f"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/external/ProjectFileOrderingTest.kt": {
+    "mtime": 1789569479.8447824,
+    "seen": 1789693941.0998769,
+    "ast_hash": "313cc18a101283b848273cd85dc28c45",
+    "semantic_hash": "313cc18a101283b848273cd85dc28c45"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/markdown/state/BlockOperationsTest.kt": {
+    "mtime": 1787967545.2727604,
+    "seen": 1789693941.0998774,
+    "ast_hash": "49649b3037e5de06c3d599898c95a928",
+    "semantic_hash": "49649b3037e5de06c3d599898c95a928"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/markdown/state/CalloutBodyPolicyTest.kt": {
+    "mtime": 1788160769.8312857,
+    "seen": 1789693941.099878,
+    "ast_hash": "fb493d189711c27a3f8174f7530b014a",
+    "semantic_hash": "fb493d189711c27a3f8174f7530b014a"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/markdown/state/DocumentSelectionTest.kt": {
+    "mtime": 1788177370.7355347,
+    "seen": 1789693941.0998785,
+    "ast_hash": "ac04d27168e0d4e9f8fdcb3e1c193bb8",
+    "semantic_hash": "ac04d27168e0d4e9f8fdcb3e1c193bb8"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/markdown/state/EditorBlockSnapshotTest.kt": {
+    "mtime": 1788167153.0120325,
+    "seen": 1789693941.0998795,
+    "ast_hash": "689e5b28779c268bf558bd2ca941f0cc",
+    "semantic_hash": "689e5b28779c268bf558bd2ca941f0cc"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/markdown/state/EditorDocumentValueCoordinatorTest.kt": {
+    "mtime": 1788140295.0976348,
+    "seen": 1789693941.09988,
+    "ast_hash": "a9725c891f267eda39a2dd36b7c3c41a",
+    "semantic_hash": "a9725c891f267eda39a2dd36b7c3c41a"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/markdown/state/EditorFocusCoordinatorTest.kt": {
+    "mtime": 1788158026.223634,
+    "seen": 1789693941.0998805,
+    "ast_hash": "f17f745fdf9f5a7a5b58caf669ba0424",
+    "semantic_hash": "f17f745fdf9f5a7a5b58caf669ba0424"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/markdown/state/EditorHistoryTest.kt": {
+    "mtime": 1788177371.3024185,
+    "seen": 1789693941.0998812,
+    "ast_hash": "75992c105da3182fd65da3cf83645349",
+    "semantic_hash": "75992c105da3182fd65da3cf83645349"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/markdown/state/EditorMutationDispatcherTest.kt": {
+    "mtime": 1788159393.6987753,
+    "seen": 1789693941.0998814,
+    "ast_hash": "bfc0fb7868d63eec06ed04aa023f5386",
+    "semantic_hash": "bfc0fb7868d63eec06ed04aa023f5386"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/markdown/state/EditorSelectionCoordinatorTest.kt": {
+    "mtime": 1788161946.846788,
+    "seen": 1789693941.0998821,
+    "ast_hash": "43b129a4430671a5607af3d08fb94639",
+    "semantic_hash": "43b129a4430671a5607af3d08fb94639"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/markdown/state/MarkdownBlockParserTest.kt": {
+    "mtime": 1788173902.295439,
+    "seen": 1789693941.099883,
+    "ast_hash": "617837f02b12946a3429d79d7b2adf81",
+    "semantic_hash": "617837f02b12946a3429d79d7b2adf81"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/markdown/state/RawMarkdownOutputTransformationTest.kt": {
+    "mtime": 1788181121.3091278,
+    "seen": 1789693941.0998836,
+    "ast_hash": "1750b36e9d2d0549f13fc3e4ecbf7c02",
+    "semantic_hash": "1750b36e9d2d0549f13fc3e4ecbf7c02"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/markdown/ui/BlockNavigationTest.kt": {
+    "mtime": 1788159968.0733914,
+    "seen": 1789693941.099884,
+    "ast_hash": "ab339997fbe79cbe51925656851f9292",
+    "semantic_hash": "ab339997fbe79cbe51925656851f9292"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/markdown/ui/MarkdownBlockTextFieldTest.kt": {
+    "mtime": 1788180990.1686974,
+    "seen": 1789693941.0998845,
+    "ast_hash": "17641ae8de4709c5185d1228e23023c5",
+    "semantic_hash": "17641ae8de4709c5185d1228e23023c5"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/markdown/ui/diagnostics/EditorRecompositionCounterTest.kt": {
+    "mtime": 1788161983.479919,
+    "seen": 1789693941.0998862,
+    "ast_hash": "ed620b1b1624be49f6eaec532a1fab36",
+    "semantic_hash": "ed620b1b1624be49f6eaec532a1fab36"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/screen/common/DirectoryNameValidationTest.kt": {
+    "mtime": 1788837371.372466,
+    "seen": 1789693941.0998867,
+    "ast_hash": "7a35cf3cff4b0468e271920ba1b5c0b6",
+    "semantic_hash": "7a35cf3cff4b0468e271920ba1b5c0b6"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/screen/common/SingleLineSubmitGateTest.kt": {
+    "mtime": 1788180114.7161407,
+    "seen": 1789693941.0998874,
+    "ast_hash": "bf775c9fb2626380dcda3e7bcb1599df",
+    "semantic_hash": "bf775c9fb2626380dcda3e7bcb1599df"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/screen/mainScreen/DebouncedSaveCoordinatorTest.kt": {
+    "mtime": 1789708245.710359,
+    "seen": 1789709046.3017557,
+    "ast_hash": "293405d6bf03fcb9a7b78f7ca1ad1931",
+    "semantic_hash": ""
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/screen/mainScreen/FolderConfigEditorStateTest.kt": {
+    "mtime": 1789176553.5292604,
+    "seen": 1789693941.0998883,
+    "ast_hash": "6a59b88a553743084f263c4f6e25c549",
+    "semantic_hash": "6a59b88a553743084f263c4f6e25c549"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/screen/mainScreen/FolderFileSelectionMemoryTest.kt": {
+    "mtime": 1789696898.3208678,
+    "seen": 1789698514.3957913,
+    "ast_hash": "d98321264bdc71250157362d44a17fc4",
+    "semantic_hash": ""
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/screen/mainScreen/ProjectFileTitlePolicyTest.kt": {
+    "mtime": 1789176553.5578575,
+    "seen": 1789693941.0998898,
+    "ast_hash": "a27ee48d22a9189749b31f313fe5c28b",
+    "semantic_hash": "a27ee48d22a9189749b31f313fe5c28b"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/screen/mainScreen/WorkspaceSaveCoordinatorTest.kt": {
+    "mtime": 1789176553.5673864,
+    "seen": 1789693941.0998902,
+    "ast_hash": "34bc7e0128c66ecf9ee03c4f8ca49985",
+    "semantic_hash": "34bc7e0128c66ecf9ee03c4f8ca49985"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/screen/mainScreen/leftSideMenu/FolderTagDraftTest.kt": {
+    "mtime": 1789176553.5407858,
+    "seen": 1789693941.0998907,
+    "ast_hash": "b351a0802134447cd06a216a3b7553a0",
+    "semantic_hash": "b351a0802134447cd06a216a3b7553a0"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/screen/mainScreen/leftSideMenu/HierarchyOrderDraftTest.kt": {
+    "mtime": 1789176553.547322,
+    "seen": 1789693941.0998912,
+    "ast_hash": "888c1a2935b11bebb5d67c561dc5ad5a",
+    "semantic_hash": "888c1a2935b11bebb5d67c561dc5ad5a"
+  },
+  "composeApp/src/commonTest/kotlin/com/ninetag/machum/theme/CustomColorSchemeTest.kt": {
+    "mtime": 1787970460.4710777,
+    "seen": 1789693941.0998917,
+    "ast_hash": "0a3502338b4e75cdee60124a74b15a2f",
+    "semantic_hash": "0a3502338b4e75cdee60124a74b15a2f"
+  },
+  "composeApp/src/jvmMain/kotlin/com/ninetag/machum/backup/BackupPlatform.jvm.kt": {
+    "mtime": 1788174056.1540666,
+    "seen": 1789693941.0998924,
+    "ast_hash": "3c07a12cc36c9b72f65bf4db7b59ac18",
+    "semantic_hash": "3c07a12cc36c9b72f65bf4db7b59ac18"
+  },
+  "composeApp/src/jvmMain/kotlin/com/ninetag/machum/commit/CommitPlatform.jvm.kt": {
+    "mtime": 1788144341.462283,
+    "seen": 1789693941.099893,
+    "ast_hash": "2314a5e5ee8d6347eab516bba1b1b664",
+    "semantic_hash": "2314a5e5ee8d6347eab516bba1b1b664"
+  },
+  "composeApp/src/jvmMain/kotlin/com/ninetag/machum/external/ClipEntryFactory.jvm.kt": {
+    "mtime": 1788422084.701,
+    "seen": 1789693941.0998936,
+    "ast_hash": "913608f365a9d905f023177de1ee1bbb",
+    "semantic_hash": "913608f365a9d905f023177de1ee1bbb"
+  },
+  "composeApp/src/jvmMain/kotlin/com/ninetag/machum/external/FileManager.jvm.kt": {
+    "mtime": 1789568263.0391867,
+    "seen": 1789693941.0998943,
+    "ast_hash": "9bc9a8c90a860cf194af7061ed083d71",
+    "semantic_hash": "9bc9a8c90a860cf194af7061ed083d71"
+  },
+  "composeApp/src/jvmMain/kotlin/com/ninetag/machum/markdown/ui/diagnostics/EditorRecompositionDiagnostics.jvm.kt": {
+    "mtime": 1788161981.8393683,
+    "seen": 1789693941.0998948,
+    "ast_hash": "a696e4f678f48fa5cca90774b40b73f0",
+    "semantic_hash": "a696e4f678f48fa5cca90774b40b73f0"
+  },
+  "composeApp/src/jvmMain/kotlin/com/ninetag/machum/screen/common/PolicyScrollbar.jvm.kt": {
+    "mtime": 1788876250.7822888,
+    "seen": 1789693941.0998952,
+    "ast_hash": "aea2ad9eae5d5ca35b124d1267576215",
+    "semantic_hash": "aea2ad9eae5d5ca35b124d1267576215"
+  },
+  "composeApp/src/jvmMain/kotlin/com/ninetag/machum/screen/common/WorkspaceBackHandler.jvm.kt": {
+    "mtime": 1788951608.679041,
+    "seen": 1789693941.0998957,
+    "ast_hash": "a92f80f6792e55ee3985b99c3e155769",
+    "semantic_hash": "a92f80f6792e55ee3985b99c3e155769"
+  },
+  "composeApp/src/jvmMain/kotlin/com/ninetag/machum/screen/vaultScreen/VaultPickerUI.jvm.kt": {
+    "mtime": 1787978989.1819246,
+    "seen": 1789693941.0998967,
+    "ast_hash": "cacdc9362dac173da3050ea2cac3bf2f",
+    "semantic_hash": "cacdc9362dac173da3050ea2cac3bf2f"
+  },
+  "composeApp/src/jvmMain/kotlin/com/ninetag/machum/theme/WorkspaceUiPlatform.jvm.kt": {
+    "mtime": 1788951508.7479217,
+    "seen": 1789693941.0998971,
+    "ast_hash": "f280d15df4acfde66861d9de38d0b328",
+    "semantic_hash": "f280d15df4acfde66861d9de38d0b328"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/backup/PersistentProjectBackupQueueTest.kt": {
+    "mtime": 1788422084.705,
+    "seen": 1789693941.0998976,
+    "ast_hash": "6f33eda9c4899a49f8faceb029377ac8",
+    "semantic_hash": "6f33eda9c4899a49f8faceb029377ac8"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/backup/ProjectBackupServiceTest.kt": {
+    "mtime": 1788422084.709,
+    "seen": 1789693941.0998983,
+    "ast_hash": "a8977f08b871d9239c3e4dfd1505a24f",
+    "semantic_hash": "a8977f08b871d9239c3e4dfd1505a24f"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/commit/FileCommitStoreIntegrityTest.kt": {
+    "mtime": 1789182546.552947,
+    "seen": 1789693941.0998988,
+    "ast_hash": "21ee1ceede462c6ff44819b14d24d13f",
+    "semantic_hash": "21ee1ceede462c6ff44819b14d24d13f"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/commit/ProjectCommitServiceTest.kt": {
+    "mtime": 1789204161.402102,
+    "seen": 1789693941.0998993,
+    "ast_hash": "4e4dc957f861dcb1f1f429ecb601e77a",
+    "semantic_hash": "4e4dc957f861dcb1f1f429ecb601e77a"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/external/DocumentInfoPreferencesTest.kt": {
+    "mtime": 1789087916.2507107,
+    "seen": 1789693941.0999,
+    "ast_hash": "0283e2735e3452607848184bb480686f",
+    "semantic_hash": "0283e2735e3452607848184bb480686f"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/external/FileManagerAutoTagSyncTest.kt": {
+    "mtime": 1789194652.798,
+    "seen": 1789693941.0999007,
+    "ast_hash": "3fee4a511c4e2c205d872169309fcd9d",
+    "semantic_hash": "3fee4a511c4e2c205d872169309fcd9d"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/external/FileManagerFolderTest.kt": {
+    "mtime": 1789378650.3152487,
+    "seen": 1789693941.0999012,
+    "ast_hash": "fa23e92e8478968551e675e1435cb79f",
+    "semantic_hash": "fa23e92e8478968551e675e1435cb79f"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/external/FileManagerProjectConfigTest.kt": {
+    "mtime": 1789378351.8878489,
+    "seen": 1789693941.0999017,
+    "ast_hash": "ec3eba483242b4b955d23155f11b610c",
+    "semantic_hash": "ec3eba483242b4b955d23155f11b610c"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/external/FileManagerProjectFileMoveTest.kt": {
+    "mtime": 1789696913.1918168,
+    "seen": 1789698514.395808,
+    "ast_hash": "2c2b225e29f614bafd34c4b819928592",
+    "semantic_hash": ""
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/external/FileManagerProjectFileTrashTest.kt": {
+    "mtime": 1789382281.5082505,
+    "seen": 1789693941.0999029,
+    "ast_hash": "0bad67f4e7315447ec47d5d7fb359b58",
+    "semantic_hash": "0bad67f4e7315447ec47d5d7fb359b58"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/external/FileManagerProjectTagSyncTest.kt": {
+    "mtime": 1789702825.814941,
+    "seen": 1789702980.297779,
+    "ast_hash": "cb1835e2017f5285dcdca1bb0ab0d862",
+    "semantic_hash": ""
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/external/FileManagerWorkspaceLifecycleTest.kt": {
+    "mtime": 1789014433.6384907,
+    "seen": 1789693941.0999043,
+    "ast_hash": "28d4af69bbc2c97640e82eb56bbcb492",
+    "semantic_hash": "28d4af69bbc2c97640e82eb56bbcb492"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/external/FileManagerWorkspaceTest.kt": {
+    "mtime": 1789176553.5733871,
+    "seen": 1789693941.0999048,
+    "ast_hash": "44a3cae2f95cd57e8d94424903afdb94",
+    "semantic_hash": "44a3cae2f95cd57e8d94424903afdb94"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/external/FileManagerWorkspaceTrashTest.kt": {
+    "mtime": 1789190354.1818702,
+    "seen": 1789693941.0999053,
+    "ast_hash": "7da735618b8e499a4e864bae829a77bc",
+    "semantic_hash": "7da735618b8e499a4e864bae829a77bc"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/external/GeneralSourcePropertyTest.kt": {
+    "mtime": 1789348104.3139007,
+    "seen": 1789693941.0999057,
+    "ast_hash": "70f38f58d96b0706d9c492e12f6e765d",
+    "semantic_hash": "70f38f58d96b0706d9c492e12f6e765d"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/external/GeneralSourceServiceTest.kt": {
+    "mtime": 1789566857.3439124,
+    "seen": 1789693941.0999064,
+    "ast_hash": "ef0fbb62e2f4fa1a71d7262cb9ccaad6",
+    "semantic_hash": "ef0fbb62e2f4fa1a71d7262cb9ccaad6"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/external/WorkspaceMetadataIndexTest.kt": {
+    "mtime": 1789542371.5489287,
+    "seen": 1789693941.0999072,
+    "ast_hash": "5c4a794f4e1a0475be6e3bbfcf15c7a0",
+    "semantic_hash": "5c4a794f4e1a0475be6e3bbfcf15c7a0"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/markdown/ui/diagnostics/EditorRecompositionDiagnosticsJvmTest.kt": {
+    "mtime": 1788174293.0306427,
+    "seen": 1789693941.0999076,
+    "ast_hash": "6bd401615130f270b262c6200bead338",
+    "semantic_hash": "6bd401615130f270b262c6200bead338"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/commitScreen/CommitWorkspaceScreenTest.kt": {
+    "mtime": 1789204500.3676207,
+    "seen": 1789693941.099908,
+    "ast_hash": "9f574fd705dfe06c70055bbf2718d04f",
+    "semantic_hash": "9f574fd705dfe06c70055bbf2718d04f"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/common/AboveAnchorDropdownMenuTest.kt": {
+    "mtime": 1789179775.5786476,
+    "seen": 1789693941.0999086,
+    "ast_hash": "a327aa6cd83b4a15850cdbfd56a66009",
+    "semantic_hash": "a327aa6cd83b4a15850cdbfd56a66009"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/common/DrawerDropdownMenuLayoutTest.kt": {
+    "mtime": 1789179775.5771377,
+    "seen": 1789693941.0999093,
+    "ast_hash": "c2c6fd855a67c440eae86a073697e499",
+    "semantic_hash": "c2c6fd855a67c440eae86a073697e499"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/common/MenuMotionTest.kt": {
+    "mtime": 1789186517.822226,
+    "seen": 1789693941.0999098,
+    "ast_hash": "dd04f32f863072dd8eefdd18205fd873",
+    "semantic_hash": "dd04f32f863072dd8eefdd18205fd873"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/CreateFileRequestCompositionTest.kt": {
+    "mtime": 1789176553.6039581,
+    "seen": 1789693941.0999105,
+    "ast_hash": "858d055be3d061e167d57240ef433b35",
+    "semantic_hash": "858d055be3d061e167d57240ef433b35"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/DocumentInformationSectionTest.kt": {
+    "mtime": 1789706111.7804031,
+    "seen": 1789706203.4211187,
+    "ast_hash": "5eca84a53a7a73f7d8a042504b7ab2eb",
+    "semantic_hash": ""
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/DocumentPagerTest.kt": {
+    "mtime": 1789187793.2485867,
+    "seen": 1789693941.0999115,
+    "ast_hash": "043463c34cb774984efdfc90160485c1",
+    "semantic_hash": "043463c34cb774984efdfc90160485c1"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/EditorTopBarLayoutTest.kt": {
+    "mtime": 1789199359.932408,
+    "seen": 1789693941.0999122,
+    "ast_hash": "0927de03a8d731cf3024a6878e1f795c",
+    "semantic_hash": "0927de03a8d731cf3024a6878e1f795c"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/MainViewModelCommitTest.kt": {
+    "mtime": 1789204535.0560992,
+    "seen": 1789693941.0999126,
+    "ast_hash": "b25e2b73afb57f43702b5d7ce1441dab",
+    "semantic_hash": "b25e2b73afb57f43702b5d7ce1441dab"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/MainViewModelFileCreationRequestTest.kt": {
+    "mtime": 1789566646.2890642,
+    "seen": 1789693941.0999134,
+    "ast_hash": "e4e1a58d488520bdaf37512e73c29e60",
+    "semantic_hash": "e4e1a58d488520bdaf37512e73c29e60"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/MainViewModelFileMoveTest.kt": {
+    "mtime": 1789708846.735198,
+    "seen": 1789709046.3017893,
+    "ast_hash": "163fd37f7096a5fae5a2c7b3d23f85df",
+    "semantic_hash": ""
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/MainViewModelFileTrashTest.kt": {
+    "mtime": 1789541284.9135053,
+    "seen": 1789693941.0999146,
+    "ast_hash": "34b4399c7829ae2f092f80507c561876",
+    "semantic_hash": "34b4399c7829ae2f092f80507c561876"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/MainViewModelFolderSettingsTest.kt": {
+    "mtime": 1789708041.2097552,
+    "seen": 1789709046.3017907,
+    "ast_hash": "16fb934665c602a598991c566264daf1",
+    "semantic_hash": ""
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/MainViewModelHierarchyTest.kt": {
+    "mtime": 1789702234.9280014,
+    "seen": 1789702980.2977939,
+    "ast_hash": "dd22f6be4388af255cf24a0dea04c2cc",
+    "semantic_hash": ""
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/MainViewModelLifecycleTest.kt": {
+    "mtime": 1789176553.929832,
+    "seen": 1789693941.0999162,
+    "ast_hash": "f4050b1cb6d506ace3898d63ed6aa0d2",
+    "semantic_hash": "f4050b1cb6d506ace3898d63ed6aa0d2"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/MainViewModelRenameTest.kt": {
+    "mtime": 1789708576.7647839,
+    "seen": 1789709046.3017929,
+    "ast_hash": "99793a07d540f70770c4fae69dce6024",
+    "semantic_hash": ""
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/MainViewModelWorkspaceSelectionTest.kt": {
+    "mtime": 1789706635.9176123,
+    "seen": 1789709046.3017933,
+    "ast_hash": "8d8f5fdfc4f4e6e9e4d504a126f551b9",
+    "semantic_hash": ""
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/WorkspaceChoiceOpenerTest.kt": {
+    "mtime": 1789176554.0318556,
+    "seen": 1789693941.0999181,
+    "ast_hash": "328f7c7c2cd2dd2477b067dd4dba0c45",
+    "semantic_hash": "328f7c7c2cd2dd2477b067dd4dba0c45"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/leftSideMenu/FolderDirectControlsTest.kt": {
+    "mtime": 1789188540.5983903,
+    "seen": 1789693941.0999186,
+    "ast_hash": "725403da54e818888fcec72458090eb6",
+    "semantic_hash": "725403da54e818888fcec72458090eb6"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/leftSideMenu/FolderInlineRenameTest.kt": {
+    "mtime": 1789192080.7023098,
+    "seen": 1789693941.099919,
+    "ast_hash": "f61f61f1910ffaf7d34a82eb5e37435d",
+    "semantic_hash": "f61f61f1910ffaf7d34a82eb5e37435d"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/leftSideMenu/FolderSettingsDialogTest.kt": {
+    "mtime": 1789176553.6701944,
+    "seen": 1789693941.0999198,
+    "ast_hash": "3934b92d0e7d1496cf9dc7d2128acd6f",
+    "semantic_hash": "3934b92d0e7d1496cf9dc7d2128acd6f"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/leftSideMenu/GeneralSourceControlsRenameTest.kt": {
+    "mtime": 1789192081.8862965,
+    "seen": 1789693941.0999203,
+    "ast_hash": "9b55e7f2c0b525913c13d9c3f8e7e8bd",
+    "semantic_hash": "9b55e7f2c0b525913c13d9c3f8e7e8bd"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/leftSideMenu/HierarchyMotionTest.kt": {
+    "mtime": 1789187100.3632016,
+    "seen": 1789693941.0999212,
+    "ast_hash": "15976058a46e876e7ae31200548a72c9",
+    "semantic_hash": "15976058a46e876e7ae31200548a72c9"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/leftSideMenu/HierarchyRowsCompositionTest.kt": {
+    "mtime": 1789656112.3792193,
+    "seen": 1789693941.099922,
+    "ast_hash": "5d8457911d7a5879d693c4caf35ca76c",
+    "semantic_hash": "5d8457911d7a5879d693c4caf35ca76c"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/mainScreen/leftSideMenu/SidebarWorkspaceMenusTest.kt": {
+    "mtime": 1789179798.9326363,
+    "seen": 1789693941.0999224,
+    "ast_hash": "c701ea7880a8d90a346c80b959eb4aa5",
+    "semantic_hash": "c701ea7880a8d90a346c80b959eb4aa5"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/projectScreen/WorkspaceSelectionDialogTest.kt": {
+    "mtime": 1789203085.6542432,
+    "seen": 1789693941.0999231,
+    "ast_hash": "5fd08981c540d69db6a1350ca4b86445",
+    "semantic_hash": "5fd08981c540d69db6a1350ca4b86445"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/screen/projectScreen/WorkspaceTransitionsTest.kt": {
+    "mtime": 1789189480.6595068,
+    "seen": 1789693941.0999236,
+    "ast_hash": "be757650479ad7f21bba9dccf3fa1c5d",
+    "semantic_hash": "be757650479ad7f21bba9dccf3fa1c5d"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/theme/AppTypographyTest.kt": {
+    "mtime": 1789117633.1060884,
+    "seen": 1789693941.0999243,
+    "ast_hash": "6af52948bb34fc67ad59edaca3550fb7",
+    "semantic_hash": "6af52948bb34fc67ad59edaca3550fb7"
+  },
+  "composeApp/src/jvmTest/kotlin/com/ninetag/machum/theme/WorkspaceMotionTest.kt": {
+    "mtime": 1789186175.9978156,
+    "seen": 1789693941.099925,
+    "ast_hash": "102eaf8edb1a1959fe67f15e72c913e3",
+    "semantic_hash": "102eaf8edb1a1959fe67f15e72c913e3"
+  },
+  "desktopApp/build.gradle.kts": {
+    "mtime": 1787967545.2777648,
+    "seen": 1789693941.0999255,
+    "ast_hash": "0137d7332d3cab169a5fe36a2f504863",
+    "semantic_hash": "0137d7332d3cab169a5fe36a2f504863"
+  },
+  "desktopApp/src/main/kotlin/com/ninetag/machum/main.kt": {
+    "mtime": 1789176554.0348585,
+    "seen": 1789693941.099926,
+    "ast_hash": "e976a371f59995a5664313af60c075ef",
+    "semantic_hash": "e976a371f59995a5664313af60c075ef"
+  },
+  "gradlew": {
+    "mtime": 1774101754.0259776,
+    "seen": 1789693941.0999267,
+    "ast_hash": "f2d3d383787f61a4a99710ee8d780434",
+    "semantic_hash": "f2d3d383787f61a4a99710ee8d780434"
+  },
+  "settings.gradle.kts": {
+    "mtime": 1770288384.6236408,
+    "seen": 1789693941.0999272,
+    "ast_hash": "3dd907c3a1abe29518718e7cbd52efd9",
+    "semantic_hash": "3dd907c3a1abe29518718e7cbd52efd9"
+  },
+  ".codex/hooks.json": {
+    "mtime": 1789694675.3760493,
+    "seen": 1789695768.3573983,
+    "ast_hash": "5ebef3dd159986e465ab65e4014107ec",
+    "semantic_hash": ""
+  },
+  ".codex/skills/graphify/SKILL.md": {
+    "mtime": 1789694675.3727086,
+    "seen": 1789695768.3575947,
+    "ast_hash": "212b55d95333d84e14262f8ec83faa2b",
+    "semantic_hash": ""
+  },
+  ".codex/skills/graphify/references/add-watch.md": {
+    "mtime": 1789692954.3744397,
+    "seen": 1789695768.3575954,
+    "ast_hash": "d59d027fe449f06aa03905a01184e779",
+    "semantic_hash": ""
+  },
+  ".codex/skills/graphify/references/exports.md": {
+    "mtime": 1789692954.3744397,
+    "seen": 1789695768.3575962,
+    "ast_hash": "9da2a2152e60a22f07f05fed5158f287",
+    "semantic_hash": ""
+  },
+  ".codex/skills/graphify/references/extraction-spec.md": {
+    "mtime": 1789692954.3758385,
+    "seen": 1789695768.357597,
+    "ast_hash": "bf895ec4d4e40f5f66f7d31c2a9bd4a7",
+    "semantic_hash": ""
+  },
+  ".codex/skills/graphify/references/github-and-merge.md": {
+    "mtime": 1789692954.3768468,
+    "seen": 1789695768.357598,
+    "ast_hash": "cde13df085e4c492aeb7ba298a996d0d",
+    "semantic_hash": ""
+  },
+  ".codex/skills/graphify/references/hooks.md": {
+    "mtime": 1789692954.377847,
+    "seen": 1789695768.3575985,
+    "ast_hash": "3f545db6ce646650bb9de588f5512a27",
+    "semantic_hash": ""
+  },
+  ".codex/skills/graphify/references/query.md": {
+    "mtime": 1789692954.3788474,
+    "seen": 1789695768.3575993,
+    "ast_hash": "3c46f8ad006874260614ed8657d02307",
+    "semantic_hash": ""
+  },
+  ".codex/skills/graphify/references/transcribe.md": {
+    "mtime": 1789692954.3809493,
+    "seen": 1789695768.3575997,
+    "ast_hash": "67b6a5fa6c0974e18f60db9f8932fbd8",
+    "semantic_hash": ""
+  },
+  ".codex/skills/graphify/references/update.md": {
+    "mtime": 1789692954.3819501,
+    "seen": 1789695768.3576005,
+    "ast_hash": "9378bd03d56baaf78bd738ab3848f142",
+    "semantic_hash": ""
+  },
+  "AGENTS.md": {
+    "mtime": 1789706680.5009031,
+    "seen": 1789709046.3018126,
+    "ast_hash": "66f63389dd5bb8140a761eedb6401d45",
+    "semantic_hash": ""
+  },
+  "CLAUDE.md": {
+    "mtime": 1787967545.2511735,
+    "seen": 1789695768.357602,
+    "ast_hash": "570f816150eab2454be64ad26f8c3bf4",
+    "semantic_hash": ""
+  },
+  "README.md": {
+    "mtime": 1787967545.2521734,
+    "seen": 1789695768.3576026,
+    "ast_hash": "51c4eaf4eaf7c12dc0f82d72910ec14a",
+    "semantic_hash": ""
+  },
+  "docs/architecture.md": {
+    "mtime": 1789708742.5982406,
+    "seen": 1789709046.301815,
+    "ast_hash": "10fb3363c04b855c483ebc95d7ff7eac",
+    "semantic_hash": ""
+  },
+  "docs/commit-manual-test.md": {
+    "mtime": 1789204479.3085406,
+    "seen": 1789695768.3576038,
+    "ast_hash": "18a97dc047a49d9a62b713e6035002e5",
+    "semantic_hash": ""
+  },
+  "docs/folder-zone-manual-test.md": {
+    "mtime": 1788959809.368485,
+    "seen": 1789695768.3576045,
+    "ast_hash": "0f7c105f3275c6d1f745ed9532a80039",
+    "semantic_hash": ""
+  },
+  "docs/google-drive-backup.md": {
+    "mtime": 1789012593.4328966,
+    "seen": 1789695768.3576052,
+    "ast_hash": "51472f2ef0141606d61839825eeded20",
+    "semantic_hash": ""
+  },
+  "docs/markdown-editor.md": {
+    "mtime": 1789707399.682164,
+    "seen": 1789709046.3018184,
+    "ast_hash": "7c96a1553e1d061385e978f45df77c95",
+    "semantic_hash": ""
+  },
+  "docs/p0-manual-test.md": {
+    "mtime": 1788177624.9179442,
+    "seen": 1789695768.3576064,
+    "ast_hash": "01b2eee8b526d042408f053db8a7ae22",
+    "semantic_hash": ""
+  },
+  "docs/product-roadmap.md": {
+    "mtime": 1789012622.7824328,
+    "seen": 1789695768.357607,
+    "ast_hash": "755744d732c0b27e614403d25f8fddb9",
+    "semantic_hash": ""
+  },
+  "androidApp/src/main/res/mipmap-hdpi/ic_launcher.png": {
+    "mtime": 1770254588.01256,
+    "seen": 1789695768.3576076,
+    "ast_hash": "adcaf5b958ee155708e77f23ac6b3cdb",
+    "semantic_hash": ""
+  },
+  "androidApp/src/main/res/mipmap-hdpi/ic_launcher_round.png": {
+    "mtime": 1770254588.0135589,
+    "seen": 1789695768.357608,
+    "ast_hash": "698fe3c4ded44129534ed811a4024bbc",
+    "semantic_hash": ""
+  },
+  "androidApp/src/main/res/mipmap-mdpi/ic_launcher.png": {
+    "mtime": 1770254588.015064,
+    "seen": 1789695768.357609,
+    "ast_hash": "472c3ecb86996bed8516b338935a51d0",
+    "semantic_hash": ""
+  },
+  "androidApp/src/main/res/mipmap-mdpi/ic_launcher_round.png": {
+    "mtime": 1770254588.0160697,
+    "seen": 1789695768.3576095,
+    "ast_hash": "f3aac23c5162c50c0a41cdd205a004a8",
+    "semantic_hash": ""
+  },
+  "androidApp/src/main/res/mipmap-xhdpi/ic_launcher.png": {
+    "mtime": 1770254588.0170715,
+    "seen": 1789695768.3576102,
+    "ast_hash": "7f108fe7b46884cf7953694e5245d021",
+    "semantic_hash": ""
+  },
+  "androidApp/src/main/res/mipmap-xhdpi/ic_launcher_round.png": {
+    "mtime": 1770254588.019076,
+    "seen": 1789695768.3576107,
+    "ast_hash": "c6db0296101bf462a82b88ba6d256842",
+    "semantic_hash": ""
+  },
+  "androidApp/src/main/res/mipmap-xxhdpi/ic_launcher.png": {
+    "mtime": 1770254588.0200763,
+    "seen": 1789695768.3576114,
+    "ast_hash": "e8e005a4a7425340fd2ff7dab98d99b5",
+    "semantic_hash": ""
+  },
+  "androidApp/src/main/res/mipmap-xxhdpi/ic_launcher_round.png": {
+    "mtime": 1770254588.0210783,
+    "seen": 1789695768.3576121,
+    "ast_hash": "9e3000786992bbd78c3f075df7d2d4b3",
+    "semantic_hash": ""
+  },
+  "androidApp/src/main/res/mipmap-xxxhdpi/ic_launcher.png": {
+    "mtime": 1770254588.0230768,
+    "seen": 1789695768.3576128,
+    "ast_hash": "1e49d495a78909ab8754ec436bc39147",
+    "semantic_hash": ""
+  },
+  "androidApp/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png": {
+    "mtime": 1770254588.0240767,
+    "seen": 1789695768.3576133,
+    "ast_hash": "5800e2a5dbde6ab1c96157767f29ef04",
+    "semantic_hash": ""
+  }
+}

@@ -6,8 +6,10 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.emptyPreferences
 import com.ninetag.machum.entity.FolderConfig
 import com.ninetag.machum.entity.FolderType
+import com.ninetag.machum.entity.DocumentPropertyType
 import com.ninetag.machum.entity.PlotStage
 import com.ninetag.machum.entity.ProjectConfig
+import com.ninetag.machum.entity.withDefaultBaseFolder
 import io.github.vinceglb.filekit.PlatformFile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -22,6 +24,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.encodeToString
 import okio.Path.Companion.toPath
 import java.io.File
 import java.nio.file.Files
@@ -122,6 +125,19 @@ class FileManagerFolderTest {
             assertNotNull(fixture.renameFolder(), "fully rolled back rename must be retryable")
             assertTrue(fixture.renamedHero.isFile)
             assertContentEquals(fixture.heroBytes, fixture.renamedHero.readBytes())
+        }
+
+    @Test
+    fun renameProjectFolderRollbackRestoresActualPreWriteRawIncludingUnknownFields() =
+        withFolderRenameFixture { fixture ->
+            val externalRaw = fixture.configFile.readText().trimEnd()
+                .removeSuffix("}") + ",\"future\":{\"keep\":true}}\r\n"
+            fixture.configFile.writeText(externalRaw)
+            fixture.dataStore.arm(InterruptBehavior.THROW_FAILURE)
+
+            assertNull(fixture.renameFolder())
+
+            fixture.assertFullyRolledBack(expectedConfigBytes = externalRaw.toByteArray())
         }
 
     @Test
@@ -666,6 +682,7 @@ class FileManagerFolderTest {
     @Test
     fun fileCreationWritesPreparedPlotTagsBodyAndProjectIdentityTogether() = withFileManager { manager, project ->
         manager.setPreferences(Bookmarks(projectData = PlatformFile(project)))
+        assertNotNull(manager.writeConfig(ProjectConfig()))
         val folder = ProjectFolder(FolderKey.Base, PlatformFile(project))
         val prepared = NoteFile.parse("body").withPlotStage(PlotStage.CLIMAX).withTags(listOf("auto", "manual"))
         val created = assertNotNull(manager.createProjectFile(folder, "4-1. 무제", prepared))
@@ -714,9 +731,19 @@ class FileManagerFolderTest {
         File(project, "무제").mkdirs()
         File(project, "무제/keep.md").writeText("existing")
         assertFailsWith<IllegalStateException> {
-            manager.createProjectFolderWithConfigWriter("무제", FolderConfig(type = FolderType.GENERAL)) { _, _ ->
+            manager.createProjectFolderWithConfigWriter("무제", FolderConfig(type = FolderType.GENERAL)) { _, updated ->
                 assertTrue(File(project, "무제_1").isDirectory, "failure must happen after physical creation")
-                configFile.writeText("{partial")
+                val format = kotlinx.serialization.json.Json {
+                    ignoreUnknownKeys = true
+                    prettyPrint = true
+                    encodeDefaults = true
+                }
+                val expected = mergeKnownConfig(
+                    configFile.readText(),
+                    format.encodeToString(ProjectConfig.serializer(), originalConfig),
+                    format.encodeToString(ProjectConfig.serializer(), updated.withDefaultBaseFolder()),
+                )
+                configFile.writeText(expected.take(expected.length / 2))
                 throw java.io.IOException("config write failed")
             }
         }
@@ -724,6 +751,30 @@ class FileManagerFolderTest {
         assertEquals(originalConfig, manager.projectConfig.value)
         assertFalse(File(project, "무제_1").exists())
         assertEquals("existing", File(project, "무제/keep.md").readText())
+    }
+
+    @Test
+    fun folderCreationDoesNotOverwriteExternalConfigWhenPersistenceFailsBeforeWriting() = withFileManager { manager, project ->
+        manager.setPreferences(Bookmarks(projectData = PlatformFile(project)))
+        assertNotNull(manager.writeConfig(ProjectConfig()))
+        val configFile = File(project, ".machum.json")
+        val external = ProjectConfig(propertyTypes = mapOf("external" to DocumentPropertyType.TEXT))
+            .withDefaultBaseFolder()
+        val externalRaw = kotlinx.serialization.json.Json {
+            prettyPrint = true
+            encodeDefaults = true
+        }.encodeToString(ProjectConfig.serializer(), external)
+
+        assertFailsWith<IllegalStateException> {
+            manager.createProjectFolderWithConfigWriter("Drafts", FolderConfig(type = FolderType.GENERAL)) { _, _ ->
+                configFile.writeText(externalRaw)
+                throw java.io.IOException("external config won")
+            }
+        }
+
+        assertEquals(externalRaw, configFile.readText())
+        assertFalse(File(project, "Drafts").exists())
+        assertEquals(DocumentPropertyType.TEXT, manager.projectConfig.value?.propertyTypes?.get("external"))
     }
 
     @Test
@@ -873,14 +924,14 @@ private data class FolderRenameFixture(
         folderConfig = folderConfig,
     )
 
-    suspend fun assertFullyRolledBack() {
+    suspend fun assertFullyRolledBack(expectedConfigBytes: ByteArray? = configBytes) {
         assertTrue(originalDirectory.isDirectory)
         assertFalse(renamedDirectory.exists())
         assertTrue(hero.isFile)
         assertContentEquals(heroBytes, hero.readBytes())
         assertEquals(heroLastModified, hero.lastModified())
-        if (configBytes == null) assertFalse(configFile.exists())
-        else assertContentEquals(configBytes, configFile.readBytes())
+        if (expectedConfigBytes == null) assertFalse(configFile.exists())
+        else assertContentEquals(expectedConfigBytes, configFile.readBytes())
         assertEquals(originalConfig, fileManager.projectConfig.value)
         assertEquals(originalBookmarks, fileManager.bookmarks.value)
         val persistedBookmarks = fileManager.getPreferences()

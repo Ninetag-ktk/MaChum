@@ -71,6 +71,40 @@ class ProjectFileOrderingTest {
         assertEquals("1-1. 다음 장면", legacyEntries.nextPlotFileName(PlotStage.SETUP, "다음 장면"))
     }
 
+    @Test
+    fun unclassifiedPlotFilesUseHierarchicalFilenameOrder() {
+        val entries = listOf(
+            "1-0. 하나.md",
+            "3-0. 여덟.md",
+            "1-1. 둘.md",
+            "2-1. 넷.md",
+            "1-2. 셋.md",
+            "2-2. 다섯.md",
+            "2-3-0. 여섯.md",
+            "2-3-1. 일곱.md",
+            "2-3-10. 아홉.md",
+            "2-10. 열.md",
+        ).map { name ->
+            projectFile(name).let { file -> PlotFileEntry(file, stage = null, order = file.plotOrder()) }
+        }
+
+        assertEquals(
+            listOf(
+                "1-0. 하나.md",
+                "1-1. 둘.md",
+                "1-2. 셋.md",
+                "2-1. 넷.md",
+                "2-2. 다섯.md",
+                "2-3-0. 여섯.md",
+                "2-3-1. 일곱.md",
+                "2-3-10. 아홉.md",
+                "2-10. 열.md",
+                "3-0. 여덟.md",
+            ),
+            entries.sortedForPlot().map { it.projectFile.key.fileName },
+        )
+    }
+
     private fun projectFile(name: String): ProjectFile =
         ProjectFile(FileKey.of(name), PlatformFile(name))
 }

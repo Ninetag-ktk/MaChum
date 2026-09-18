@@ -6,6 +6,7 @@ import com.ninetag.machum.entity.PlotStage
 
 private val numberedPrefixRegex = Regex("""^(\d+)\.\s*""")
 private val plotPrefixRegex = Regex("""^(\d+)-(\d+)\.\s*""")
+private val hierarchicalNumberPrefixRegex = Regex("""^(\d+(?:-\d+)*)\.\s*""")
 
 fun ProjectFile.numberedPrefix(): Int? =
     numberedPrefixRegex.find(key.fileName)?.groupValues?.get(1)?.toIntOrNull()
@@ -51,13 +52,44 @@ fun ProjectFile.plotTitle(): String = key.fileName
     .replace(numberedPrefixRegex, "")
     .ifBlank { "제목" }
 
-fun List<PlotFileEntry>.sortedForPlot(): List<PlotFileEntry> = sortedWith(
-    compareBy<PlotFileEntry> { it.stage == null }
-        .thenBy { it.stage?.code ?: Int.MAX_VALUE }
-        .thenBy { it.order == null }
-        .thenBy { it.order ?: Int.MAX_VALUE }
-        .thenBy { it.projectFile.key.fileName.lowercase() },
-)
+fun List<PlotFileEntry>.sortedForPlot(): List<PlotFileEntry> {
+    val classified = filter { it.stage != null }.sortedWith(
+        compareBy<PlotFileEntry> { it.stage?.code ?: Int.MAX_VALUE }
+            .thenBy { it.order == null }
+            .thenBy { it.order ?: Int.MAX_VALUE }
+            .thenBy { it.projectFile.key.fileName.lowercase() },
+    )
+    val unclassified = filter { it.stage == null }.sortedWith { left, right ->
+        compareHierarchicalFileNames(left.projectFile, right.projectFile)
+    }
+    return classified + unclassified
+}
+
+private fun compareHierarchicalFileNames(left: ProjectFile, right: ProjectFile): Int {
+    val leftNumbers = left.hierarchicalNumberPrefix()
+    val rightNumbers = right.hierarchicalNumberPrefix()
+    if (leftNumbers != null && rightNumbers != null) {
+        repeat(minOf(leftNumbers.size, rightNumbers.size)) { index ->
+            val compared = leftNumbers[index].compareTo(rightNumbers[index])
+            if (compared != 0) return compared
+        }
+        val lengthCompared = leftNumbers.size.compareTo(rightNumbers.size)
+        if (lengthCompared != 0) return lengthCompared
+    } else if (leftNumbers != null) {
+        return -1
+    } else if (rightNumbers != null) {
+        return 1
+    }
+    return left.key.fileName.lowercase().compareTo(right.key.fileName.lowercase())
+}
+
+private fun ProjectFile.hierarchicalNumberPrefix(): List<Int>? {
+    val prefix = hierarchicalNumberPrefixRegex.find(key.fileName)
+        ?.groupValues
+        ?.get(1)
+        ?: return null
+    return prefix.split('-').map { segment -> segment.toIntOrNull() ?: return null }
+}
 
 fun List<ProjectFile>.sortedFor(folderConfig: FolderConfig): List<ProjectFile> = when (folderConfig.type) {
     FolderType.DEFAULT -> sortedWith(

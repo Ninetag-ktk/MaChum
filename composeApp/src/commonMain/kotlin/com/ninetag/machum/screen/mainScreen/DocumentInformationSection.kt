@@ -33,12 +33,14 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.ninetag.machum.entity.DocumentPropertyType
 import com.ninetag.machum.external.*
 import com.ninetag.machum.screen.common.MotionDropdownMenu
 import com.ninetag.machum.screen.common.PolicyVerticalScrollbar
 import com.ninetag.machum.screen.common.WorkspaceDisclosure
 import com.ninetag.machum.theme.WorkspaceUiMetrics
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /** Drafts belong to the file; changing selection must never move an errored edit to another file. */
@@ -48,27 +50,45 @@ internal fun DocumentInformationSection(
     workspaceIdentity: String,
     file: ProjectFile?,
     note: NoteFile?,
+    documentIdentity: Any = file?.key ?: Unit,
+    sharedForms: MutableMap<Pair<String, Any>, PropertyForm>? = null,
+    saveScope: CoroutineScope? = null,
     expanded: Boolean,
     managedTags: Map<String, String>,
+    propertyTypes: Map<String, DocumentPropertyType> = emptyMap(),
+    propertyScopeLabel: String = "",
     sourceIsManaged: Boolean,
     protectedKeys: Set<String> = emptySet(),
-    onSave: suspend (FileKey, NoteFile, NoteFile) -> String?,
+    onSave: suspend (FileKey, PreparedPropertyChange) -> String?,
     maxExpandedHeight: Dp = 260.dp,
 ) {
-    val forms = remember { mutableMapOf<Pair<String, FileKey>, PropertyForm>() }
-    val scope = rememberCoroutineScope()
+    val localForms = remember { mutableMapOf<Pair<String, Any>, PropertyForm>() }
+    val forms = sharedForms ?: localForms
+    val localScope = rememberCoroutineScope()
+    val scope = saveScope ?: localScope
     if (file == null || note == null) return
     val protection = DocumentPropertyProtectionPolicy(managedTags.keys, sourceIsManaged)
-    val raw = note.inject()
-    val parsed = remember(raw) { parseDocumentProperties(raw) }
-    val form = forms.getOrPut(workspaceIdentity to file.key) { PropertyForm() }
-    LaunchedEffect(workspaceIdentity, file.key, raw) { form.reconcile(parsed.properties) }
+    val propertiesSnapshot = note.documentPropertiesSnapshot()
+    val parsed = remember(propertiesSnapshot, propertyTypes) {
+        parseDocumentProperties(propertiesSnapshot, propertyTypes)
+    }
+    val form = forms.getOrPut(workspaceIdentity to documentIdentity) { PropertyForm() }
+    LaunchedEffect(workspaceIdentity, documentIdentity, propertiesSnapshot, propertyTypes) {
+        form.reconcile(parsed.properties)
+    }
     val fileKey = file.key
     fun submit(row: PropertyDraft, explicitDelete: Boolean = false) {
-        val change = form.prepareSave(row, note, protection, protectedKeys, explicitDelete) ?: return
+        val change = form.prepareSave(
+            row,
+            note,
+            protection,
+            protectedKeys,
+            explicitDelete = explicitDelete,
+            typeHints = propertyTypes,
+        ) ?: return
         scope.launch {
             try {
-                form.completeSave(row, change, onSave(fileKey, change.expected, change.updated))
+                form.completeSave(row, change, onSave(fileKey, change))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -81,7 +101,7 @@ internal fun DocumentInformationSection(
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f)),
     ) {
-        key(workspaceIdentity, fileKey) {
+        key(workspaceIdentity, documentIdentity) {
             val propertyScrollState = rememberScrollState()
             WorkspaceDisclosure(expanded = expanded, modifier = Modifier.fillMaxWidth()) {
                 Box(Modifier.fillMaxWidth().heightIn(max = maxExpandedHeight)) {
@@ -91,7 +111,7 @@ internal fun DocumentInformationSection(
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
                         parsed.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                        form.rows.forEach { row -> key(workspaceIdentity, fileKey, row.id) {
+                        form.rows.forEach { row -> key(workspaceIdentity, documentIdentity, row.id) {
                             val locked = row.original?.readOnly == true || DocumentPropertyProtectionPolicy.isAutomaticKey(row.original?.key)
                             val tagRow = row.name == "tags"
                             val rowManagedTags = managedTags.takeIf { tagRow }.orEmpty()
@@ -100,8 +120,21 @@ internal fun DocumentInformationSection(
                                 protection.isManagedSourceKey(row.name), parsed.error == null,
                                 onSubmit = { submit(row) }, onDelete = { submit(row, explicitDelete = true) })
                         } }
-                        TextButton(onClick = { form.rows.add(PropertyDraft(form.nextId++, null)) }) {
-                            Icon(Icons.Default.Add, null); Text("속성 추가")
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = { form.rows.add(PropertyDraft(form.nextId++, null)) }) {
+                                Icon(Icons.Default.Add, null); Text("속성 추가")
+                            }
+                            if (propertyScopeLabel.isNotEmpty()) {
+                                Spacer(Modifier.weight(1f))
+                                Text(
+                                    "새 문서 기본값 · $propertyScopeLabel",
+                                    modifier = Modifier.padding(end = 8.dp).semantics {
+                                        contentDescription = "속성 기본 적용 범위: $propertyScopeLabel"
+                                    },
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = WorkspaceUiMetrics.secondaryTextStyle,
+                                )
+                            }
                         }
                     }
                     PolicyVerticalScrollbar(propertyScrollState, Modifier.align(Alignment.CenterEnd).fillMaxHeight())
@@ -120,10 +153,11 @@ private fun PropertyRow(row: PropertyDraft, locked: Boolean, keyLocked: Boolean,
     var valueFocused by remember { mutableStateOf(false) }
     val enabled = !locked && !row.saving && canEdit
     val rowHeight = WorkspaceUiMetrics.hierarchyFolderRowHeight
+    val aliases = row.name.trim() == "aliases"
     Column {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
             Box {
-                val typeEnabled = enabled && !source && managed.isEmpty()
+                val typeEnabled = enabled && !keyLocked && !source && managed.isEmpty() && !aliases
                 val deleteEnabled = !row.saving && canEdit && !locked && !keyLocked
                 val menuEnabled = typeEnabled || deleteEnabled
                 Box(
@@ -131,8 +165,8 @@ private fun PropertyRow(row: PropertyDraft, locked: Boolean, keyLocked: Boolean,
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
-                        row.type.icon(),
-                        "속성 유형: ${row.type.label()}",
+                        if (aliases) Icons.Default.Link else row.type.icon(),
+                        if (aliases) "별칭 속성: 목록" else "속성 유형: ${row.type.label()}",
                         modifier = Modifier.size(WorkspaceUiMetrics.hierarchyIconSize),
                         tint = if (menuEnabled) LocalContentColor.current else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -156,26 +190,39 @@ private fun PropertyRow(row: PropertyDraft, locked: Boolean, keyLocked: Boolean,
                                 if (row.original != null) onSubmit()
                                 return@PropertyMenuItem
                             }
-                            // Do not silently collapse a list into a scalar or erase an existing value.
-                            if (row.list && row.items.size > 1 && type != DocumentPropertyType.LIST && type != DocumentPropertyType.TAGS) {
-                                row.error = "여러 값은 이 유형으로 변경할 수 없습니다."
-                            } else {
-                                val scalar = if (row.list) row.items.firstOrNull()?.display().orEmpty() else row.text.text
-                                if (type == DocumentPropertyType.BOOLEAN && scalar !in listOf("true", "false", "")) {
-                                    row.error = "true 또는 false 값만 체크박스로 변경할 수 있습니다."
-                                    return@PropertyMenuItem
-                                }
-                                if (row.type == DocumentPropertyType.BOOLEAN && type != DocumentPropertyType.BOOLEAN) {
-                                    row.error = "체크박스의 유형 변경은 아직 지원하지 않습니다."
-                                    return@PropertyMenuItem
-                                }
-                                if (type == DocumentPropertyType.BOOLEAN) row.checked = scalar == "true"
-                                row.type = type
-                                if (row.list) { row.items = scalar.takeIf { it.isNotEmpty() }?.let { listOf(DocumentPropertyListItem.Text(it)) }.orEmpty(); row.text = TextFieldValue() }
-                                else { row.text = TextFieldValue(scalar); row.items = emptyList() }
-                                row.markEdited()
-                                if (row.original != null) onSubmit()
+                            val scalar = when {
+                                row.list -> row.items.joinToString(", ") { it.display() }
+                                row.type == DocumentPropertyType.BOOLEAN && row.booleanTextMode -> row.text.text
+                                row.type == DocumentPropertyType.BOOLEAN && row.booleanHasValue -> row.checked.toString()
+                                else -> row.text.text
                             }
+                            val originalItems = (row.original?.value as? DocumentPropertyValue.ListValue)?.items
+                            row.type = type
+                            when {
+                                row.list -> {
+                                    row.items = originalItems?.takeIf { !row.valueEdited }
+                                        ?: scalar.takeIf(String::isNotEmpty)
+                                            ?.let { listOf(DocumentPropertyListItem.Text(it)) }
+                                            .orEmpty()
+                                    row.text = TextFieldValue()
+                                    row.booleanTextMode = false
+                                }
+                                type == DocumentPropertyType.BOOLEAN -> {
+                                    val boolean = scalar.toBooleanStrictOrNull()
+                                    row.booleanTextMode = scalar.isNotEmpty() && boolean == null
+                                    row.booleanHasValue = boolean != null
+                                    row.checked = boolean ?: false
+                                    row.text = TextFieldValue(if (row.booleanTextMode) scalar else "")
+                                    row.items = emptyList()
+                                }
+                                else -> {
+                                    row.text = TextFieldValue(scalar)
+                                    row.items = emptyList()
+                                    row.booleanTextMode = false
+                                }
+                            }
+                            row.markEdited()
+                            if (row.original != null) onSubmit()
                         }) }
                     if (typeEnabled && deleteEnabled) HorizontalDivider()
                     if (deleteEnabled) {
@@ -234,7 +281,7 @@ private fun PropertyRow(row: PropertyDraft, locked: Boolean, keyLocked: Boolean,
                                 managedOrigin = managedOrigin,
                                 canDelete = enabled && managedOrigin == null,
                                 onDelete = {
-                                    row.items = row.items.filterIndexed { i, _ -> i != index }; row.markEdited(); onSubmit()
+                                    row.items = row.items.filterIndexed { i, _ -> i != index }; row.markValueEdited(); onSubmit()
                                 },
                             )
                         }
@@ -248,10 +295,15 @@ private fun PropertyRow(row: PropertyDraft, locked: Boolean, keyLocked: Boolean,
                             modifier = Modifier.widthIn(min = 96.dp, max = 160.dp),
                         )
                     }
-                } else if (row.type == DocumentPropertyType.BOOLEAN) {
+                } else if (row.type == DocumentPropertyType.BOOLEAN && !row.booleanTextMode) {
                     Checkbox(
                         checked = row.checked,
-                        onCheckedChange = if (enabled) ({ row.checked = it; row.markEdited(); onSubmit() }) else null,
+                        onCheckedChange = if (enabled) ({
+                            row.checked = it
+                            row.booleanHasValue = true
+                            row.markValueEdited()
+                            onSubmit()
+                        }) else null,
                         modifier = Modifier.size(rowHeight),
                     )
                 } else {
@@ -268,6 +320,14 @@ private fun PropertyRow(row: PropertyDraft, locked: Boolean, keyLocked: Boolean,
             }
         }
         if (row.saving) LinearProgressIndicator(Modifier.fillMaxWidth())
+        row.original?.sourceType?.takeIf { row.hasTypeMismatch }?.let { sourceType ->
+            Text(
+                "저장된 값은 ${sourceType.label()} 형식이며 ${row.type.label()} 유형으로 편집합니다.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = WorkspaceUiMetrics.secondaryTextStyle,
+                modifier = Modifier.padding(start = rowHeight + 8.dp),
+            )
+        }
         (row.error ?: row.original?.error)?.let { error ->
             Text(error, color = MaterialTheme.colorScheme.error, style = WorkspaceUiMetrics.secondaryTextStyle)
             if (!locked) TextButton(onClick = onSubmit, enabled = !row.saving) { Text("다시 시도") }
@@ -370,7 +430,7 @@ private fun PropertyValueTextField(
     val fieldErrorMessage = row.error ?: row.original?.error
     BasicTextField(
         value = row.text,
-        onValueChange = { row.text = it; row.markEdited() },
+        onValueChange = { row.text = it; row.markValueEdited() },
         enabled = enabled,
         singleLine = true,
         textStyle = WorkspaceUiMetrics.labelTextStyle.copy(
@@ -393,7 +453,7 @@ private fun PropertyValueTextField(
                 val last = row.items.lastOrNull()
                 if (last != null && last.display() !in managedValues) {
                     row.items = row.items.dropLast(1)
-                    row.markEdited()
+                    row.markValueEdited()
                     onSubmit()
                 }
                 true

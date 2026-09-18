@@ -9,15 +9,19 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.ninetag.machum.entity.BASE_FOLDER_PATH
 import com.ninetag.machum.entity.DEFAULT_BASE_FOLDER_CONFIG
 import com.ninetag.machum.entity.DEFAULT_PROJECT_FOLDERS
+import com.ninetag.machum.entity.DocumentPropertyDefinitionChange
 import com.ninetag.machum.entity.FolderConfig
 import com.ninetag.machum.entity.FolderType
 import com.ninetag.machum.entity.PlotStage
 import com.ninetag.machum.entity.ProjectConfig
+import com.ninetag.machum.entity.applyDocumentPropertyDefinitions
 import com.ninetag.machum.entity.defaultProjectConfig
+import com.ninetag.machum.entity.documentPropertyDefaults
 import com.ninetag.machum.entity.normalizeTag
 import com.ninetag.machum.entity.renameFolder
 import com.ninetag.machum.entity.removeFolder
 import com.ninetag.machum.entity.withDefaultBaseFolder
+import com.ninetag.machum.entity.validateDocumentPropertyDefinitions
 import io.github.vinceglb.filekit.FileKit
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.bookmarkData
@@ -49,7 +53,24 @@ import kotlin.collections.emptyList
 
 class FileManager(private val dataStore: DataStore<Preferences>) {
 
-    val generalSources = GeneralSourceService(this)
+    internal val workspaceMetadataIndex = WorkspaceMetadataIndex()
+    internal var markdownReader: suspend (PlatformFile) -> String = { file -> file.readString() }
+    internal var lastModifiedReader: suspend (PlatformFile) -> Long? = { file -> file.getLastModified() }
+    internal var generalSourceReader: suspend (PlatformFile) -> String = { file -> file.readString() }
+    internal var generalSourceWriter: suspend (PlatformFile, String) -> Unit = { file, raw -> write(file, raw) }
+    internal var projectFileMover: suspend (PlatformFile, PlatformFile, PlatformFile, PlatformFile) -> PlatformFile =
+        { project, sourceParent, source, targetParent ->
+            moveProjectFileNative(project, sourceParent, source, targetParent)
+        }
+    internal var projectFileResolver: suspend (PlatformFile, FileKey) -> PlatformFile? = { project, key ->
+        resolveRelativeFile(project, key.relativePath)
+    }
+    val generalSources = GeneralSourceService(
+        manager = this,
+        metadataIndex = workspaceMetadataIndex,
+        readSource = { file -> generalSourceReader(file) },
+        write = { file, raw -> generalSourceWriter(file, raw) },
+    )
 
     private val projectConfigMutex = Mutex()
     private val vaultConfigMutex = Mutex()
@@ -58,6 +79,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     private val workspaceTrashMutex = Mutex()
     internal var workspaceTrashClock: () -> Long = { kotlin.time.Clock.System.now().toEpochMilliseconds() }
     internal var workspaceTrashPurger: suspend (PlatformFile, PlatformFile) -> Unit = ::purgeWorkspaceTrashEntryNative
+    internal var workspaceTrashReceiptWriter: suspend (PlatformFile, String) -> Unit = { file, text -> file.writeString(text) }
     private val _workspaceTrashWarning = MutableStateFlow<String?>(null)
     val workspaceTrashWarning = _workspaceTrashWarning.asStateFlow()
     private var initialized = false
@@ -65,6 +87,28 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     val workspaceOpenRequest = _workspaceOpenRequest.asStateFlow()
 
     val projectIndexState: StateFlow<ProjectIndexState> = projectIndexer.state
+
+    internal suspend fun awaitProjectHierarchySnapshot(project: PlatformFile): ProjectHierarchySnapshot? {
+        val location = project.toString()
+        val initial = projectIndexState.value
+        val activationGeneration = initial.activationGeneration ?: return null
+        val settled = if (
+            initial.projectLocation == location &&
+            (initial is ProjectIndexState.Preparing || initial is ProjectIndexState.Indexing)
+        ) {
+            projectIndexState.first { state ->
+                state.projectLocation != location ||
+                    state.activationGeneration != activationGeneration ||
+                    state is ProjectIndexState.Ready
+            }
+        } else {
+            initial
+        }
+        val ready = (settled as? ProjectIndexState.Ready)
+            ?.takeIf { state -> state.activationGeneration == activationGeneration }
+            ?: return null
+        return projectIndexer.takeHierarchySnapshot(location, ready.activationGeneration)
+    }
 
     // .machum.json 직렬화: 구 스키마(workflow 필드 등) 무시 + 사람이 읽기 좋게 + 기본값도 기록
     private val configJson = Json {
@@ -75,6 +119,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
 
     companion object {
         private const val PROJECT_CONFIG_FILE_NAME = ".machum.json"
+        private val PROJECT_MANAGED_PROPERTY_KEYS = setOf("id", "plot", "tags")
         private const val VAULT_CONFIG_FILE_NAME = ".machum-vault.json"
         private const val FOLDER_ID_FILE_NAME = ".machum-folder-id.json"
         private val BOOKMARK_VAULT = byteArrayPreferencesKey("bookmark_vault")
@@ -102,6 +147,9 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             _projectConfig.value = null
         }
         _bookmarks.value = normalizedBookmark
+        normalizedBookmark.projectData
+            ?.let { project -> workspaceMetadataIndex.activate(project, normalizedBookmark.workspaceKind) }
+            ?: workspaceMetadataIndex.deactivate()
         return normalizedBookmark
     }
 
@@ -135,6 +183,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             pref.remove(WORKSPACE_KIND)
         }
         _bookmarks.value = Bookmarks()
+        workspaceMetadataIndex.deactivate()
         _projectConfig.value = null
         projectIndexer.reset()
         _workspaceOpenRequest.value = null
@@ -162,6 +211,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         } catch (error: Exception) {
             // 저장된 선택 정보는 유지하되 중간에 공개한 상태는 재시도 전에 비운다.
             _bookmarks.value = Bookmarks()
+            workspaceMetadataIndex.deactivate()
             _projectConfig.value = null
             projectIndexer.reset()
             _workspaceOpenRequest.value = null
@@ -177,6 +227,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
         val bookmark = Bookmarks(vaultData = vault)
         _bookmarks.value = bookmark
+        workspaceMetadataIndex.deactivate()
         _projectConfig.value = null
         return vault
     }
@@ -197,6 +248,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
         projectIndexer.prepare(project)
         _bookmarks.value = bookmarks.copy(workspaceKind = WorkspaceKind.PROJECT)
+        workspaceMetadataIndex.activate(project, WorkspaceKind.PROJECT)
         checkNotNull(loadProjectConfig(project)) { "프로젝트 설정을 불러오지 못했습니다." }
         bookmarks.vaultData?.let { vault ->
             runCatching { rememberProject(vault, project) }
@@ -544,8 +596,11 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             // Frontmatter is authoritative, including General-time renames, removals and new files.
             val updatedConfig = resumedConfig.copy(fileIds = fileIds)
             if (updatedConfig != config) {
-                changes.add(0, WorkspaceFileChange(configFile, storedText,
-                    configJson.encodeToString(ProjectConfig.serializer(), updatedConfig)))
+                changes.add(0, WorkspaceFileChange(
+                    configFile,
+                    storedText,
+                    encodeProjectConfig(storedText, config, updatedConfig),
+                ))
             }
             val attempted = mutableListOf<WorkspaceFileChange>()
             try {
@@ -740,9 +795,10 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * @return 프로젝트 폴더 목록
      */
     suspend fun listProject(vault: PlatformFile): List<PlatformFile> = withContext(Dispatchers.IO) {
-        vault.list()
-            .filter { it.isDirectory() && !it.name.startsWith(".") }
+        listDirectoryEntries(vault)
+            .filter { it.isDirectory && !it.name.startsWith(".") }
             .sortedBy { it.name }
+            .map(PlatformDirectoryEntry::platformFile)
     }
 
     /** Caller must hold the editor save fence before moving an active workspace. */
@@ -764,23 +820,27 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                     check(entry.name == id) { "휴지통 항목 이름이 요청과 다릅니다." }
                     validateWorkspaceTrashChild(trash, entry)
                     val receiptFile = setConfig(entry, WORKSPACE_TRASH_RECEIPT) ?: error("휴지통 기록을 만들지 못했습니다.")
-                    var receipt = WorkspaceTrashReceipt(entryId = id, originalName = child.name,
-                        originalLocation = child.toString(), suspendedProjects = suspended?.let { mapOf(it.key to it.value) }.orEmpty())
-                    val initialText = configJson.encodeToString(WorkspaceTrashReceipt.serializer(), receipt)
-                    receiptFile.writeString(initialText)
-                    check(receiptFile.readString() == initialText) { "휴지통 기록을 확인하지 못했습니다." }
+                    var receipt = WorkspaceTrashReceipt(
+                        entryId = id,
+                        originalName = child.name,
+                        originalLocation = child.toString(),
+                        suspendedProjects = suspended?.let { mapOf(it.key to it.value) }.orEmpty(),
+                        movedAtEpochMillis = workspaceTrashClock(),
+                    )
+                    writeWorkspaceTrashReceipt(entry, receiptFile, receipt)
                     withContext(NonCancellable) {
                         val moved = moveWorkspaceItemNative(vault, vault, child, entry)
-                        receipt = receipt.copy(movedAtEpochMillis = workspaceTrashClock(), movedLocation = moved.toString())
+                        receipt = receipt.copy(movedLocation = moved.toString())
                         // The runtime must stop referring to moved paths even if persistent cleanup fails.
                         if (sameLocation(_bookmarks.value.projectData, child)) {
                             _bookmarks.value = Bookmarks(vaultData = vault)
+                            workspaceMetadataIndex.deactivate()
                             _projectConfig.value = null
                             projectIndexer.reset()
                         }
                         if (sameLocation(_workspaceOpenRequest.value?.directory, child)) _workspaceOpenRequest.value = null
                         val warning = runCatching {
-                            writeWorkspaceTrashReceipt(receiptFile, receipt)
+                            writeWorkspaceTrashReceipt(entry, receiptFile, receipt)
                             completeWorkspaceTrashCleanup(vault, entry, receiptFile, receipt)
                         }.exceptionOrNull()?.let { "폴더는 휴지통으로 이동했습니다. 기록 정리를 완료하지 못했습니다: ${it.message}" }
                         _workspaceTrashWarning.value = warning
@@ -827,19 +887,20 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                     originalLocation = source.toString(), kind = WorkspaceTrashKind.FILE,
                     workspaceIdentity = identity, workspaceLocation = workspace.toString(),
                     originalRelativePath = fileKey.relativePath, removedFileIds = removedIds,
-                    projectConfigRecoveryFile = WORKSPACE_TRASH_CONFIG_RECOVERY.takeIf { removedIds.isNotEmpty() })
-                writeWorkspaceTrashReceipt(receiptFile, receipt)
+                    projectConfigRecoveryFile = WORKSPACE_TRASH_CONFIG_RECOVERY.takeIf { removedIds.isNotEmpty() },
+                    movedAtEpochMillis = workspaceTrashClock())
+                writeWorkspaceTrashReceipt(entry, receiptFile, receipt)
                 withContext(NonCancellable) {
                     val moved = moveWorkspaceItemNative(vault, parent, source, entry)
-                    receipt = receipt.copy(movedAtEpochMillis = workspaceTrashClock(), movedLocation = moved.toString())
+                    receipt = receipt.copy(movedLocation = moved.toString())
                     if (sameLocation(_bookmarks.value.projectData, workspace) && _bookmarks.value.fileRelativePath == fileKey.relativePath) {
                         _bookmarks.value = _bookmarks.value.copy(fileData = null, fileRelativePath = null)
                     }
                     // Any previously completed index describes the old tree, including after a cleanup failure.
                     projectIndexer.reset()
                     val warning = runCatching {
-                        writeWorkspaceTrashReceipt(receiptFile, receipt)
-                        completeProjectFileTrashCleanup(vault, entry, receiptFile, receipt)
+                        writeWorkspaceTrashReceipt(entry, receiptFile, receipt)
+                        completeProjectEntryTrashCleanup(vault, entry, receiptFile, receipt)
                     }.exceptionOrNull()?.let { "문서는 휴지통으로 이동했습니다. 기록 정리를 완료하지 못했습니다: ${it.message}" }
                     _workspaceTrashWarning.value = warning
                     ProjectFileTrashResult(moved, warning)
@@ -848,7 +909,13 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
     }
 
-    private suspend fun completeProjectFileTrashCleanup(vault: PlatformFile, entry: PlatformFile, file: PlatformFile, receipt: WorkspaceTrashReceipt) {
+    private suspend fun completeProjectEntryTrashCleanup(
+        vault: PlatformFile,
+        entry: PlatformFile,
+        file: PlatformFile,
+        receipt: WorkspaceTrashReceipt,
+    ) {
+        check(receipt.kind == WorkspaceTrashKind.FILE || receipt.kind == WorkspaceTrashKind.FOLDER)
         val relativePath = checkNotNull(receipt.originalRelativePath)
         val candidates = listProject(vault)
         val matches = candidates.filter { directory ->
@@ -862,8 +929,18 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             check(candidates.none { it.toString() == receipt.workspaceLocation }) { "작업 공간이 교체되어 문서 기록을 정리하지 않았습니다." }
         } else {
             validateWorkspaceTrashChild(vault, workspace)
-            check(resolveRelativeFile(workspace, relativePath) == null) { "같은 경로에 새 문서가 있어 이전 문서 기록을 정리하지 않았습니다." }
-            if (receipt.removedFileIds.isNotEmpty()) projectConfigMutex.withLock {
+            if (receipt.kind == WorkspaceTrashKind.FILE) {
+                check(resolveRelativeFile(workspace, relativePath) == null) {
+                    "같은 경로에 새 문서가 있어 이전 문서 기록을 정리하지 않았습니다."
+                }
+            } else {
+                val folderKey = FolderKey.of(relativePath)
+                check(resolveFolder(workspace, folderKey) == null) {
+                    "같은 경로에 새 폴더가 있어 이전 폴더 기록을 정리하지 않았습니다."
+                }
+            }
+            val needsConfigUpdate = receipt.projectConfigRecoveryFile != null || receipt.removedFileIds.isNotEmpty()
+            if (needsConfigUpdate) projectConfigMutex.withLock {
                 val configFile = workspace.list().singleOrNull { it.name == PROJECT_CONFIG_FILE_NAME && !it.isDirectory() }
                     ?: error("프로젝트 설정을 읽지 못했습니다.")
                 var originalText = configFile.readString()
@@ -879,8 +956,15 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                     originalText = recovery.originalText
                 }
                 val current = configJson.decodeFromString(ProjectConfig.serializer(), originalText)
-                val updated = current.copy(fileIds = current.fileIds.filterNot { (id, path) -> receipt.removedFileIds[id] == path })
-                val updatedText = configJson.encodeToString(ProjectConfig.serializer(), updated)
+                    .validateDocumentPropertyDefinitions()
+                val updated = when (receipt.kind) {
+                    WorkspaceTrashKind.FILE -> current.copy(
+                        fileIds = current.fileIds.filterNot { (id, path) -> receipt.removedFileIds[id] == path },
+                    )
+                    WorkspaceTrashKind.FOLDER -> current.removeFolder(relativePath)
+                    WorkspaceTrashKind.WORKSPACE -> error("작업 공간 전체는 이 정리 경로의 대상이 아닙니다.")
+                }
+                val updatedText = encodeProjectConfig(originalText, current, updated)
                 if (recovery == null) {
                     recovery = WorkspaceTrashConfigRecovery(entryId = receipt.entryId,
                         workspaceIdentity = checkNotNull(receipt.workspaceIdentity), originalText = originalText, updatedText = updatedText)
@@ -914,27 +998,54 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
         dataStore.edit { pref ->
             val project = pref[BOOKMARK_PROJECT]?.let { runCatching { PlatformFile.fromBookmarkData(it).toString() }.getOrNull() }
-            if ((project == receipt.workspaceLocation || project == workspace?.toString()) && pref[BOOKMARK_FILE] == relativePath) {
+            val selectedPath = pref[BOOKMARK_FILE]
+            val movedSelection = when (receipt.kind) {
+                WorkspaceTrashKind.FILE -> selectedPath == relativePath
+                WorkspaceTrashKind.FOLDER -> selectedPath?.startsWith("$relativePath/") == true
+                WorkspaceTrashKind.WORKSPACE -> false
+            }
+            if ((project == receipt.workspaceLocation || project == workspace?.toString()) && movedSelection) {
                 pref.remove(BOOKMARK_FILE)
             }
         }
-        validateWorkspaceTrashFile(entry, entry.list().single { it.name == receipt.originalName })
+        val payload = entry.list().single { it.name == receipt.originalName }
+        if (receipt.kind == WorkspaceTrashKind.FILE) validateWorkspaceTrashFile(entry, payload)
+        else validateWorkspaceTrashChild(entry, payload)
         // If the whole workspace has since disappeared, no config was written and no recovery copy is needed.
         val recoveryReference = receipt.projectConfigRecoveryFile.takeIf { reference -> entry.list().any { it.name == reference } }
-        writeWorkspaceTrashReceipt(file, receipt.copy(cleanupComplete = true, projectConfigRecoveryFile = recoveryReference))
+        writeWorkspaceTrashReceipt(
+            entry,
+            file,
+            receipt.copy(
+                movedLocation = payload.toString(),
+                cleanupComplete = true,
+                projectConfigRecoveryFile = recoveryReference,
+            ),
+        )
     }
 
     private suspend fun readWorkspaceTrashConfigRecovery(entry: PlatformFile, receipt: WorkspaceTrashReceipt): WorkspaceTrashConfigRecovery? {
         val recoveryFile = entry.list().singleOrNull { it.name == WORKSPACE_TRASH_CONFIG_RECOVERY } ?: return null
-        check(receipt.kind == WorkspaceTrashKind.FILE && receipt.projectConfigRecoveryFile == WORKSPACE_TRASH_CONFIG_RECOVERY)
+        check(
+            (receipt.kind == WorkspaceTrashKind.FILE || receipt.kind == WorkspaceTrashKind.FOLDER) &&
+                receipt.projectConfigRecoveryFile == WORKSPACE_TRASH_CONFIG_RECOVERY,
+        )
         validateWorkspaceTrashFile(entry, recoveryFile)
         val recovery = configJson.decodeFromString(WorkspaceTrashConfigRecovery.serializer(), recoveryFile.readString())
         check(recovery.format == 1 && recovery.entryId == receipt.entryId && recovery.workspaceIdentity == receipt.workspaceIdentity) {
             "프로젝트 설정 복구 사본의 식별자가 다릅니다."
         }
         val original = configJson.decodeFromString(ProjectConfig.serializer(), recovery.originalText)
-        val expected = original.copy(fileIds = original.fileIds.filterNot { (id, path) -> receipt.removedFileIds[id] == path })
-        check(configJson.encodeToString(ProjectConfig.serializer(), expected) == recovery.updatedText) { "프로젝트 설정 복구 사본의 변경 내용이 다릅니다." }
+            .validateDocumentPropertyDefinitions()
+        val relativePath = checkNotNull(receipt.originalRelativePath)
+        val expected = when (receipt.kind) {
+            WorkspaceTrashKind.FILE -> original.copy(
+                fileIds = original.fileIds.filterNot { (id, path) -> receipt.removedFileIds[id] == path },
+            )
+            WorkspaceTrashKind.FOLDER -> original.removeFolder(relativePath)
+            WorkspaceTrashKind.WORKSPACE -> error("작업 공간 전체는 프로젝트 설정 복구 대상이 아닙니다.")
+        }
+        check(encodeProjectConfig(recovery.originalText, original, expected) == recovery.updatedText) { "프로젝트 설정 복구 사본의 변경 내용이 다릅니다." }
         return recovery
     }
 
@@ -957,14 +1068,76 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             val legacy = pref[GENERAL_FOLDERS].orEmpty() - receipt.originalLocation
             if (legacy.isEmpty()) pref.remove(GENERAL_FOLDERS) else pref[GENERAL_FOLDERS] = legacy
         }
-        validateWorkspaceTrashChild(entry, entry.list().single { it.name == receipt.originalName })
-        writeWorkspaceTrashReceipt(file, receipt.copy(cleanupComplete = true))
+        val payload = entry.list().single { it.name == receipt.originalName }
+        validateWorkspaceTrashChild(entry, payload)
+        writeWorkspaceTrashReceipt(
+            entry,
+            file,
+            receipt.copy(movedLocation = payload.toString(), cleanupComplete = true),
+        )
     }
 
-    private suspend fun writeWorkspaceTrashReceipt(file: PlatformFile, receipt: WorkspaceTrashReceipt) {
+    private suspend fun writeWorkspaceTrashReceipt(
+        entry: PlatformFile,
+        file: PlatformFile,
+        receipt: WorkspaceTrashReceipt,
+    ) {
         val text = configJson.encodeToString(WorkspaceTrashReceipt.serializer(), receipt)
-        file.writeString(text)
+        validateWorkspaceTrashFile(entry, file)
+        val original = file.readString()
+        if (original == text) return
+        val recovery = if (original.isNotEmpty()) {
+            check(entry.list().none { it.name == WORKSPACE_TRASH_RECEIPT_RECOVERY }) {
+                "이전 휴지통 기록 복구가 끝나지 않았습니다."
+            }
+            val recoveryFile = setConfig(entry, WORKSPACE_TRASH_RECEIPT_RECOVERY)
+                ?: error("휴지통 기록 복구 사본을 만들지 못했습니다.")
+            validateWorkspaceTrashFile(entry, recoveryFile)
+            check(recoveryFile.readString().isEmpty()) { "휴지통 기록 복구 사본이 비어 있지 않습니다." }
+            recoveryFile.writeString(original)
+            check(recoveryFile.readString() == original) { "휴지통 기록 복구 사본을 확인하지 못했습니다." }
+            recoveryFile
+        } else null
+        workspaceTrashReceiptWriter(file, text)
         check(file.readString() == text) { "휴지통 기록이 완전하게 저장되지 않았습니다." }
+        recovery?.let { recoveryFile ->
+            check(recoveryFile.readString() == original) { "휴지통 기록 복구 사본이 변경되었습니다." }
+            recoveryFile.delete()
+            check(entry.list().none { it.name == WORKSPACE_TRASH_RECEIPT_RECOVERY }) {
+                "휴지통 기록 복구 사본을 정리하지 못했습니다."
+            }
+        }
+    }
+
+    private suspend fun readWorkspaceTrashReceipt(
+        entry: PlatformFile,
+        file: PlatformFile,
+    ): WorkspaceTrashReceipt {
+        val currentRaw = file.readString()
+        val recoveryFile = entry.list().singleOrNull {
+            it.name == WORKSPACE_TRASH_RECEIPT_RECOVERY && !it.isDirectory()
+        }
+        if (recoveryFile == null) {
+            return configJson.decodeFromString(WorkspaceTrashReceipt.serializer(), currentRaw)
+        }
+        validateWorkspaceTrashFile(entry, recoveryFile)
+        val recoveryRaw = recoveryFile.readString()
+        val recovered = runCatching {
+            configJson.decodeFromString(WorkspaceTrashReceipt.serializer(), recoveryRaw)
+        }.getOrNull()?.takeIf { it.format == 1 && it.entryId == entry.name }
+        val current = runCatching {
+            configJson.decodeFromString(WorkspaceTrashReceipt.serializer(), currentRaw)
+        }.getOrNull()?.takeIf { it.format == 1 && it.entryId == entry.name }
+        val selected = recovered ?: current ?: error("휴지통 기록과 복구 사본이 모두 손상되었습니다.")
+        if (recovered != null && currentRaw != recoveryRaw) {
+            workspaceTrashReceiptWriter(file, recoveryRaw)
+            check(file.readString() == recoveryRaw) { "휴지통 기록 원문을 복구하지 못했습니다." }
+        }
+        recoveryFile.delete()
+        check(entry.list().none { it.name == WORKSPACE_TRASH_RECEIPT_RECOVERY }) {
+            "휴지통 기록 복구 사본을 정리하지 못했습니다."
+        }
+        return selected
     }
 
     /** Best effort on Vault listing. Invalid/incomplete entries are preserved, never guessed. */
@@ -979,30 +1152,58 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                     validateWorkspaceTrashChild(trash, entry)
                     val items = entry.list()
                     val file = items.singleOrNull { it.name == WORKSPACE_TRASH_RECEIPT && !it.isDirectory() } ?: continue
-                    var receipt = configJson.decodeFromString(WorkspaceTrashReceipt.serializer(), file.readString())
+                    var receipt = readWorkspaceTrashReceipt(entry, file)
                     if (receipt.format != 1 || receipt.entryId != entry.name || !validVaultChildName(receipt.originalName)) continue
-                    if (receipt.kind == WorkspaceTrashKind.FILE && (
-                        receipt.workspaceIdentity?.let(workspaceTrashIdPattern::matches) != true || receipt.workspaceLocation == null ||
-                            receipt.originalRelativePath?.let { path -> runCatching { FileKey.of(path).fileName == receipt.originalName }.getOrDefault(false) } != true ||
-                            !receipt.originalName.endsWith(".md", ignoreCase = true) ||
-                            (receipt.projectConfigRecoveryFile != WORKSPACE_TRASH_CONFIG_RECOVERY.takeIf { receipt.removedFileIds.isNotEmpty() } &&
-                                !(receipt.cleanupComplete && receipt.projectConfigRecoveryFile == null)) ||
-                            receipt.removedFileIds.values.any { it != receipt.originalRelativePath }
-                        )) continue
+                    val projectEntryValid = when (receipt.kind) {
+                        WorkspaceTrashKind.WORKSPACE -> true
+                        WorkspaceTrashKind.FILE ->
+                            receipt.workspaceIdentity?.let(workspaceTrashIdPattern::matches) == true &&
+                                receipt.workspaceLocation != null &&
+                                receipt.originalRelativePath?.let { path ->
+                                    runCatching { FileKey.of(path).fileName == receipt.originalName }.getOrDefault(false)
+                                } == true &&
+                                receipt.originalName.endsWith(".md", ignoreCase = true) &&
+                                (receipt.projectConfigRecoveryFile == WORKSPACE_TRASH_CONFIG_RECOVERY
+                                    .takeIf { receipt.removedFileIds.isNotEmpty() } ||
+                                    (receipt.cleanupComplete && receipt.projectConfigRecoveryFile == null)) &&
+                                receipt.removedFileIds.values.all { it == receipt.originalRelativePath }
+                        WorkspaceTrashKind.FOLDER ->
+                            receipt.workspaceIdentity?.let(workspaceTrashIdPattern::matches) == true &&
+                                receipt.workspaceLocation != null &&
+                                receipt.originalRelativePath?.let { path ->
+                                    runCatching {
+                                        path.isNotEmpty() && '/' !in path && FolderKey.of(path).relativePath == receipt.originalName
+                                    }.getOrDefault(false)
+                                } == true &&
+                                (receipt.projectConfigRecoveryFile == WORKSPACE_TRASH_CONFIG_RECOVERY ||
+                                    (receipt.projectConfigRecoveryFile == null && receipt.removedFileIds.isEmpty())) &&
+                                receipt.removedFileIds.values.all { path ->
+                                    path.startsWith("${receipt.originalRelativePath}/")
+                                }
+                    }
+                    if (!projectEntryValid) continue
                     val movedAt = receipt.movedAtEpochMillis ?: continue
                     val recoveryFile = items.singleOrNull { it.name == WORKSPACE_TRASH_CONFIG_RECOVERY }
                     if (recoveryFile != null) readWorkspaceTrashConfigRecovery(entry, receipt)
-                    val payloadItems = items.filterNot { it.name == WORKSPACE_TRASH_RECEIPT || it.name == WORKSPACE_TRASH_CONFIG_RECOVERY }
+                    val payloadItems = items.filterNot {
+                        it.name == WORKSPACE_TRASH_RECEIPT ||
+                            it.name == WORKSPACE_TRASH_RECEIPT_RECOVERY ||
+                            it.name == WORKSPACE_TRASH_CONFIG_RECOVERY
+                    }
                     val hasPayload = payloadItems.size == 1 && payloadItems.any {
-                        it.name == receipt.originalName && it.isDirectory() == (receipt.kind == WorkspaceTrashKind.WORKSPACE) &&
-                            it.toString() == receipt.movedLocation
+                        it.name == receipt.originalName && it.isDirectory() == (receipt.kind != WorkspaceTrashKind.FILE) &&
+                            (it.toString() == receipt.movedLocation ||
+                                (!receipt.cleanupComplete && receipt.movedLocation == null))
                     }
                     val purgeInterruptedAfterPayload = receipt.cleanupComplete && receipt.movedLocation != null && payloadItems.isEmpty()
                     if (movedAt < 0 || (!hasPayload && !purgeInterruptedAfterPayload)) continue
                     if (hasPayload && receipt.cleanupComplete && receipt.projectConfigRecoveryFile != null && recoveryFile == null) continue
                     if (!receipt.cleanupComplete) {
-                        if (receipt.kind == WorkspaceTrashKind.FILE) completeProjectFileTrashCleanup(vault, entry, file, receipt)
-                        else completeWorkspaceTrashCleanup(vault, entry, file, receipt)
+                        if (receipt.kind == WorkspaceTrashKind.WORKSPACE) {
+                            completeWorkspaceTrashCleanup(vault, entry, file, receipt)
+                        } else {
+                            completeProjectEntryTrashCleanup(vault, entry, file, receipt)
+                        }
                         receipt = receipt.copy(cleanupComplete = true)
                     }
                     val now = workspaceTrashClock()
@@ -1020,19 +1221,29 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     /** 하단 Project 후보와 상단 일반 폴더 위치를 한 번의 Vault 조회로 나눈다. */
     suspend fun listWorkspaceDirectories(vault: PlatformFile): WorkspaceDirectoryLists =
         withContext(Dispatchers.IO) {
-            maintainWorkspaceTrash(vault)
-            val directories = listProject(vault)
-            val config = loadVaultConfig(vault, directories)
-            val projectChoices = mutableListOf<PlatformFile>()
-            val generalFolders = mutableListOf<PlatformFile>()
-            directories.forEach { directory ->
-                // `.machum.json`이 손상됐더라도 일반 폴더로 우회해서 열지는 않는다.
-                val hasProjectMarker = directory.list().any { it.name == PROJECT_CONFIG_FILE_NAME }
-                val isGeneral = suspendedProject(directory, config) != null ||
-                    (!hasProjectMarker && directory.name in config.generalFolders)
-                if (isGeneral) generalFolders += directory else projectChoices += directory
+            val trace = WorkspaceLoadDiagnostics.begin("workspace-list")
+            try {
+                maintainWorkspaceTrash(vault)
+                WorkspaceLoadDiagnostics.event("workspace-list.trash-complete")
+                val directories = listProject(vault)
+                WorkspaceLoadDiagnostics.event("workspace-list.children", "count=${directories.size}")
+                val config = loadVaultConfig(vault, directories)
+                WorkspaceLoadDiagnostics.event("workspace-list.config-complete")
+                val projectChoices = mutableListOf<PlatformFile>()
+                val generalFolders = mutableListOf<PlatformFile>()
+                directories.forEach { directory ->
+                    // `.machum.json`이 손상됐더라도 일반 폴더로 우회해서 열지는 않는다.
+                    val hasProjectMarker = directory.list().any { it.name == PROJECT_CONFIG_FILE_NAME }
+                    val isGeneral = suspendedProject(directory, config) != null ||
+                        (!hasProjectMarker && directory.name in config.generalFolders)
+                    if (isGeneral) generalFolders += directory else projectChoices += directory
+                }
+                trace.complete("projects=${projectChoices.size}|general=${generalFolders.size}")
+                WorkspaceDirectoryLists(projectChoices, generalFolders)
+            } catch (error: Throwable) {
+                trace.fail(error)
+                throw error
             }
-            WorkspaceDirectoryLists(projectChoices, generalFolders)
         }
 
     suspend fun workspaceExists(directory: PlatformFile): Boolean = withContext(Dispatchers.IO) {
@@ -1057,6 +1268,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                 pref.remove(WORKSPACE_KIND)
             }
             _bookmarks.value = Bookmarks()
+            workspaceMetadataIndex.deactivate()
         } else {
             dataStore.edit { pref ->
                 pref.remove(BOOKMARK_PROJECT)
@@ -1064,6 +1276,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                 pref.remove(WORKSPACE_KIND)
             }
             _bookmarks.value = Bookmarks(vaultData = vault)
+            workspaceMetadataIndex.deactivate()
             runCatching {
                 updateVaultConfig(vault) { config ->
                     config.copy(
@@ -1081,18 +1294,35 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
 
     /** 프로젝트 base와 바로 아래의 비숨김 폴더를 반환한다. 중첩 폴더는 지원 범위 밖이다. */
     suspend fun listFolders(project: PlatformFile): List<ProjectFolder> = withContext(Dispatchers.IO) {
-        listOf(ProjectFolder(FolderKey.Base, project)) + project.list()
-            .filter { it.isDirectory() && !it.name.startsWith(".") }
-            .sortedBy { it.name }
-            .map { folder -> ProjectFolder(FolderKey.of(folder.name), folder) }
+        val trace = WorkspaceLoadDiagnostics.begin("hierarchy-folders")
+        try {
+            val folders = listOf(ProjectFolder(FolderKey.Base, project)) + listDirectoryEntries(project)
+                .filter { it.isDirectory && !it.name.startsWith(".") }
+                .sortedBy { it.name }
+                .map { entry -> ProjectFolder(FolderKey.of(entry.name), entry.platformFile) }
+            trace.complete("count=${folders.size}")
+            folders
+        } catch (error: Throwable) {
+            trace.fail(error)
+            throw error
+        }
     }
 
     /** 지정한 프로젝트 폴더의 직속 Markdown 파일을 상대 경로 정체성과 함께 반환한다. */
     suspend fun listProjectFiles(folder: ProjectFolder): List<ProjectFile> = withContext(Dispatchers.IO) {
-        folder.platformFile.list()
-            .filter { !it.isDirectory() && it.name.endsWith(".md", ignoreCase = true) }
-            .sortedBy { it.name }
-            .map { file -> ProjectFile(folder.key.file(file.name), file) }
+        val folderLabel = folder.key.relativePath.ifEmpty { "<root>" }
+        val trace = WorkspaceLoadDiagnostics.begin("hierarchy-files", "folder=$folderLabel")
+        try {
+            val files = listDirectoryEntries(folder.platformFile)
+                .filter { !it.isDirectory && it.name.endsWith(".md", ignoreCase = true) }
+                .sortedBy { it.name }
+                .map { entry -> ProjectFile(folder.key.file(entry.name), entry.platformFile) }
+            trace.complete("folder=$folderLabel|count=${files.size}")
+            files
+        } catch (error: Throwable) {
+            trace.fail(error)
+            throw error
+        }
     }
 
     /** 지정 폴더에 파일을 만들고, 관리 Project인 경우 생성 시점의 ID·Project 태그를 기록한다. */
@@ -1110,9 +1340,30 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             val initial = initialNote ?: NoteFile.parse("")
             val created = if (workspace.workspaceKind == WorkspaceKind.PROJECT) {
                 check(initialSource == null) { "source 구분에서 파일 만들기는 General 작업 공간에서만 가능합니다." }
-                createFile(folder.platformFile, name, initial.withProjectMetadata(normalizeTag(project.name)).inject())
+                projectConfigMutex.withLock {
+                    val configFile = project.list().singleOrNull {
+                        it.name == PROJECT_CONFIG_FILE_NAME && !it.isDirectory()
+                    } ?: error("프로젝트 설정을 읽지 못했습니다.")
+                    val currentConfig = readConfig(configFile)?.withDefaultBaseFolder()
+                        ?: error("프로젝트 설정이 비어 있습니다.")
+                    check(
+                        _bookmarks.value.workspaceKind == WorkspaceKind.PROJECT &&
+                            sameLocation(_bookmarks.value.projectData, project),
+                    ) { "작업 공간이 변경되었습니다." }
+                    _projectConfig.value = currentConfig
+                    val defaultKeys = currentConfig.documentPropertyDefaults(folder.key.relativePath).defaultPropertyKeys
+                    val withDefaults = NoteFile.parse(
+                        injectDefaultDocumentProperties(initial.inject(), defaultKeys, managedKeys = setOf("tags")),
+                    )
+                    createFile(
+                        folder.platformFile,
+                        name,
+                        withDefaults.withProjectMetadata(normalizeTag(project.name)).inject(),
+                    )
+                }
             } else generalSources.createFile(project, folder.platformFile, name, initial.inject(), initialSource)
             created?.let { file ->
+                projectIndexer.invalidateHierarchySnapshot()
                 ProjectFile(folder.key.file(file.name), file)
             }
         }
@@ -1141,6 +1392,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             } catch (error: Exception) {
                 throw incompleteFileCreation(failure.file, failure.expectedContent, error)
             }
+            projectIndexer.invalidateHierarchySnapshot()
             ProjectFile(folder.key.file(failure.file.name), failure.file)
         }
     }
@@ -1294,19 +1546,43 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                         "요청한 이름과 다른 폴더가 생성되었습니다: $directory. 목록에서 확인해 주세요."
                     }
                     val key = FolderKey.of(directory.name)
+                    val updated = previousConfig.copy(folders = previousConfig.folders +
+                        (key.relativePath to folderConfig))
+                    val expectedConfigRaw = originalConfig?.let { raw ->
+                        encodeProjectConfig(
+                            raw,
+                            previousConfig,
+                            updated.withDefaultBaseFolder().validateDocumentPropertyDefinitions(),
+                        )
+                    }
                     try {
-                        val updated = previousConfig.copy(folders = previousConfig.folders +
-                            (key.relativePath to folderConfig))
                         checkNotNull(persist(project, updated)) { "폴더 설정을 기록하지 못했습니다." }
                     } catch (error: Exception) {
-                        val restored = runCatching {
-                            if (originalConfig != null) configFile.writeString(originalConfig)
+                        val configRestored = runCatching {
+                            if (configFile != null && originalConfig != null) {
+                                val observed = configFile.readString()
+                                when {
+                                    observed == originalConfig -> Unit
+                                    observed.isNotEmpty() && expectedConfigRaw?.startsWith(observed) == true -> {
+                                        configFile.writeString(originalConfig)
+                                        check(configFile.readString() == originalConfig) {
+                                            "폴더 생성 전 프로젝트 설정 원문을 복구하지 못했습니다."
+                                        }
+                                    }
+                                    else -> {
+                                        readConfig(configFile)?.withDefaultBaseFolder()?.let { _projectConfig.value = it }
+                                        error("프로젝트 설정이 외부에서 변경되어 생성 전 원문을 덮어쓰지 않았습니다.")
+                                    }
+                                }
+                            }
                             _projectConfig.value = previousConfig
                         }.isSuccess
-                        val removed = restored && runCatching { deleteEmptyFolderExclusive(directory) }.getOrDefault(false)
+                        val removed = runCatching { deleteEmptyFolderExclusive(directory) }.getOrDefault(false)
                         throw IllegalStateException(
                             (if (removed) "폴더 설정에 실패하여 새 빈 폴더를 정리했습니다."
-                            else "폴더 설정에 실패했습니다. 생성된 폴더를 확인해 주세요: $directory") + " ${error.message}", error,
+                            else "폴더 설정에 실패했습니다. 생성된 폴더를 확인해 주세요: $directory") +
+                                (if (configRestored) "" else " 외부 프로젝트 설정은 덮어쓰지 않았습니다.") +
+                                " ${error.message}", error,
                         )
                     }
                     ProjectFolder(key, directory)
@@ -1330,9 +1606,8 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         val previousConfig = _projectConfig.value ?: return@withLock null
         val previousBookmarks = _bookmarks.value
         val persistsConfig = previousBookmarks.workspaceKind == WorkspaceKind.PROJECT
-        var originalConfig: Pair<PlatformFile, String>? = null
+        var configWriteReceipt: ProjectConfigWriteReceipt? = null
         var renamedDirectory: PlatformFile? = null
-        var configWriteAttempted = false
         var bookmarkWriteAttempted = false
 
         try {
@@ -1341,10 +1616,6 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                 if (!sameLocation(resolveFolder(project, previousKey), folder.platformFile)) return@withContext null
                 val children = project.list()
                 if (children.any { it.name.equals(directoryName, ignoreCase = true) }) return@withContext null
-                if (persistsConfig) {
-                    originalConfig = children.firstOrNull { it.name == PROJECT_CONFIG_FILE_NAME }
-                        ?.let { it to it.readString() }
-                }
                 val previousFileNames = listProjectFiles(folder).mapTo(mutableSetOf()) { it.key.fileName }
 
                 // 실제 이름 변경의 결과를 반드시 확보한 뒤 취소를 검사해야 이전 경로로 되돌릴 수 있다.
@@ -1366,9 +1637,16 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                     updatedPath = updatedKey.relativePath,
                     updatedFolderConfig = folderConfig,
                 )
-
-                configWriteAttempted = true
-                val persisted = persistProjectConfig(project, updatedConfig) ?: error("config save failed")
+                val persisted = withContext(NonCancellable) {
+                    val result = persistProjectConfigWithReceipt(
+                        project,
+                        updatedConfig,
+                        folderRename = previousKey.relativePath to updatedKey.relativePath,
+                    )
+                    configWriteReceipt = result.receipt
+                    result.projectConfig ?: error("config save failed")
+                }
+                currentCoroutineContext().ensureActive()
                 val previousSelectedPath = previousBookmarks.fileRelativePath
                 val updatedSelectedPath = previousSelectedPath?.replaceFolderPrefix(previousKey, updatedKey)
                 val updatedSelectedFile = if (updatedSelectedPath != previousSelectedPath) {
@@ -1411,22 +1689,28 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                                     "original directory restore failed"
                                 }
                             }.exceptionOrNull()?.let(::add)
-                            if (configWriteAttempted) {
+                            val receipt = configWriteReceipt
+                            if (receipt != null) {
                                 runCatching {
-                                    if (persistsConfig) {
-                                        val snapshot = originalConfig
-                                        if (snapshot != null) {
-                                            snapshot.first.writeString(snapshot.second)
-                                        } else {
-                                            // 변경 전 없었던 설정만 제거한다. 폴더나 다른 사용자 파일은 삭제하지 않는다.
-                                            project.list().firstOrNull { it.name == PROJECT_CONFIG_FILE_NAME }?.let {
-                                                check(!it.isDirectory()) { "config path is no longer a file" }
-                                                it.delete()
-                                            }
-                                        }
-                                    }
+                                    rollbackProjectConfigWrite(
+                                        receipt,
+                                        externalChangeMessage = "프로젝트 설정이 외부에서 변경되어 이름 변경 전 원문을 덮어쓰지 않았습니다.",
+                                        restoreFailureMessage = "이름 변경 전 프로젝트 설정 원문을 복구하지 못했습니다.",
+                                    )
                                     _projectConfig.value = previousConfig
                                 }.exceptionOrNull()?.let(::add)
+                            } else if (persistsConfig) {
+                                runCatching {
+                                    val currentConfig = project.list().singleOrNull {
+                                        it.name == PROJECT_CONFIG_FILE_NAME && !it.isDirectory()
+                                    }
+                                    val refreshed = currentConfig?.let { readConfig(it) }?.withDefaultBaseFolder()
+                                    if (refreshed != null) _projectConfig.value = refreshed
+                                }.exceptionOrNull()?.let(::add)
+                            } else {
+                                // General rename updates only the in-memory projection; restore it
+                                // when the bookmark transaction fails after the physical rename.
+                                _projectConfig.value = previousConfig
                             }
                             if (bookmarkWriteAttempted) {
                                 runCatching { setPreferences(previousBookmarks) }.exceptionOrNull()?.let(::add)
@@ -1452,42 +1736,89 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         inspectProjectFolderDeletion(project, folderKey)
     }
 
-    /** 점검 결과가 안전한 경우에만 실제 폴더와 설정·ID·선택 bookmark를 함께 제거한다. */
-    suspend fun deleteProjectFolder(
-        folderKey: FolderKey,
-    ): FolderDeletionUpdate? = withContext(Dispatchers.IO) {
-        val project = _bookmarks.value.projectData ?: return@withContext null
-        if (folderKey == FolderKey.Base) return@withContext null
+    /** 점검 결과가 안전한 직속 폴더를 Vault 휴지통으로 옮기고 Project일 때 설정도 정리한다. */
+    suspend fun deleteProjectFolder(folderKey: FolderKey): FolderDeletionUpdate? = workspaceOpenMutex.withLock {
+        withContext(Dispatchers.IO) {
+            if (folderKey == FolderKey.Base) return@withContext null
+            val selected = _bookmarks.value
+            val workspaceKind = selected.workspaceKind
+            val isProject = workspaceKind == WorkspaceKind.PROJECT
+            val vault = selected.vaultData ?: return@withContext null
+            val project = selected.projectData ?: return@withContext null
+            requireVaultChild(project, listProject(vault))
+            validateWorkspaceTrashChild(vault, project)
+            val preview = inspectProjectFolderDeletion(project, folderKey) ?: return@withContext null
+            if (!preview.canDelete) return@withContext null
+            validateWorkspaceTrashChild(project, preview.folder.platformFile)
 
-        projectConfigMutex.withLock {
-            val preview = inspectProjectFolderDeletion(project, folderKey) ?: return@withLock null
-            if (!preview.canDelete) return@withLock null
-            val previousConfig = _projectConfig.value ?: return@withLock null
-            val previousBookmarks = _bookmarks.value
-            val updatedConfig = previousConfig.removeFolder(folderKey.relativePath)
-            val selectedInsideFolder = previousBookmarks.fileRelativePath?.startsWith("${folderKey.relativePath}/") == true
-
-            try {
-                persistProjectConfig(project, updatedConfig) ?: error("config save failed")
-                if (selectedInsideFolder) {
-                    setPreferences(
-                        previousBookmarks.copy(
-                            fileData = null,
-                            fileRelativePath = null,
-                        )
+            workspaceTrashMutex.withLock {
+                val identity = ensureFolderIdentity(project)
+                checkUniqueWorkspaceIdentity(vault, identity)
+                val previousConfig = if (isProject) projectConfigMutex.withLock {
+                    val configFile = project.list().singleOrNull {
+                        it.name == PROJECT_CONFIG_FILE_NAME && !it.isDirectory()
+                    } ?: error("프로젝트 설정을 읽지 못했습니다.")
+                    readConfig(configFile)?.withDefaultBaseFolder()
+                        ?: error("프로젝트 설정이 비어 있습니다.")
+                } else _projectConfig.value
+                val removedIds = previousConfig?.fileIds.orEmpty().filterValues { path ->
+                    isProject && path.startsWith("${folderKey.relativePath}/")
+                }
+                val trash = vault.list().firstOrNull { it.name == WORKSPACE_TRASH_NAME }
+                    ?: createFolderExclusive(vault, WORKSPACE_TRASH_NAME)
+                    ?: error("Vault 휴지통을 만들지 못했습니다.")
+                validateWorkspaceTrashChild(vault, trash)
+                val id = Random.nextBytes(16).joinToString("") {
+                    (it.toInt() and 255).toString(16).padStart(2, '0')
+                }
+                val entry = createFolderExclusive(trash, id) ?: error("휴지통 항목을 만들지 못했습니다.")
+                check(entry.name == id) { "휴지통 항목 이름이 요청과 다릅니다." }
+                validateWorkspaceTrashChild(trash, entry)
+                val receiptFile = setConfig(entry, WORKSPACE_TRASH_RECEIPT)
+                    ?: error("휴지통 기록을 만들지 못했습니다.")
+                var receipt = WorkspaceTrashReceipt(
+                    entryId = id,
+                    originalName = preview.folder.platformFile.name,
+                    originalLocation = preview.folder.platformFile.toString(),
+                    kind = WorkspaceTrashKind.FOLDER,
+                    workspaceIdentity = identity,
+                    workspaceLocation = project.toString(),
+                    originalRelativePath = folderKey.relativePath,
+                    removedFileIds = removedIds,
+                    projectConfigRecoveryFile = WORKSPACE_TRASH_CONFIG_RECOVERY.takeIf { isProject },
+                    movedAtEpochMillis = workspaceTrashClock(),
+                )
+                writeWorkspaceTrashReceipt(entry, receiptFile, receipt)
+                withContext(NonCancellable) {
+                    val moved = moveWorkspaceItemNative(
+                        vault,
+                        project,
+                        preview.folder.platformFile,
+                        entry,
+                    )
+                    receipt = receipt.copy(
+                        movedLocation = moved.toString(),
+                    )
+                    if (sameLocation(_bookmarks.value.projectData, project) &&
+                        _bookmarks.value.fileRelativePath?.startsWith("${folderKey.relativePath}/") == true
+                    ) {
+                        _bookmarks.value = _bookmarks.value.copy(fileData = null, fileRelativePath = null)
+                    }
+                    _projectConfig.value = previousConfig?.removeFolder(folderKey.relativePath)
+                    projectIndexer.reset()
+                    val warning = runCatching {
+                        writeWorkspaceTrashReceipt(entry, receiptFile, receipt)
+                        completeProjectEntryTrashCleanup(vault, entry, receiptFile, receipt)
+                    }.exceptionOrNull()?.let {
+                        "폴더는 휴지통으로 이동했습니다. 기록 정리를 완료하지 못했습니다: ${it.message}"
+                    }
+                    _workspaceTrashWarning.value = warning
+                    FolderDeletionUpdate(
+                        folderKey = folderKey,
+                        deletedFileKeys = preview.markdownFiles.map(ProjectFile::key),
+                        cleanupWarning = warning,
                     )
                 }
-                if (!deleteDirectoryExact(preview.folder.platformFile)) {
-                    error("directory delete failed")
-                }
-                FolderDeletionUpdate(
-                    folderKey = folderKey,
-                    deletedFileKeys = preview.markdownFiles.map(ProjectFile::key),
-                )
-            } catch (error: Exception) {
-                runCatching { persistProjectConfig(project, previousConfig) }
-                runCatching { setPreferences(previousBookmarks) }
-                null
             }
         }
     }
@@ -1571,7 +1902,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         val content = configFile.readString()
         if (content.isBlank()) return@withContext null
 
-        configJson.decodeFromString(ProjectConfig.serializer(), content)
+        configJson.decodeFromString(ProjectConfig.serializer(), content).validateDocumentPropertyDefinitions()
     }
 
     /**
@@ -1586,10 +1917,10 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             val normalized = (stored ?: ProjectConfig()).withDefaultBaseFolder()
 
             if (stored != normalized) {
-                persistConfig(configFile, normalized)
+                persistConfig(configFile, normalized, expected = stored)
             }
 
-            projectIndexer.index(project)
+            projectIndexer.index(project, normalized)
 
             if (!sameLocation(_bookmarks.value.projectData, project)) return@withLock null
             _projectConfig.value = normalized
@@ -1603,7 +1934,9 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      */
     suspend fun lastModified(file: PlatformFile): Long? = withContext(Dispatchers.IO) {
         try {
-            file.getLastModified()
+            lastModifiedReader(file)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
         } catch (e: Exception) {
             null
         }
@@ -1611,7 +1944,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
 
     /** 선택된 작업 공간과 무관한 순수 읽기. ID·태그 생성이나 파일 쓰기를 하지 않는다. */
     suspend fun readMarkdown(file: PlatformFile): NoteFile = withContext(Dispatchers.IO) {
-        NoteFile.parse(file.readString())
+        NoteFile.parse(markdownReader(file))
     }
 
     internal suspend fun inspectProjectMetadata(
@@ -1664,7 +1997,8 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         projectConfigMutex.withLock {
             val project = _bookmarks.value.projectData ?: return@withLock null
             val current = _projectConfig.value ?: return@withLock null
-            persistProjectConfig(project, transform(current))
+            val updated = transform(current)
+            if (updated == current) current else persistProjectConfig(project, updated)
         }
     }
 
@@ -1676,27 +2010,149 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         current.copy(folders = current.folders + (relativePath to folderConfig))
     }
 
+    /** Updates the property defaults of one Project scope without touching existing Markdown files. */
+    suspend fun updateDocumentPropertyDefinition(
+        relativePath: String,
+        change: DocumentPropertyDefinitionChange,
+    ): ProjectConfig? = updateDocumentPropertyDefinitions(relativePath, listOf(change))
+
+    suspend fun updateDocumentPropertyDefinitions(
+        relativePath: String,
+        changes: List<DocumentPropertyDefinitionChange>,
+    ): ProjectConfig? = updateProjectConfig { current ->
+        check(_bookmarks.value.workspaceKind == WorkspaceKind.PROJECT) {
+            "Project 속성 설정은 Project 작업 공간에서만 저장할 수 있습니다."
+        }
+        val userChanges = changes.filterNot { change ->
+            val normalized = change.normalized()
+            normalized.previousKey in PROJECT_MANAGED_PROPERTY_KEYS ||
+                normalized.key in PROJECT_MANAGED_PROPERTY_KEYS
+        }
+        current.applyDocumentPropertyDefinitions(relativePath, userChanges)
+    }
+
     private suspend fun persistProjectConfig(
         project: PlatformFile,
         projectConfig: ProjectConfig,
-    ): ProjectConfig? {
-        if (_bookmarks.value.workspaceKind == WorkspaceKind.GENERAL) {
-            return projectConfig.copy(folders = projectConfig.folders.mapValues {
-                FolderConfig(type = FolderType.GENERAL)
-            }, fileIds = emptyMap()).also { _projectConfig.value = it }
-        }
-        val configFile = setConfig(project, PROJECT_CONFIG_FILE_NAME) ?: return null
-        val normalized = projectConfig.withDefaultBaseFolder()
-        persistConfig(configFile, normalized)
+        folderRename: Pair<String, String>? = null,
+    ): ProjectConfig? = persistProjectConfigWithReceipt(project, projectConfig, folderRename).projectConfig
 
-        if (!sameLocation(_bookmarks.value.projectData, project)) return null
+    private suspend fun persistProjectConfigWithReceipt(
+        project: PlatformFile,
+        projectConfig: ProjectConfig,
+        folderRename: Pair<String, String>? = null,
+    ): PersistedProjectConfig {
+        if (_bookmarks.value.workspaceKind == WorkspaceKind.GENERAL) {
+            val normalized = projectConfig.copy(folders = projectConfig.folders.mapValues {
+                FolderConfig(type = FolderType.GENERAL)
+            }, fileIds = emptyMap())
+            _projectConfig.value = normalized
+            return PersistedProjectConfig(normalized, receipt = null)
+        }
+        val existingConfig = project.list().singleOrNull {
+            it.name == PROJECT_CONFIG_FILE_NAME && !it.isDirectory()
+        }
+        val configFile = setConfig(project, PROJECT_CONFIG_FILE_NAME)
+            ?: return PersistedProjectConfig(projectConfig = null, receipt = null)
+        val normalized = projectConfig.withDefaultBaseFolder().validateDocumentPropertyDefinitions()
+        val receipt = persistConfig(
+            configFile,
+            normalized,
+            expected = _projectConfig.value,
+            folderRename = folderRename,
+            created = existingConfig == null,
+        )
+
+        if (!sameLocation(_bookmarks.value.projectData, project)) {
+            return PersistedProjectConfig(projectConfig = null, receipt)
+        }
         _projectConfig.value = normalized
-        return normalized
+        return PersistedProjectConfig(normalized, receipt)
     }
 
-    private suspend fun persistConfig(configFile: PlatformFile, projectConfig: ProjectConfig) {
-        val content = configJson.encodeToString(ProjectConfig.serializer(), projectConfig)
-        configFile.writeString(content)
+    private suspend fun persistConfig(
+        configFile: PlatformFile,
+        projectConfig: ProjectConfig,
+        expected: ProjectConfig? = null,
+        folderRename: Pair<String, String>? = null,
+        created: Boolean = false,
+    ): ProjectConfigWriteReceipt = withContext(NonCancellable) {
+        val original = configFile.readString()
+        val stored = original.takeIf(String::isNotBlank)?.let {
+            configJson.decodeFromString(ProjectConfig.serializer(), it).validateDocumentPropertyDefinitions()
+        }
+        if (expected != null) {
+            check(stored?.withDefaultBaseFolder() == expected.withDefaultBaseFolder()) {
+                "프로젝트 설정이 외부에서 변경되었습니다. 다시 시도해 주세요."
+            }
+        }
+        val content = encodeProjectConfigForPersistence(original, stored, projectConfig, folderRename)
+        check(configFile.readString() == original) { "프로젝트 설정이 외부에서 변경되었습니다. 다시 시도해 주세요." }
+        try {
+            configFile.writeString(content)
+            check(configFile.readString() == content) { "프로젝트 설정 기록 결과를 확인하지 못했습니다." }
+        } catch (failure: Exception) {
+            val observed = runCatching { configFile.readString() }.getOrNull()
+            if (observed != null && observed != original && content.startsWith(observed)) {
+                runCatching {
+                    check(configFile.readString() == observed) { "복구 전에 프로젝트 설정이 변경되었습니다." }
+                    configFile.writeString(original)
+                    check(configFile.readString() == original) { "프로젝트 설정 원문을 복구하지 못했습니다." }
+                }.exceptionOrNull()?.let(failure::addSuppressed)
+            }
+            throw failure
+        }
+        ProjectConfigWriteReceipt(
+            file = configFile,
+            beforeRaw = original,
+            afterRaw = content,
+            created = created,
+        )
+    }
+
+    private suspend fun rollbackProjectConfigWrite(
+        receipt: ProjectConfigWriteReceipt,
+        externalChangeMessage: String,
+        restoreFailureMessage: String,
+    ) {
+        val observed = receipt.file.readString()
+        if (receipt.created) {
+            check(observed == receipt.afterRaw) { externalChangeMessage }
+            receipt.file.delete()
+            check(!receipt.file.exists()) { restoreFailureMessage }
+            return
+        }
+        check(observed == receipt.afterRaw || observed == receipt.beforeRaw) { externalChangeMessage }
+        if (observed != receipt.beforeRaw) {
+            receipt.file.writeString(receipt.beforeRaw)
+            check(receipt.file.readString() == receipt.beforeRaw) { restoreFailureMessage }
+        }
+    }
+
+    private fun encodeProjectConfigForPersistence(
+        original: String,
+        stored: ProjectConfig?,
+        projectConfig: ProjectConfig,
+        folderRename: Pair<String, String>? = null,
+    ): String {
+        val rawForMerge = folderRename?.let { (previousPath, updatedPath) ->
+            moveJsonObjectEntry(original, "folders", previousPath, updatedPath)
+        } ?: original
+        val previousForMerge = folderRename?.let { (previousPath, updatedPath) ->
+            val previous = stored ?: ProjectConfig()
+            previous.copy(folders = buildMap {
+                previous.folders.forEach { (path, folder) ->
+                    put(if (path == previousPath) updatedPath else path, folder)
+                }
+            })
+        } ?: (stored ?: ProjectConfig())
+        return encodeProjectConfig(rawForMerge.takeIf(String::isNotBlank), previousForMerge, projectConfig)
+    }
+
+    private fun encodeProjectConfig(raw: String?, previous: ProjectConfig, updated: ProjectConfig): String {
+        val previousKnown = configJson.encodeToString(ProjectConfig.serializer(), previous)
+        val updatedKnown = configJson.encodeToString(ProjectConfig.serializer(), updated)
+        return raw?.let { mergeKnownConfig(it, previousKnown, updatedKnown) } ?: updatedKnown
     }
 
     suspend fun writeMarkdown(file: PlatformFile, noteFile: NoteFile) = withContext(Dispatchers.IO) {
@@ -1926,14 +2382,10 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                         folderConfig.type == FolderType.DEFAULT -> "0. 제목"
                         else -> "제목"
                     }
-                    createProjectFile(baseFolder, name)
-                        ?.also { created ->
-                            if (folderConfig.isPlot) {
-                                val noteFile = readMarkdown(created.platformFile)
-                                    .withPlotStage(PlotStage.PROLOGUE)
-                                writeMarkdown(created.platformFile, noteFile)
-                            }
-                        }
+                    val initial = NoteFile.parse("").let { note ->
+                        if (folderConfig.isPlot) note.withPlotStage(PlotStage.PROLOGUE) else note
+                    }
+                    createProjectFile(baseFolder, name, initial)
                         ?.let {
                             setPreferences(
                                 getPreferences().copy(
@@ -2043,6 +2495,340 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         renameMarkdownExact(parent, projectFile.platformFile, name)
     }
 
+    /**
+     * Moves an explicit Project file between the Project root and one of its direct folders.
+     *
+     * The source does not need to be open. Both handles are matched against the active Project
+     * immediately before the provider-native move; nested paths, foreign workspaces and replacing
+     * an existing child are rejected.
+     */
+    suspend fun moveProjectFile(
+        projectFile: ProjectFile,
+        targetFolder: ProjectFolder,
+    ): ProjectFile? {
+        if (projectFile.key.folder == targetFolder.key) return null
+        return moveProjectFileAndRenumber(
+            projectFile = projectFile,
+            targetFolder = targetFolder,
+            assignments = listOf(
+                ProjectFileMoveAssignment(
+                    projectFile = projectFile,
+                    finalFolder = targetFolder.key,
+                    finalBaseName = projectFile.platformFile.nameWithoutExtension,
+                ),
+            ),
+        )?.movedFile
+    }
+
+    /**
+     * Moves one Project document and atomically applies caller-computed names to every affected file.
+     *
+     * Exactly one assignment crosses a folder boundary: [projectFile]. Other assignments rename
+     * files in place, allowing the caller to compact the vacated source numbering without touching
+     * unrelated files in the target folder.
+     */
+    internal suspend fun moveProjectFileAndRenumber(
+        projectFile: ProjectFile,
+        targetFolder: ProjectFolder,
+        assignments: List<ProjectFileMoveAssignment>,
+        expectedMarkdownKeys: Set<FileKey>? = null,
+    ): ProjectFileMoveBatchResult? = projectConfigMutex.withLock {
+        val project = _bookmarks.value.projectData ?: return@withLock null
+        val previousConfig = _projectConfig.value ?: return@withLock null
+        val previousBookmarks = _bookmarks.value
+        val sourceKey = projectFile.key
+        if (previousBookmarks.workspaceKind != WorkspaceKind.PROJECT || assignments.isEmpty() ||
+            '/' in sourceKey.folder.relativePath || sourceKey.folder.relativePath.startsWith(".")
+        ) {
+            return@withLock null
+        }
+
+        var works: List<ProjectFileMoveWork> = emptyList()
+        var resolvedTarget: ProjectFolder? = null
+        var configWriteReceipt: ProjectConfigWriteReceipt? = null
+        var bookmarkWriteAttempted = false
+
+        try {
+            val result = withContext(Dispatchers.IO) {
+                val target = when {
+                    targetFolder.key == FolderKey.Base && sameLocation(project, targetFolder.platformFile) ->
+                        ProjectFolder(FolderKey.Base, project)
+                    else -> project.list().singleOrNull { child ->
+                        child.isDirectory() && targetFolder.key.relativePath == child.name &&
+                            sameLocation(child, targetFolder.platformFile) && !child.name.startsWith(".") &&
+                            '/' !in child.name && '\\' !in child.name
+                    }?.let { child -> ProjectFolder(FolderKey.of(child.name), child) }
+                } ?: return@withContext null
+                resolvedTarget = target
+                val assignmentsByKey = assignments.associateBy { it.projectFile.key }
+                if (assignmentsByKey.size != assignments.size || assignmentsByKey[sourceKey]?.projectFile != projectFile) {
+                    return@withContext null
+                }
+                val crossingAssignments = assignments.filter {
+                    it.finalFolder != it.projectFile.key.folder
+                }
+                if (crossingAssignments.size > 1 ||
+                    crossingAssignments.any { it.projectFile.key != sourceKey } ||
+                    assignmentsByKey.getValue(sourceKey).finalFolder != target.key
+                ) return@withContext null
+
+                val folderKeys = buildSet {
+                    assignments.forEach { assignment ->
+                        add(assignment.projectFile.key.folder)
+                        add(assignment.finalFolder)
+                    }
+                }
+                val folders = folderKeys.associateWith { key ->
+                    val folder = resolveFolder(project, key) ?: return@withContext null
+                    if (key != FolderKey.Base && (key.relativePath.startsWith('.') || '/' in key.relativePath || '\\' in key.relativePath)) {
+                        return@withContext null
+                    }
+                    folder
+                }
+                if (!sameLocation(folders[target.key], target.platformFile)) return@withContext null
+
+                val childrenByFolder = folders.mapValues { (_, folder) -> folder.list() }
+                if (expectedMarkdownKeys != null) {
+                    val actualMarkdownKeys = childrenByFolder.flatMapTo(mutableSetOf()) { (folderKey, children) ->
+                        children
+                            .asSequence()
+                            .filter { child -> !child.isDirectory() && child.name.endsWith(".md", ignoreCase = true) }
+                            .map { child -> folderKey.file(child.name) }
+                            .toList()
+                    }
+                    if (actualMarkdownKeys != expectedMarkdownKeys) return@withContext null
+                }
+                val storedConfig = project.list().singleOrNull {
+                    it.name == PROJECT_CONFIG_FILE_NAME && !it.isDirectory()
+                }?.let { readConfig(it) }?.withDefaultBaseFolder() ?: return@withContext null
+                if (storedConfig != previousConfig.withDefaultBaseFolder()) return@withContext null
+                val resolved = assignments.map { assignment ->
+                    if (!isValidProjectFileTitle(assignment.finalBaseName)) return@withContext null
+                    val oldKey = assignment.projectFile.key
+                    val source = childrenByFolder.getValue(oldKey.folder).singleOrNull { child ->
+                        !child.isDirectory() && child.name == oldKey.fileName
+                    } ?: return@withContext null
+                    if (!sameLocation(source, assignment.projectFile.platformFile) ||
+                        !source.name.endsWith(".md", ignoreCase = true)
+                    ) return@withContext null
+                    ProjectFileMoveWork(
+                        oldKey = oldKey,
+                        originalBaseName = source.nameWithoutExtension,
+                        finalFolder = assignment.finalFolder,
+                        finalBaseName = assignment.finalBaseName,
+                        currentFolder = oldKey.folder,
+                        currentFile = source,
+                    )
+                }
+
+                val changedKeys = resolved.mapTo(mutableSetOf()) { it.oldKey }
+                val finalKeys = resolved.map { work -> work.finalFolder.file("${work.finalBaseName}.md") }
+                if (finalKeys.map { it.relativePath.lowercase() }.toSet().size != finalKeys.size) {
+                    return@withContext null
+                }
+                val untouchedKeys = buildSet {
+                    childrenByFolder.forEach { (folderKey, children) ->
+                        children.filterNot(PlatformFile::isDirectory).forEach { child ->
+                            val key = folderKey.file(child.name)
+                            if (key !in changedKeys) add(key.relativePath.lowercase())
+                        }
+                    }
+                }
+                if (finalKeys.any { it.relativePath.lowercase() in untouchedKeys }) return@withContext null
+
+                val reservedNames = childrenByFolder.values.flatten()
+                    .mapTo(mutableSetOf()) { it.name.lowercase() }
+                resolved.forEachIndexed { index, work ->
+                    var suffix = index
+                    var baseName: String
+                    do {
+                        baseName = ".machum-move-$suffix"
+                        suffix += resolved.size
+                    } while (!reservedNames.add("$baseName.md".lowercase()))
+                    work.temporaryBaseName = baseName
+                }
+                works = resolved
+
+                currentCoroutineContext().ensureActive()
+                withContext(NonCancellable) {
+                    works.forEach { work ->
+                        work.currentFile = renameMarkdownExact(
+                            folders.getValue(work.currentFolder),
+                            work.currentFile,
+                            work.temporaryBaseName,
+                        ) ?: error("temporary move rename failed")
+                    }
+                    val movedWork = works.single { it.oldKey == sourceKey }
+                    if (movedWork.currentFolder != movedWork.finalFolder) {
+                        movedWork.currentFile = projectFileMover(
+                            project,
+                            folders.getValue(movedWork.currentFolder),
+                            movedWork.currentFile,
+                            folders.getValue(movedWork.finalFolder),
+                        )
+                        movedWork.currentFolder = movedWork.finalFolder
+                    }
+                    works.forEach { work ->
+                        work.currentFile = renameMarkdownExact(
+                            folders.getValue(work.finalFolder),
+                            work.currentFile,
+                            work.finalBaseName,
+                        ) ?: error("final move rename failed")
+                        work.currentFolder = work.finalFolder
+                    }
+                }
+
+                val updates = works.associate { work ->
+                    work.oldKey to ProjectFile(
+                        work.finalFolder.file(work.currentFile.name),
+                        work.currentFile,
+                    )
+                }
+                val moved = updates.getValue(sourceKey)
+                val pathChanges = updates.mapKeys { (oldKey, _) -> oldKey.relativePath }
+                    .mapValues { (_, updated) -> updated.key.relativePath }
+
+                val updatedConfig = previousConfig.copy(
+                    fileIds = previousConfig.fileIds.mapValues { (_, path) ->
+                        pathChanges[path] ?: path
+                    },
+                )
+                if (updatedConfig != previousConfig) {
+                    withContext(NonCancellable) {
+                        val persistence = persistProjectConfigWithReceipt(project, updatedConfig)
+                        configWriteReceipt = persistence.receipt
+                        persistence.projectConfig ?: error("config save failed")
+                    }
+                }
+                currentCoroutineContext().ensureActive()
+
+                val selectedPath = previousBookmarks.fileRelativePath
+                val selectedUpdate = selectedPath?.let { oldPath ->
+                    updates.entries.firstOrNull { it.key.relativePath == oldPath }?.value
+                }
+                if (selectedUpdate != null) {
+                    bookmarkWriteAttempted = true
+                    setPreferences(previousBookmarks.copy(
+                        fileData = selectedUpdate.platformFile,
+                        fileRelativePath = selectedUpdate.key.relativePath,
+                    ))
+                }
+                currentCoroutineContext().ensureActive()
+                workspaceMetadataIndex.invalidate(
+                    project,
+                    previousBookmarks.workspaceKind,
+                    updates.flatMap { (oldKey, updated) -> listOf(oldKey, updated.key) }.distinct(),
+                )
+                ProjectFileMoveBatchResult(movedFile = moved, filesByPreviousKey = updates)
+            }
+            currentCoroutineContext().ensureActive()
+            result
+        } catch (error: Exception) {
+            val target = resolvedTarget
+            if (works.isNotEmpty() && target != null) {
+                var restoredToSource = works.single { it.oldKey == sourceKey }.currentFolder == sourceKey.folder
+                val rollbackFailures = withContext(NonCancellable) {
+                    withContext(Dispatchers.IO) {
+                        val failures = mutableListOf<Throwable>()
+                        val rollbackReserved = works
+                            .flatMap { work -> listOf(work.currentFolder, work.oldKey.folder) }
+                            .distinct()
+                            .flatMap { folderKey -> resolveFolder(project, folderKey)?.list().orEmpty() }
+                            .mapTo(mutableSetOf()) { file -> file.name.lowercase() }
+                        works.forEachIndexed { index, work ->
+                            runCatching {
+                                var attempt = index
+                                var rollbackName: String
+                                do {
+                                    rollbackName = ".machum-move-rollback-$attempt"
+                                    attempt += works.size
+                                } while (!rollbackReserved.add("$rollbackName.md".lowercase()))
+                                work.currentFile = renameMarkdownExact(
+                                    resolveFolder(project, work.currentFolder) ?: error("rollback folder missing"),
+                                    work.currentFile,
+                                    rollbackName,
+                                ) ?: error("rollback temporary rename failed")
+                            }.exceptionOrNull()?.let(failures::add)
+                        }
+                        val movedWork = works.single { it.oldKey == sourceKey }
+                        if (movedWork.currentFolder != sourceKey.folder) {
+                            runCatching {
+                                val sourceFolder = resolveFolder(project, sourceKey.folder) ?: error("source folder missing")
+                                movedWork.currentFile = projectFileMover(
+                                    project,
+                                    resolveFolder(project, movedWork.currentFolder) ?: error("target folder missing"),
+                                    movedWork.currentFile,
+                                    sourceFolder,
+                                )
+                                movedWork.currentFolder = sourceKey.folder
+                                restoredToSource = true
+                            }.exceptionOrNull()?.let(failures::add)
+                        }
+                        works.forEach { work ->
+                            runCatching {
+                                work.currentFile = renameMarkdownExact(
+                                    resolveFolder(project, work.currentFolder) ?: error("rollback folder missing"),
+                                    work.currentFile,
+                                    work.originalBaseName,
+                                ) ?: error("original name restore failed")
+                            }.exceptionOrNull()?.let(failures::add)
+                        }
+                        val receipt = configWriteReceipt
+                        if (receipt != null) {
+                            runCatching {
+                                rollbackProjectConfigWrite(
+                                    receipt,
+                                    externalChangeMessage = "프로젝트 설정이 외부에서 변경되어 이동 전 원문을 덮어쓰지 않았습니다.",
+                                    restoreFailureMessage = "이동 전 프로젝트 설정 원문을 복구하지 못했습니다.",
+                                )
+                                _projectConfig.value = previousConfig
+                            }.exceptionOrNull()?.let(failures::add)
+                        }
+                        if (bookmarkWriteAttempted) {
+                            val selected = works.firstOrNull {
+                                it.oldKey.relativePath == previousBookmarks.fileRelativePath
+                            }
+                            val restoredBookmarks = previousBookmarks.copy(
+                                fileData = selected?.currentFile ?: previousBookmarks.fileData,
+                            )
+                            runCatching { setPreferences(restoredBookmarks) }
+                                .exceptionOrNull()?.let(failures::add)
+                        }
+                        failures
+                    }
+                }
+                if (rollbackFailures.isNotEmpty()) {
+                    val failure = ProjectFileMoveRollbackException(
+                        sourceKey = sourceKey,
+                        targetKey = target.key.file(
+                            "${assignments.first { it.projectFile.key == sourceKey }.finalBaseName}.md",
+                        ),
+                        restoredToSource = restoredToSource,
+                        affectedKeys = works.flatMapTo(mutableSetOf()) { work ->
+                            listOf(
+                                work.oldKey,
+                                work.currentFolder.file(work.currentFile.name),
+                                work.finalFolder.file("${work.finalBaseName}.md"),
+                            )
+                        },
+                        cause = error,
+                    )
+                    rollbackFailures.forEach(failure::addSuppressed)
+                    throw failure
+                }
+            }
+            if (error is CancellationException) throw error
+            currentCoroutineContext().ensureActive()
+            null
+        }
+    }
+
+    /** Resolves the provider's current authoritative handle for a Project-relative file key. */
+    suspend fun findProjectFile(fileKey: FileKey): ProjectFile? = withContext(Dispatchers.IO) {
+        val project = _bookmarks.value.projectData ?: return@withContext null
+        projectFileResolver(project, fileKey)?.let { file -> ProjectFile(fileKey, file) }
+    }
+
     private fun resolveFolder(project: PlatformFile, key: FolderKey): PlatformFile? {
         if (key == FolderKey.Base) return project
         if ('/' in key.relativePath) return null
@@ -2067,6 +2853,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         // 바뀌는 반쪽 성공을 만들지 않도록 mutation 전에 실패한다.
         val previousConfig = _projectConfig.value ?: return@withLock false
         val previousBookmarks = _bookmarks.value
+        var configWriteReceipt: ProjectConfigWriteReceipt? = null
         val rollbackBaseNames = allocateRollbackBaseNames(folder, works)
 
         try {
@@ -2098,7 +2885,12 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                     pathChanges[relativePath] ?: relativePath
                 },
             )
-            persistProjectConfig(project, updatedConfig) ?: error("config save failed")
+            withContext(NonCancellable) {
+                val persistence = persistProjectConfigWithReceipt(project, updatedConfig)
+                configWriteReceipt = persistence.receipt
+                persistence.projectConfig ?: error("config save failed")
+            }
+            currentCoroutineContext().ensureActive()
 
             val selectedPath = previousBookmarks.fileRelativePath
             val updatedSelectedPath = selectedPath?.let(pathChanges::get)
@@ -2118,7 +2910,21 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         } catch (error: Exception) {
             withContext(NonCancellable) {
                 rollbackMarkdownOrder(folder, works, rollbackBaseNames)
-                runCatching { persistProjectConfig(project, previousConfig) }
+                runCatching {
+                    val receipt = configWriteReceipt
+                    if (receipt != null) {
+                        rollbackProjectConfigWrite(
+                            receipt,
+                            externalChangeMessage = "프로젝트 설정이 외부에서 변경되어 순서 변경 전 원문을 덮어쓰지 않았습니다.",
+                            restoreFailureMessage = "순서 변경 전 프로젝트 설정 원문을 복구하지 못했습니다.",
+                        )
+                        _projectConfig.value = previousConfig
+                    } else {
+                        project.list().singleOrNull {
+                            it.name == PROJECT_CONFIG_FILE_NAME && !it.isDirectory()
+                        }?.let { readConfig(it) }?.withDefaultBaseFolder()?.let { _projectConfig.value = it }
+                    }
+                }.onFailure(error::addSuppressed)
                 runCatching { setPreferences(previousBookmarks) }
             }
             if (error is CancellationException) throw error
@@ -2236,6 +3042,28 @@ data class ProjectFolderDeletionPreview(
 data class FolderDeletionUpdate(
     val folderKey: FolderKey,
     val deletedFileKeys: List<FileKey>,
+    val cleanupWarning: String? = null,
+)
+
+internal data class ProjectFileMoveAssignment(
+    val projectFile: ProjectFile,
+    val finalFolder: FolderKey,
+    val finalBaseName: String,
+)
+
+internal data class ProjectFileMoveBatchResult(
+    val movedFile: ProjectFile,
+    val filesByPreviousKey: Map<FileKey, ProjectFile>,
+)
+
+private data class ProjectFileMoveWork(
+    val oldKey: FileKey,
+    val originalBaseName: String,
+    val finalFolder: FolderKey,
+    val finalBaseName: String,
+    var currentFolder: FolderKey,
+    var currentFile: PlatformFile,
+    var temporaryBaseName: String = "",
 )
 
 private fun String.replaceFolderPrefix(previousKey: FolderKey, updatedKey: FolderKey): String = when {
@@ -2248,6 +3076,18 @@ private fun String.replaceFolderPrefix(previousKey: FolderKey, updatedKey: Folde
 internal data class ProjectMetadataUpdate(
     val noteFile: NoteFile,
     val changed: Boolean,
+)
+
+private data class ProjectConfigWriteReceipt(
+    val file: PlatformFile,
+    val beforeRaw: String,
+    val afterRaw: String,
+    val created: Boolean,
+)
+
+private data class PersistedProjectConfig(
+    val projectConfig: ProjectConfig?,
+    val receipt: ProjectConfigWriteReceipt?,
 )
 
 internal fun mergeManagedTags(
@@ -2314,6 +3154,15 @@ private val PROJECT_FOLDER_RESERVED_NAMES = buildSet {
  */
 internal expect suspend fun FileManager.createFile(parentDirectory: PlatformFile, name: String, content: String = ""): PlatformFile?
 
+/** One directory snapshot with child metadata, avoiding per-child SAF metadata queries. */
+internal data class PlatformDirectoryEntry(
+    val platformFile: PlatformFile,
+    val name: String,
+    val isDirectory: Boolean,
+)
+
+internal expect suspend fun listDirectoryEntries(directory: PlatformFile): List<PlatformDirectoryEntry>
+
 internal expect suspend fun FileManager.createFolder(parentDirectory: PlatformFile, name: String): PlatformFile?
 
 /** Returns only a newly created child. Existing files/directories are never reused. */
@@ -2323,6 +3172,14 @@ internal expect suspend fun FileManager.createFolderExclusive(parentDirectory: P
 internal expect suspend fun FileManager.deleteEmptyFolderExclusive(directory: PlatformFile): Boolean
 
 internal expect suspend fun FileManager.renameMarkdownExact(parentDirectory: PlatformFile, file: PlatformFile, name: String): PlatformFile?
+
+/** Moves only a direct Markdown child, without copy/delete fallback or replacement. */
+internal expect suspend fun moveProjectFileNative(
+    project: PlatformFile,
+    sourceParent: PlatformFile,
+    source: PlatformFile,
+    targetParent: PlatformFile,
+): PlatformFile
 
 internal expect suspend fun FileManager.renameDirectoryExact(
     parentDirectory: PlatformFile,
@@ -2372,6 +3229,21 @@ class FileCreationIncompleteException internal constructor(
     internal val observedContent: String?,
     cause: Exception,
 ) : IllegalStateException("파일 생성됨, 내용 기록 미완료: $file. ${cause.message}", cause)
+
+/**
+ * A provider move succeeded but restoring every durable part of the transaction did not.
+ *
+ * Callers must not resume automatic writes to either key until the user explicitly reloads the
+ * workspace state; doing so could recreate the source while the provider-owned file remains at the
+ * target.
+ */
+class ProjectFileMoveRollbackException internal constructor(
+    val sourceKey: FileKey,
+    val targetKey: FileKey,
+    val restoredToSource: Boolean,
+    val affectedKeys: Set<FileKey> = setOf(sourceKey, targetKey),
+    cause: Throwable,
+) : IllegalStateException("문서 이동을 완전히 되돌리지 못했습니다.", cause)
 
 internal suspend fun incompleteFileCreation(
     file: PlatformFile,

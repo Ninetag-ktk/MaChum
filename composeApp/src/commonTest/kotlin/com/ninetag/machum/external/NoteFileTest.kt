@@ -4,6 +4,7 @@ import com.ninetag.machum.entity.PlotStage
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -66,8 +67,9 @@ class NoteFileTest {
 
     @Test
     fun reads_flow_form_tags() {
-        val note = NoteFile.parse("---\ntags: [캐릭터, 장면구상]\n---\n\n본문")
+        val note = NoteFile.parse("---\ntags: [캐릭터, 장면구상]\naliases: [\"성, 이름\", other]\n---\n\n본문")
         assertEquals(listOf("캐릭터", "장면구상"), note.tags)
+        assertEquals(listOf("성, 이름", "other"), note.aliases)
     }
 
     @Test
@@ -213,6 +215,48 @@ class NoteFileTest {
         assertEquals("abc12345", note.id)
     }
 
+    @Test
+    fun emptyManagedListsRetainBareKeys() {
+        val note = NoteFile.parse("---\ntags: [old]\naliases: [old]\n---\n\n본문")
+            .withTags(emptyList())
+            .withAliases(emptyList())
+
+        assertTrue(note.inject().contains("tags:\naliases:"))
+        assertTrue(note.tags.isEmpty())
+        assertTrue(note.aliases.isEmpty())
+    }
+
+    @Test
+    fun managedListItemsQuoteYamlPrimitivesAndRoundTripEscapes() {
+        val note = NoteFile.parse("본문").withAliases(listOf("true", "123", "김 \"별\""))
+        val injected = note.inject()
+
+        assertTrue(injected.contains("  - \"true\""))
+        assertTrue(injected.contains("  - \"123\""))
+        assertEquals(listOf("true", "123", "김 \"별\""), NoteFile.parse(injected).aliases)
+    }
+
+    @Test
+    fun managedPropertiesDoNotTreatInlineCommentsAsValues() {
+        val note = NoteFile.parse(
+            "---\nid: abc12345 # keep\ntags: # empty\naliases:\n  - \"name # one\" # keep\n---\n\n본문",
+        )
+
+        assertEquals("abc12345", note.id)
+        assertTrue(note.tags.isEmpty())
+        assertEquals(listOf("name # one"), note.aliases)
+    }
+
+    @Test
+    fun malformedManagedFlowListIsPreservedAndCannotBeAutomaticallyRewritten() {
+        val raw = "---\ntags: [\"draft, other]\n---\n\n본문"
+        val note = NoteFile.parse(raw)
+
+        assertEquals(raw, note.inject())
+        assertFailsWith<IllegalStateException> { note.withTags(listOf("project")) }
+        assertEquals(raw, note.inject())
+    }
+
     // --- withBody ---
 
     @Test
@@ -229,5 +273,33 @@ class NoteFileTest {
         assertNotNull(note.id)
         assertTrue(note.inject().startsWith("---\nid: "))
         assertTrue(note.inject().endsWith("새 본문"))
+    }
+
+    @Test
+    fun documentPropertiesSnapshot_isStableWhenOnlyBodyChanges() {
+        val note = NoteFile.parse("---\nid: abc12345\ncustom: 값\n---\n\n본문")
+        val snapshot = note.documentPropertiesSnapshot()
+
+        assertEquals("---\nid: abc12345\ncustom: 값\n---\n\n", snapshot)
+        assertEquals(listOf("id", "custom"), parseDocumentProperties(snapshot).properties.map { it.key })
+        assertEquals(
+            snapshot,
+            note.withBody("훨씬 긴 새 본문", ensureId = false).documentPropertiesSnapshot(),
+        )
+    }
+
+    @Test
+    fun documentPropertiesSnapshot_preservesMalformedFrontmatterErrorSource() {
+        val malformed = listOf(
+            "---",
+            "---\ncustom: 값\n닫는 구분자 없음",
+            "---\rcustom: 값\r닫는 구분자 없음",
+        )
+
+        malformed.forEach { raw ->
+            val snapshot = NoteFile.parse(raw).documentPropertiesSnapshot()
+            assertEquals(raw, snapshot)
+            assertEquals("Frontmatter closing delimiter is missing", parseDocumentProperties(snapshot).error)
+        }
     }
 }

@@ -18,12 +18,26 @@ class ProjectConfigTest {
         json.decodeFromString(ProjectConfig.serializer(), json.encodeToString(ProjectConfig.serializer(), config))
 
     @Test
-    fun roundTrip_preservesFoldersAndFileIds() {
+    fun roundTrip_preservesFoldersPropertyTypesAndFileIds() {
         val config = ProjectConfig(
             folders = mapOf(
-                "" to FolderConfig(FolderType.DEFAULT, false, listOf("당신을_구하던_삶")),
-                "Character" to FolderConfig(FolderType.GENERAL, false, listOf("캐릭터")),
+                "" to FolderConfig(
+                    FolderType.DEFAULT,
+                    false,
+                    listOf("당신을_구하던_삶"),
+                    listOf("title"),
+                ),
+                "Character" to FolderConfig(
+                    FolderType.GENERAL,
+                    false,
+                    listOf("캐릭터"),
+                    listOf("aliases"),
+                ),
                 "Scene" to FolderConfig(FolderType.DEFAULT, true, listOf("장면구상")),
+            ),
+            propertyTypes = mapOf(
+                "title" to DocumentPropertyType.TEXT,
+                "aliases" to DocumentPropertyType.LIST,
             ),
             fileIds = mapOf("a1b2c3d4" to "0. 프롤로그"),
         )
@@ -48,6 +62,7 @@ class ProjectConfigTest {
         """.trimIndent()
         val config = json.decodeFromString(ProjectConfig.serializer(), legacy)
         assertTrue(config.folders.isEmpty())
+        assertTrue(config.propertyTypes.isEmpty())
         assertEquals(mapOf("id1" to "0. 프롤로그"), config.fileIds)
     }
 
@@ -55,6 +70,7 @@ class ProjectConfigTest {
     fun decodes_emptyObject_toDefaults() {
         val config = json.decodeFromString(ProjectConfig.serializer(), "{}")
         assertTrue(config.folders.isEmpty())
+        assertTrue(config.propertyTypes.isEmpty())
         assertTrue(config.fileIds.isEmpty())
     }
 
@@ -65,6 +81,29 @@ class ProjectConfigTest {
             """{ "folders": { "Scene": {} } }""",
         )
         assertEquals(FolderConfig(), config.folders["Scene"])
+    }
+
+    @Test
+    fun folderConfig_normalizesDefaultPropertyKeys() {
+        val normalized = json.decodeFromString<ProjectConfig>(
+            ProjectConfig.serializer(),
+            """{ "folders": { "": { "defaultPropertyKeys": [" title ", "", "title"] } } }""",
+        ).withDefaultBaseFolder()
+
+        assertEquals(listOf("title"), normalized.folders[BASE_FOLDER_PATH]?.defaultPropertyKeys)
+    }
+
+    @Test
+    fun defaultPropertyKeys_areIndependentForRootAndDirectFolders() {
+        val config = ProjectConfig(
+            folders = mapOf(
+                BASE_FOLDER_PATH to FolderConfig(defaultPropertyKeys = listOf("root-only")),
+                "Character" to FolderConfig(defaultPropertyKeys = listOf("folder-only")),
+            ),
+        ).withDefaultBaseFolder()
+
+        assertEquals(listOf("root-only"), config.folders.getValue(BASE_FOLDER_PATH).defaultPropertyKeys)
+        assertEquals(listOf("folder-only"), config.folders.getValue("Character").defaultPropertyKeys)
     }
 
     @Test
@@ -138,13 +177,18 @@ class ProjectConfigTest {
 
     @Test
     fun renameFolder_movesConfigAndFileIdPathsWithoutTouchingOtherFolders() {
-        val characterConfig = FolderConfig(type = FolderType.GENERAL, autoTags = listOf("캐릭터"))
+        val characterConfig = FolderConfig(
+            type = FolderType.GENERAL,
+            autoTags = listOf("캐릭터"),
+            defaultPropertyKeys = listOf("aliases"),
+        )
         val original = ProjectConfig(
             folders = linkedMapOf(
                 BASE_FOLDER_PATH to DEFAULT_BASE_FOLDER_CONFIG,
                 "Character" to characterConfig,
                 "Scene" to FolderConfig(plotEnabled = true),
             ),
+            propertyTypes = mapOf("aliases" to DocumentPropertyType.LIST),
             fileIds = mapOf(
                 "character" to "Character/Hero.md",
                 "folder" to "Character",
@@ -160,6 +204,7 @@ class ProjectConfigTest {
 
         assertEquals(listOf("", "3. Character", "Scene"), renamed.folders.keys.toList())
         assertEquals(characterConfig, renamed.folders["3. Character"])
+        assertEquals(original.propertyTypes, renamed.propertyTypes)
         assertEquals("3. Character/Hero.md", renamed.fileIds["character"])
         assertEquals("3. Character", renamed.fileIds["folder"])
         assertEquals("Scene/Opening.md", renamed.fileIds["scene"])
@@ -170,9 +215,13 @@ class ProjectConfigTest {
         val original = ProjectConfig(
             folders = mapOf(
                 BASE_FOLDER_PATH to DEFAULT_BASE_FOLDER_CONFIG,
-                "Character" to FolderConfig(type = FolderType.GENERAL),
+                "Character" to FolderConfig(
+                    type = FolderType.GENERAL,
+                    defaultPropertyKeys = listOf("aliases"),
+                ),
                 "Scene" to FolderConfig(plotEnabled = true),
             ),
+            propertyTypes = mapOf("aliases" to DocumentPropertyType.LIST),
             fileIds = mapOf(
                 "hero" to "Character/Hero.md",
                 "character-folder" to "Character",
@@ -183,6 +232,7 @@ class ProjectConfigTest {
         val removed = original.removeFolder("Character")
 
         assertEquals(setOf(BASE_FOLDER_PATH, "Scene"), removed.folders.keys)
+        assertEquals(original.propertyTypes, removed.propertyTypes)
         assertEquals(mapOf("opening" to "Scene/Opening.md"), removed.fileIds)
     }
 }

@@ -71,6 +71,20 @@ internal class DebouncedSaveCoordinator<K, V>(
         job.start()
     }
 
+    fun hasPending(key: K): Boolean = key in pendingValues
+
+    /** Read-only access for UI reconciliation that must render a queued semantic value. */
+    fun pendingValue(key: K): V? = pendingValues[key]
+
+    /**
+     * [saveOwner]가 값을 저장하는 동안 같은 key에 새 값이 예약됐다면 그 새 값의 저장 기준만 갱신한다.
+     * 현재 저장 값 자체를 바꾸면 완료 판정이 깨지므로 교체 요청이 있을 때만 변환한다.
+     */
+    suspend fun rebaseReplacement(key: K, saveOwner: Job, transform: (V) -> V) {
+        val replacement = pendingValues[key] ?: return
+        if (jobs[key] != null && jobs[key] !== saveOwner) schedule(key, transform(replacement))
+    }
+
     /**
      * 미시작 예약을 제거하고 아직 저장하지 않은 값을 반환한다.
      * 이미 진행 중인 provider I/O의 완료를 보장하지 않으므로 물리 rename 전에는 [withWritesPaused]를 사용한다.
