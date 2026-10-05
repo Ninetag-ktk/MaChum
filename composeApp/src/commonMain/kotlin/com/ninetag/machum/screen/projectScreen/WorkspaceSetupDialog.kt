@@ -25,7 +25,7 @@ internal fun WorkspaceSetupDialog(
 ) {
     PolicyDialog(
         onDismissRequest = { if (!request.busy) onDismiss() },
-        title = "폴더 사용 방식 선택",
+        title = "작업 공간 사용 방식 선택",
         width = PopupUiMetrics.SettingsWidth,
         confirmButton = {
             Button(
@@ -56,7 +56,7 @@ internal fun WorkspaceSetupDialog(
             style = MaterialTheme.typography.bodyMedium,
         )
         Text(
-            text = "소재 정리나 필사 용도라면 일반 폴더로 사용하세요. 이름순으로 탐색하며 번호와 태그를 자동으로 붙이지 않습니다.",
+            text = "소재 정리나 필사 용도라면 일반 작업 공간으로 사용하세요. 이름순으로 탐색하며 번호와 태그를 자동으로 붙이지 않습니다.",
             style = MaterialTheme.typography.bodyMedium,
         )
         OutlinedButton(
@@ -64,7 +64,7 @@ internal fun WorkspaceSetupDialog(
             enabled = !request.busy,
             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
         ) {
-            Text("일반 폴더로 사용")
+            Text("일반 작업 공간으로 사용")
         }
         request.errorMessage?.let { message ->
             Text(

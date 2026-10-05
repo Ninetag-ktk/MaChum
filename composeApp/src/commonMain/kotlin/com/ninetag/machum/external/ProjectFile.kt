@@ -75,3 +75,73 @@ data class ProjectFile(
     val key: FileKey,
     val platformFile: PlatformFile,
 )
+
+/**
+ * One complete, content-independent enumeration of a workspace's supported Markdown files.
+ *
+ * Metadata indexes are deliberately absent: an unreadable or malformed document still belongs
+ * to this inventory. Callers may parse each [ProjectFile] separately through [FileManager.readMarkdown].
+ */
+data class WorkspaceFileInventory(
+    val workspaceLocation: String,
+    val folders: List<ProjectFolder>,
+    val filesByFolder: Map<FolderKey, List<ProjectFile>>,
+) {
+    init {
+        val folderKeys = folders.map(ProjectFolder::key)
+        require(folderKeys.size == folderKeys.distinct().size) { "workspace folder keys must be unique" }
+        require(filesByFolder.keys == folderKeys.toSet()) { "every workspace folder must have one file listing" }
+
+        val files = filesByFolder.flatMap { (folderKey, folderFiles) ->
+            require(folderFiles.all { it.key.folder == folderKey }) { "workspace file belongs to another folder" }
+            folderFiles
+        }
+        require(files.size == files.map(ProjectFile::key).distinct().size) {
+            "workspace file keys must be unique"
+        }
+    }
+
+    val files: List<ProjectFile>
+        get() = folders.flatMap { folder -> filesByFolder[folder.key].orEmpty() }
+}
+
+/** A Vault workspace selected for link resolution. */
+data class VaultLinkWorkspace(
+    val name: String,
+    val kind: WorkspaceKind,
+    val vaultRelativePath: String,
+    val platformFile: PlatformFile,
+)
+
+enum class VaultLinkEntryKind { MARKDOWN, ATTACHMENT }
+
+/** A visible root/direct-folder file in a Vault workspace. */
+data class VaultLinkEntry(
+    val vaultRelativePath: String,
+    val workspace: VaultLinkWorkspace,
+    val workspaceRelativeKey: FileKey,
+    val platformFile: PlatformFile,
+    val kind: VaultLinkEntryKind,
+)
+
+/** Complete, content-independent Vault inventory for link indexing. */
+data class VaultLinkInventory(
+    val vaultLocation: String,
+    val workspaces: List<VaultLinkWorkspace>,
+    val entries: List<VaultLinkEntry>,
+) {
+    init {
+        require(workspaces.map { it.vaultRelativePath }.distinct().size == workspaces.size) {
+            "Vault workspace paths must be unique"
+        }
+        val paths = entries.map(VaultLinkEntry::vaultRelativePath)
+        require(paths.distinct().size == paths.size) { "Vault entry paths must be unique" }
+        require(entries.all { entry -> entry.workspace in workspaces }) {
+            "Vault entry belongs to an unknown workspace"
+        }
+        require(entries.all { entry ->
+            val prefix = entry.workspaceRelativeKey.relativePath.substringBeforeLast('/', "")
+            prefix.isEmpty() || prefix.split('/').size == 1
+        }) { "Vault link entries may only use the workspace root or one direct folder" }
+    }
+}

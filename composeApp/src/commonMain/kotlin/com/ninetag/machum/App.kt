@@ -78,7 +78,26 @@ fun App(vaultContent: @Composable (() -> Unit) -> Unit = { VaultSelectionScreen(
                                 Text("작업 공간을 불러오는 중입니다.")
                             } else {
                                 Text(initializationError!!, color = MaterialTheme.colorScheme.error)
-                                TextButton(onClick = { initializationAttempt += 1 }) { Text("다시 시도") }
+                                TextButton(onClick = {
+                                    if (initializationError != null) {
+                                        initializationError = null
+                                        initializationAttempt += 1
+                                    }
+                                }) { Text("다시 시도") }
+                                TextButton(onClick = {
+                                    if (initializationError == null) return@TextButton
+                                    initializationError = null
+                                    scope.launch {
+                                        try {
+                                            fileManager.reset()
+                                            initializationAttempt += 1
+                                        } catch (cancellation: CancellationException) {
+                                            throw cancellation
+                                        } catch (error: Exception) {
+                                            initializationError = "Vault 선택 정보를 초기화하지 못했습니다. ${error.message.orEmpty()}".trim()
+                                        }
+                                    }
+                                }) { Text("Vault 다시 선택") }
                             }
                         }
                     }

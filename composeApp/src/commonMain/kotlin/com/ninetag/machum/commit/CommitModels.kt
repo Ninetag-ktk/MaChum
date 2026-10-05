@@ -28,6 +28,11 @@ internal data class CommitHead(
     val commitId: String,
 )
 
+@Serializable
+internal data class CommitMessageOverrides(
+    val messages: Map<String, String> = emptyMap(),
+)
+
 enum class CommitChangeKind {
     ADDED,
     MODIFIED,
@@ -69,6 +74,7 @@ data class CommitResult(
 data class CommitHistoryEntry(
     val commit: ProjectCommit,
     val changes: List<CommitChange>,
+    val displayMessage: String = commit.message,
 )
 
 enum class LineDiffKind {

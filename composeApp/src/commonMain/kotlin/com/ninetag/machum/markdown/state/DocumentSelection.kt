@@ -198,7 +198,7 @@ fun extractMarkdown(
     blocks: List<EditorBlock>,
     selection: DocumentSelection.Multi,
 ): String {
-    val normalized = selection.normalize(blocks) ?: return ""
+    val normalized = normalizeMarkdownOperationSelection(blocks, selection) ?: return ""
     val (start, end) = normalized
 
     // 공통 path 깊이까지 따라 들어가서 그 컨테이너의 blocks 를 얻음
@@ -289,7 +289,7 @@ fun replaceSelectedMarkdown(
     selection: DocumentSelection.Multi,
     replacement: String,
 ): List<EditorBlock>? {
-    val normalized = selection.normalize(blocks) ?: return null
+    val normalized = normalizeMarkdownOperationSelection(blocks, selection) ?: return null
     val start = normalized.start
     val end = normalized.end
     if (start.containerPath != end.containerPath) return null
@@ -334,9 +334,9 @@ fun replaceSelectedText(
     selection: DocumentSelection.Multi,
     replacement: String,
 ): TextSelectionReplacement? {
-    if (replacement.isEmpty() || '\n' in replacement || '\r' in replacement) return null
+    if ('\n' in replacement || '\r' in replacement) return null
 
-    val normalized = selection.normalize(blocks) ?: return null
+    val normalized = normalizeMarkdownOperationSelection(blocks, selection) ?: return null
     val start = normalized.start
     val end = normalized.end
     if (start.containerPath != end.containerPath) return null
@@ -380,6 +380,100 @@ fun replaceSelectedText(
         ),
     )
 }
+
+/**
+ * Preview에서 숨긴 인라인/헤딩 문법을 복사와 치환이 같은 범위로 다루게 한다.
+ * 표시된 semantic content 전체가 선택된 경우에만 바로 맞닿은 문법 기호를 포함한다.
+ */
+internal fun normalizeMarkdownOperationSelection(
+    blocks: List<EditorBlock>,
+    selection: DocumentSelection.Multi,
+): NormalizedSelection? {
+    val normalized = selection.normalize(blocks) ?: return null
+    val start = normalized.start
+    val end = normalized.end
+    if (start.containerPath != end.containerPath) return normalized
+
+    val containerBlocks = resolveContainerBlocks(blocks, start.containerPath) ?: return null
+    val startBlock = containerBlocks.firstOrNull { it.id == start.blockId }
+    val endBlock = containerBlocks.firstOrNull { it.id == end.blockId }
+
+    if (start.blockId == end.blockId && startBlock is EditorBlock.Text) {
+        val range = expandMarkdownSyntaxRange(
+            text = startBlock.textFieldState.text.toString(),
+            start = start.offset,
+            end = end.offset,
+        )
+        return NormalizedSelection(
+            start = start.copy(offset = range.start),
+            end = end.copy(offset = range.end),
+        )
+    }
+
+    val expandedStart = if (startBlock is EditorBlock.Text) {
+        val text = startBlock.textFieldState.text.toString()
+        start.copy(offset = expandMarkdownSyntaxRange(text, start.offset, text.length).start)
+    } else {
+        start
+    }
+    val expandedEnd = if (endBlock is EditorBlock.Text) {
+        val text = endBlock.textFieldState.text.toString()
+        end.copy(offset = expandMarkdownSyntaxRange(text, 0, end.offset).end)
+    } else {
+        end
+    }
+    return NormalizedSelection(
+        start = expandedStart,
+        end = expandedEnd,
+    )
+}
+
+private val clipboardSyntaxRoles = setOf(
+    MarkdownInlineRole.Marker,
+    MarkdownInlineRole.InlineCodeMarker,
+    MarkdownInlineRole.HiddenSyntax,
+)
+
+private fun expandMarkdownSyntaxRange(text: String, start: Int, end: Int): TextRange {
+    val originalStart = start.coerceIn(0, text.length)
+    val originalEnd = end.coerceIn(originalStart, text.length)
+    val spans = MarkdownPatternScanner.scan(text).spans
+    val syntax = spans.filter { it.role in clipboardSyntaxRoles }
+    var expandedStart = originalStart
+    var expandedEnd = originalEnd
+
+    spans.asSequence()
+        .filterNot { it.role in clipboardSyntaxRoles || it.role.isStructuralPrefix }
+        .filter { span ->
+            originalStart <= span.range.first && originalEnd >= span.range.last + 1
+        }
+        .forEach { content ->
+            val contentStart = syntax
+                .firstOrNull { it.range.last + 1 == content.range.first }
+                ?.range?.first
+                ?: content.range.first
+            val contentEnd = syntax
+                .firstOrNull { it.range.first == content.range.last + 1 }
+                ?.range?.last?.plus(1)
+                ?: (content.range.last + 1)
+            expandedStart = minOf(expandedStart, contentStart)
+            expandedEnd = maxOf(expandedEnd, contentEnd)
+        }
+
+    return TextRange(expandedStart, expandedEnd)
+}
+
+internal fun markdownOperationTextRange(text: String, selection: TextRange): TextRange =
+    expandMarkdownSyntaxRange(text, selection.min, selection.max)
+
+private val MarkdownInlineRole.isStructuralPrefix: Boolean
+    get() = when (this) {
+        MarkdownInlineRole.BulletPrefix,
+        MarkdownInlineRole.OrderedPrefix,
+        is MarkdownInlineRole.TaskPrefix,
+        MarkdownInlineRole.BlockTransparent -> true
+        else -> false
+    }
 
 /**
  * Multi selection 치환 후 실제 TextField가 focus를 받기 전까지 들어온 일반 입력을 같은 위치에 잇는다.

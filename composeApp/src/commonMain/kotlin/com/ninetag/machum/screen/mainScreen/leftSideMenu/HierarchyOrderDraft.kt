@@ -6,8 +6,8 @@ import com.ninetag.machum.external.FolderKey
 import com.ninetag.machum.external.PlotFileEntry
 import com.ninetag.machum.external.PlotOrderAssignment
 import com.ninetag.machum.external.ProjectFile
-import com.ninetag.machum.external.numberedPrefix
-import com.ninetag.machum.external.plotTitle
+import com.ninetag.machum.external.defaultOrderPrefix
+import com.ninetag.machum.external.defaultOrderTitle
 
 internal sealed interface HierarchyOrderDraft {
     val folderKey: FolderKey
@@ -44,7 +44,7 @@ internal data class DefaultHierarchyOrderDraft(
         val filesByKey = files.associateBy(ProjectFile::key)
         val reorderedManaged = currentKeys.mapNotNull(filesByKey::get).iterator()
         return files.map { file ->
-            if (file.numberedPrefix() != null && reorderedManaged.hasNext()) {
+            if (file.defaultOrderPrefix() != null && reorderedManaged.hasNext()) {
                 reorderedManaged.next()
             } else {
                 file
@@ -57,7 +57,7 @@ internal data class DefaultHierarchyOrderDraft(
         val index = currentKeys.indexOf(file.key)
         if (index < 0) return null
         val startAt = if (folderKey == FolderKey.Base) 0 else 1
-        return "${startAt + index}. ${file.plotTitle()}"
+        return "${startAt + index}. ${file.defaultOrderTitle()}"
     }
 }
 
@@ -133,7 +133,7 @@ internal fun defaultHierarchyOrderDraft(
     folderKey: FolderKey,
     files: List<ProjectFile>,
 ): DefaultHierarchyOrderDraft {
-    val managedKeys = files.filter { it.numberedPrefix() != null }.map(ProjectFile::key)
+    val managedKeys = files.filter { it.defaultOrderPrefix() != null }.map(ProjectFile::key)
     return DefaultHierarchyOrderDraft(folderKey = folderKey, originalKeys = managedKeys)
 }
 

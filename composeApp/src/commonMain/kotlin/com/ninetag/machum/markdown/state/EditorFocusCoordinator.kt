@@ -4,8 +4,14 @@ package com.ninetag.machum.markdown.state
 sealed class CursorHint {
     data object Start : CursorHint()
     data object End : CursorHint()
+    /** Focus the inserted DL's actual body text, rather than its empty trailing input. */
+    data object CalloutBodyEnd : CursorHint()
+    /** Restore history at the changed text boundary and reveal its actual cursor rectangle. */
+    data class RestoredSelection(val offset: Int) : CursorHint()
     data class AtX(val x: Float, val lastLine: Boolean) : CursorHint()
     data class AtOffset(val offset: Int) : CursorHint()
+    /** Table header=0, data rows=1.. coordinates. [offset] is the restored source cursor. */
+    data class TableCell(val row: Int, val column: Int, val offset: Int? = null) : CursorHint()
 }
 
 /**

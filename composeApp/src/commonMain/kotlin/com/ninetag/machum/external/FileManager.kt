@@ -47,6 +47,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlin.random.Random
 import kotlin.collections.emptyList
@@ -54,8 +55,14 @@ import kotlin.collections.emptyList
 class FileManager(private val dataStore: DataStore<Preferences>) {
 
     internal val workspaceMetadataIndex = WorkspaceMetadataIndex()
+    internal val workspaceLinkIndex = WorkspaceLinkIndexService(dataStore)
+    val workspaceLinkIndexState: StateFlow<WorkspaceLinkIndexState> = workspaceLinkIndex.state
     internal var markdownReader: suspend (PlatformFile) -> String = { file -> file.readString() }
+    internal var workspaceLinkInventoryReader: suspend (PlatformFile) -> VaultLinkInventory = ::listVaultLinkInventory
+    internal var workspaceLinkMarkdownReader: suspend (PlatformFile) -> String = { file -> file.readString() }
+    internal var workspaceLinkMarkdownWriter: suspend (PlatformFile, String) -> Unit = { file, raw -> file.writeString(raw) }
     internal var lastModifiedReader: suspend (PlatformFile) -> Long? = { file -> file.getLastModified() }
+    internal var workspaceLinkLastModifiedReader: suspend (PlatformFile) -> Long? = { file -> file.getLastModified() }
     internal var generalSourceReader: suspend (PlatformFile) -> String = { file -> file.readString() }
     internal var generalSourceWriter: suspend (PlatformFile, String) -> Unit = { file, raw -> write(file, raw) }
     internal var projectFileMover: suspend (PlatformFile, PlatformFile, PlatformFile, PlatformFile) -> PlatformFile =
@@ -73,6 +80,8 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     )
 
     private val projectConfigMutex = Mutex()
+    // ponytail: serialize full Vault rebuilds; coalesce requests if rebuild waiting becomes measurable.
+    private val workspaceLinkRebuildMutex = Mutex()
     private val vaultConfigMutex = Mutex()
     private val projectIndexer = ProjectIndexer(this)
     private val workspaceOpenMutex = Mutex()
@@ -132,6 +141,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
 
     // ToDo 테스트 이후 private 으로 변경
     suspend fun setPreferences(bookmark: Bookmarks): Bookmarks {
+        val previousVault = _bookmarks.value.vaultData
         val normalizedBookmark = bookmark.copy(
             fileRelativePath = bookmark.fileData?.let { bookmark.fileRelativePath ?: it.name },
         )
@@ -143,13 +153,18 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                 ?.let { pref[BOOKMARK_FILE] = normalizedBookmark.fileRelativePath ?: it.name }
                 ?: pref.remove(BOOKMARK_FILE)
         }
-        if (!sameLocation(_bookmarks.value.projectData, normalizedBookmark.projectData)) {
-            _projectConfig.value = null
+        withContext(NonCancellable) {
+            if (!sameLocation(_bookmarks.value.projectData, normalizedBookmark.projectData)) {
+                _projectConfig.value = null
+            }
+            if (!sameLocation(previousVault, normalizedBookmark.vaultData)) {
+                workspaceLinkIndex.deactivate()
+            }
+            _bookmarks.value = normalizedBookmark
+            normalizedBookmark.projectData
+                ?.let { project -> workspaceMetadataIndex.activate(project, normalizedBookmark.workspaceKind) }
+                ?: workspaceMetadataIndex.deactivate()
         }
-        _bookmarks.value = normalizedBookmark
-        normalizedBookmark.projectData
-            ?.let { project -> workspaceMetadataIndex.activate(project, normalizedBookmark.workspaceKind) }
-            ?: workspaceMetadataIndex.deactivate()
         return normalizedBookmark
     }
 
@@ -184,6 +199,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
         _bookmarks.value = Bookmarks()
         workspaceMetadataIndex.deactivate()
+        workspaceLinkIndex.deactivate()
         _projectConfig.value = null
         projectIndexer.reset()
         _workspaceOpenRequest.value = null
@@ -212,6 +228,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             // 저장된 선택 정보는 유지하되 중간에 공개한 상태는 재시도 전에 비운다.
             _bookmarks.value = Bookmarks()
             workspaceMetadataIndex.deactivate()
+            workspaceLinkIndex.deactivate()
             _projectConfig.value = null
             projectIndexer.reset()
             _workspaceOpenRequest.value = null
@@ -257,11 +274,16 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         return project
     }
 
-    private suspend fun hasValidProjectConfig(directory: PlatformFile): Boolean {
-        val configFile = directory.list().find { it.name == PROJECT_CONFIG_FILE_NAME } ?: return false
-        check(!configFile.isDirectory()) { "프로젝트 설정 경로가 디렉터리입니다." }
-        return readConfig(configFile) != null
-    }
+    private suspend fun hasValidProjectConfig(directory: PlatformFile): Boolean =
+        hasValidProjectConfig(listDirectoryEntries(directory, strict = false))
+
+    private suspend fun hasValidProjectConfig(entries: List<PlatformDirectoryEntry>): Boolean =
+        entries.firstOrNull { it.name == PROJECT_CONFIG_FILE_NAME }
+            ?.let { marker ->
+                check(!marker.isDirectory) { "프로젝트 설정 경로가 디렉터리입니다." }
+                readConfig(marker.platformFile) != null
+            }
+            ?: false
 
     private fun validVaultChildName(name: String): Boolean =
         name.isNotBlank() && name != "." && name != ".." && '/' !in name && '\\' !in name
@@ -277,9 +299,11 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
 
     /** 파일이 없으면 생성하지 않고 빈 설정으로 읽는다. 손상된 파일은 조용히 덮어쓰지 않는다. */
     private suspend fun readVaultConfigUnlocked(vault: PlatformFile): VaultConfig {
-        val file = vault.list().find { it.name == VAULT_CONFIG_FILE_NAME } ?: return VaultConfig()
-        check(!file.isDirectory()) { "Vault 설정 경로가 디렉터리입니다." }
-        val content = file.readString()
+        val marker = listDirectoryEntries(vault, strict = false)
+            .find { it.name == VAULT_CONFIG_FILE_NAME }
+            ?: return VaultConfig()
+        check(!marker.isDirectory) { "Vault 설정 경로가 디렉터리입니다." }
+        val content = marker.platformFile.readString()
         check(content.isNotBlank()) { "Vault 설정 파일이 비어 있습니다." }
         return try {
             configJson.decodeFromString(VaultConfig.serializer(), content).normalized()
@@ -400,7 +424,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     }
 
     private suspend fun currentVaultAndDirectories(): Pair<PlatformFile, List<PlatformFile>> {
-        val vault = getPreferences().vaultData ?: error("선택된 Vault가 없습니다.")
+        val vault = _bookmarks.value.vaultData ?: error("선택된 Vault가 없습니다.")
         return vault to listProject(vault)
     }
 
@@ -424,16 +448,29 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
     }
 
+    private data class WorkspaceSetupSnapshot(
+        val directory: PlatformFile,
+        val config: VaultConfig,
+        val setup: WorkspaceSetup,
+    )
+
     /** 선택 전 판별. Markdown은 비변경; 최초 legacy DataStore 분류 이전만 Vault 설정을 기록할 수 있다. */
-    suspend fun workspaceSetup(directory: PlatformFile): WorkspaceSetup = withContext(Dispatchers.IO) {
+    suspend fun workspaceSetup(directory: PlatformFile): WorkspaceSetup =
+        workspaceSetupSnapshot(directory).setup
+
+    private suspend fun workspaceSetupSnapshot(directory: PlatformFile): WorkspaceSetupSnapshot =
+        withContext(Dispatchers.IO) {
         val (vault, directories) = currentVaultAndDirectories()
         val child = requireVaultChild(directory, directories)
-        loadVaultConfig(vault, directories) // Preserve the one-time legacy classification migration.
-        val config = vaultConfigMutex.withLock { readVaultConfigUnlocked(vault) }
-        if (suspendedProject(child, config) != null) return@withContext WorkspaceSetup.GENERAL
-        if (hasValidProjectConfig(child)) WorkspaceSetup.PROJECT
-        else if (child.name in config.generalFolders) WorkspaceSetup.GENERAL
-        else WorkspaceSetup.NEEDS_CONFIRMATION
+        val config = loadVaultConfig(vault, directories)
+        val entries = listDirectoryEntries(child, strict = false)
+        val setup = when {
+            suspendedProject(child, config, entries) != null -> WorkspaceSetup.GENERAL
+            hasValidProjectConfig(entries) -> WorkspaceSetup.PROJECT
+            child.name in config.generalFolders -> WorkspaceSetup.GENERAL
+            else -> WorkspaceSetup.NEEDS_CONFIRMATION
+        }
+        WorkspaceSetupSnapshot(child, config, setup)
     }
 
     suspend fun hasSuspendedProject(vault: PlatformFile, directory: PlatformFile): Boolean =
@@ -441,14 +478,23 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             withContext(Dispatchers.IO) {
                 requireSelectedVault(vault)
                 val child = requireVaultChild(directory, listProject(vault))
-                suspendedProject(child, vaultConfigMutex.withLock { readVaultConfigUnlocked(vault) }) != null
+                suspendedProject(
+                    child,
+                    vaultConfigMutex.withLock { readVaultConfigUnlocked(vault) },
+                    listDirectoryEntries(child, strict = false),
+                ) != null
             }
         }
 
     /** Portable root identity keeps external workspace renames in General mode. Never guess by name. */
-    private suspend fun suspendedProject(directory: PlatformFile, config: VaultConfig): Map.Entry<String, SuspendedProjectSettings>? {
-        val marker = directory.list().firstOrNull { it.name == FOLDER_ID_FILE_NAME }
-        val id = marker?.let { folderIdentity(it) }
+    private suspend fun suspendedProject(
+        directory: PlatformFile,
+        config: VaultConfig,
+        entries: List<PlatformDirectoryEntry>? = null,
+    ): Map.Entry<String, SuspendedProjectSettings>? {
+        val marker = (entries ?: listDirectoryEntries(directory, strict = false))
+            .firstOrNull { it.name == FOLDER_ID_FILE_NAME }
+        val id = marker?.let { folderIdentity(it.platformFile) }
         val matches = config.suspendedProjects.entries.filter { it.value.workspaceIdentity == id }
         check(matches.size <= 1) { "중복 작업 공간 보관 설정이 있습니다." }
         val matched = matches.singleOrNull()
@@ -652,14 +698,15 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     suspend fun requestOpenWorkspace(directory: PlatformFile, configure: Boolean = false) =
         workspaceOpenMutex.withLock {
             if (_workspaceOpenRequest.value != null) return@withLock
-            when (workspaceSetup(directory)) {
+            val snapshot = workspaceSetupSnapshot(directory)
+            when (snapshot.setup) {
                 // 선택 화면이 인덱싱 화면으로 교체되어도 시작한 진입은 끝까지 완료한다.
-                WorkspaceSetup.PROJECT -> activateProject(directory)
+                WorkspaceSetup.PROJECT -> activateProject(snapshot.directory, snapshot.config)
                 WorkspaceSetup.GENERAL -> if (configure) {
-                    _workspaceOpenRequest.value = WorkspaceOpenRequest(directory)
-                } else openGeneralFolder(directory)
+                    _workspaceOpenRequest.value = WorkspaceOpenRequest(snapshot.directory)
+                } else openGeneralFolder(snapshot.directory)
                 WorkspaceSetup.NEEDS_CONFIRMATION -> {
-                    _workspaceOpenRequest.value = WorkspaceOpenRequest(directory)
+                    _workspaceOpenRequest.value = WorkspaceOpenRequest(snapshot.directory)
                 }
             }
         }
@@ -703,8 +750,8 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
 
     private suspend fun openGeneralFolder(directory: PlatformFile, restored: Bookmarks? = null) {
         val folders = listFolders(directory)
-        projectIndexer.reset()
-        setPreferences((restored ?: getPreferences().copy(fileData = null, fileRelativePath = null)).copy(
+        projectIndexer.reset(retainMetadata = true)
+        setPreferences((restored ?: _bookmarks.value.copy(fileData = null, fileRelativePath = null)).copy(
             projectData = directory,
             workspaceKind = WorkspaceKind.GENERAL,
         ))
@@ -720,12 +767,19 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     suspend fun returnToLastProject() = workspaceOpenMutex.withLock {
         val (vault, directories) = currentVaultAndDirectories()
         val config = loadVaultConfig(vault, directories)
-        val project = config.lastProject
+        val candidate = config.lastProject
             ?.let { name -> directories.firstOrNull { it.name == name } }
-            ?.takeIf { suspendedProject(it, config) == null && it.name !in config.generalFolders && hasValidProjectConfig(it) }
+        val project = candidate?.let { directory ->
+            val entries = listDirectoryEntries(directory, strict = false)
+            directory.takeIf {
+                suspendedProject(directory, config, entries) == null &&
+                    directory.name !in config.generalFolders &&
+                    hasValidProjectConfig(entries)
+            }
+        }
 
         if (project != null) {
-            activateProject(project)
+            activateProject(project, config)
             return@withLock
         }
 
@@ -803,7 +857,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
 
     /** Caller must hold the editor save fence before moving an active workspace. */
     suspend fun moveWorkspaceToTrash(vault: PlatformFile, directory: PlatformFile): WorkspaceTrashResult =
-        workspaceOpenMutex.withLock {
+        withWorkspaceLinkIndex(vault) { prepared ->
             withContext(Dispatchers.IO) {
                 requireSelectedVault(vault)
                 val child = requireVaultChild(directory, listProject(vault))
@@ -829,7 +883,13 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                     )
                     writeWorkspaceTrashReceipt(entry, receiptFile, receipt)
                     withContext(NonCancellable) {
+                        val workspaceName = child.name
+                        val indexedPaths = prepared.index.documents
+                            .filter { it.path.workspaceName == workspaceName }.map { it.path }
+                        val indexedLocations = indexedPaths.mapNotNull { workspaceLinkIndex.platformFile(it)?.toString() }
                         val moved = moveWorkspaceItemNative(vault, vault, child, entry)
+                        indexedLocations.forEach { workspaceLinkIndex.removeByLocation(it) }
+                        workspaceMetadataIndex.removeWorkspace(child)
                         receipt = receipt.copy(movedLocation = moved.toString())
                         // The runtime must stop referring to moved paths even if persistent cleanup fails.
                         if (sameLocation(_bookmarks.value.projectData, child)) {
@@ -851,7 +911,9 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
 
     /** Move only a current-workspace Markdown document; callers own the pending-save fence. */
-    suspend fun moveProjectFileToTrash(fileKey: FileKey): ProjectFileTrashResult = workspaceOpenMutex.withLock {
+    suspend fun moveProjectFileToTrash(fileKey: FileKey): ProjectFileTrashResult = withWorkspaceLinkIndex(
+        _bookmarks.value.vaultData ?: error("Vault를 다시 선택해 주세요."),
+    ) {
         withContext(Dispatchers.IO) {
             val selected = _bookmarks.value
             val vault = selected.vaultData ?: error("Vault를 다시 선택해 주세요.")
@@ -892,6 +954,8 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                 writeWorkspaceTrashReceipt(entry, receiptFile, receipt)
                 withContext(NonCancellable) {
                     val moved = moveWorkspaceItemNative(vault, parent, source, entry)
+                    workspaceLinkIndex.removeByLocation(source.toString())
+                    workspaceMetadataIndex.invalidate(workspace, selected.workspaceKind, listOf(fileKey))
                     receipt = receipt.copy(movedLocation = moved.toString())
                     if (sameLocation(_bookmarks.value.projectData, workspace) && _bookmarks.value.fileRelativePath == fileKey.relativePath) {
                         _bookmarks.value = _bookmarks.value.copy(fileData = null, fileRelativePath = null)
@@ -1232,9 +1296,10 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                 val projectChoices = mutableListOf<PlatformFile>()
                 val generalFolders = mutableListOf<PlatformFile>()
                 directories.forEach { directory ->
+                    val entries = listDirectoryEntries(directory, strict = false)
                     // `.machum.json`이 손상됐더라도 일반 폴더로 우회해서 열지는 않는다.
-                    val hasProjectMarker = directory.list().any { it.name == PROJECT_CONFIG_FILE_NAME }
-                    val isGeneral = suspendedProject(directory, config) != null ||
+                    val hasProjectMarker = entries.any { it.name == PROJECT_CONFIG_FILE_NAME }
+                    val isGeneral = suspendedProject(directory, config, entries) != null ||
                         (!hasProjectMarker && directory.name in config.generalFolders)
                     if (isGeneral) generalFolders += directory else projectChoices += directory
                 }
@@ -1293,37 +1358,264 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     }
 
     /** 프로젝트 base와 바로 아래의 비숨김 폴더를 반환한다. 중첩 폴더는 지원 범위 밖이다. */
-    suspend fun listFolders(project: PlatformFile): List<ProjectFolder> = withContext(Dispatchers.IO) {
-        val trace = WorkspaceLoadDiagnostics.begin("hierarchy-folders")
-        try {
-            val folders = listOf(ProjectFolder(FolderKey.Base, project)) + listDirectoryEntries(project)
-                .filter { it.isDirectory && !it.name.startsWith(".") }
-                .sortedBy { it.name }
-                .map { entry -> ProjectFolder(FolderKey.of(entry.name), entry.platformFile) }
-            trace.complete("count=${folders.size}")
-            folders
-        } catch (error: Throwable) {
-            trace.fail(error)
-            throw error
-        }
+    suspend fun listFolders(project: PlatformFile): List<ProjectFolder> = listFolders(project, strict = false)
+
+    private suspend fun listFolders(
+        project: PlatformFile,
+        strict: Boolean,
+    ): List<ProjectFolder> = withContext(Dispatchers.IO) {
+        listOf(ProjectFolder(FolderKey.Base, project)) + listDirectoryEntries(project, strict)
+            .filter { it.isDirectory && !it.name.startsWith(".") }
+            .sortedBy { it.name }
+            .map { entry -> ProjectFolder(FolderKey.of(entry.name), entry.platformFile) }
     }
 
     /** 지정한 프로젝트 폴더의 직속 Markdown 파일을 상대 경로 정체성과 함께 반환한다. */
-    suspend fun listProjectFiles(folder: ProjectFolder): List<ProjectFile> = withContext(Dispatchers.IO) {
-        val folderLabel = folder.key.relativePath.ifEmpty { "<root>" }
-        val trace = WorkspaceLoadDiagnostics.begin("hierarchy-files", "folder=$folderLabel")
-        try {
-            val files = listDirectoryEntries(folder.platformFile)
-                .filter { !it.isDirectory && it.name.endsWith(".md", ignoreCase = true) }
+    suspend fun listProjectFiles(folder: ProjectFolder): List<ProjectFile> =
+        listProjectFiles(folder, strict = false)
+
+    private suspend fun listProjectFiles(
+        folder: ProjectFolder,
+        strict: Boolean,
+    ): List<ProjectFile> = listProjectFileListings(folder, strict).map(ProjectFileListing::file)
+
+    internal suspend fun listProjectFileListings(folder: ProjectFolder): List<ProjectFileListing> =
+        listProjectFileListings(folder, strict = false)
+
+    private suspend fun listProjectFileListings(
+        folder: ProjectFolder,
+        strict: Boolean,
+    ): List<ProjectFileListing> = withContext(Dispatchers.IO) {
+        listDirectoryEntries(folder.platformFile, strict)
+            .filter { !it.isDirectory && it.name.endsWith(".md", ignoreCase = true) }
+            .sortedBy { it.name }
+            .map { entry ->
+                ProjectFileListing(
+                    file = ProjectFile(folder.key.file(entry.name), entry.platformFile),
+                    modifiedAt = entry.modifiedAt,
+                )
+            }
+    }
+
+    /**
+     * Enumerates the current workspace hierarchy without reading Markdown contents or metadata.
+     * The call fails if any supported folder cannot be listed, so callers never mistake a partial
+     * result for a complete inventory.
+     */
+    suspend fun listWorkspaceFiles(workspace: PlatformFile): WorkspaceFileInventory =
+        withContext(Dispatchers.IO) {
+            val folders = listFolders(workspace, strict = true)
+            val filesByFolder = folders.associate { folder ->
+                folder.key to listProjectFiles(folder, strict = true)
+            }
+            WorkspaceFileInventory(
+                workspaceLocation = workspace.toString(),
+                folders = folders,
+                filesByFolder = filesByFolder,
+            )
+        }
+
+    /**
+     * Enumerates every supported Project/General workspace in a Vault for link indexing.
+     * The snapshot is strict: one unreadable directory fails the whole call instead of
+     * returning an apparently complete but partial link universe.
+     */
+    suspend fun listVaultLinkInventory(vault: PlatformFile): VaultLinkInventory =
+        withContext(Dispatchers.IO) {
+            val vaultEntries = listDirectoryEntries(vault, strict = true)
+            val directories = vaultEntries
+                .filter { it.isDirectory && isVaultLinkVisibleName(it.name) }
                 .sortedBy { it.name }
-                .map { entry -> ProjectFile(folder.key.file(entry.name), entry.platformFile) }
-            trace.complete("folder=$folderLabel|count=${files.size}")
-            files
+            val config = vaultConfigMutex.withLock { readVaultConfigUnlocked(vault) }
+            val workspaces = directories.mapNotNull { directory ->
+                val marker = listDirectoryEntries(directory.platformFile, strict = true)
+                    .firstOrNull { it.name == PROJECT_CONFIG_FILE_NAME }
+                val kind = if (marker != null) {
+                    WorkspaceKind.PROJECT.takeIf { hasValidProjectMarker(marker) }
+                } else if (
+                    directory.name in config.generalFolders ||
+                    suspendedProject(directory.platformFile, config) != null
+                ) {
+                    WorkspaceKind.GENERAL
+                } else {
+                    null
+                }
+                kind?.let {
+                    VaultLinkWorkspace(
+                        name = directory.name,
+                        kind = it,
+                        vaultRelativePath = directory.name,
+                        platformFile = directory.platformFile,
+                    )
+                }
+            }
+            val entries = workspaces.flatMap { workspace ->
+                val root = listDirectoryEntries(workspace.platformFile, strict = true)
+                val directFolders = root
+                    .filter { it.isDirectory && isVaultLinkVisibleName(it.name) }
+                    .sortedBy { it.name }
+                val files = root.filter { !it.isDirectory && isVaultLinkVisibleName(it.name) }
+                val folderFiles = directFolders.flatMap { folder ->
+                    listDirectoryEntries(folder.platformFile, strict = true)
+                        .filter { !it.isDirectory && isVaultLinkVisibleName(it.name) }
+                        .map { child -> VaultLinkEntry(
+                            vaultRelativePath = "${workspace.name}/${folder.name}/${child.name}",
+                            workspace = workspace,
+                            workspaceRelativeKey = FileKey.of("${folder.name}/${child.name}"),
+                            platformFile = child.platformFile,
+                            kind = vaultLinkEntryKind(child.name),
+                        ) }
+                }
+                files.map { file -> VaultLinkEntry(
+                    vaultRelativePath = "${workspace.name}/${file.name}",
+                    workspace = workspace,
+                    workspaceRelativeKey = FileKey.of(file.name),
+                    platformFile = file.platformFile,
+                    kind = vaultLinkEntryKind(file.name),
+                ) } + folderFiles
+            }
+            VaultLinkInventory(vault.toString(), workspaces, entries)
+        }
+
+    /** Reconciles the current Vault cache with one strict filesystem snapshot. */
+    suspend fun rebuildWorkspaceLinkIndex(vault: PlatformFile, refreshMarkdown: Boolean = false): WorkspaceLinkIndex {
+        val trace = WorkspaceLoadDiagnostics.start(
+            "workspace-link-index-rebuild",
+            "refreshMarkdown=$refreshMarkdown",
+        )
+        return WorkspaceLoadDiagnostics.within(trace) { try {
+            WorkspaceLoadDiagnostics.withLock(workspaceLinkRebuildMutex, "link-index-lock-wait") {
+                rebuildWorkspaceLinkIndexUnlocked(vault, refreshMarkdown)
+            }.also { index ->
+                trace.complete("refreshMarkdown=$refreshMarkdown|documents=${index.documents.size}")
+            }
         } catch (error: Throwable) {
             trace.fail(error)
             throw error
+        } }
+    }
+
+    /** Caller owns workspaceLinkRebuildMutex, including verified rollback recovery. */
+    private suspend fun rebuildWorkspaceLinkIndexUnlocked(vault: PlatformFile, refreshMarkdown: Boolean): WorkspaceLinkIndex =
+                withContext(Dispatchers.Default) {
+                    workspaceLinkIndex.rebuild(
+                        vaultIdentity = vault.toString(),
+                        inventoryProvider = { withContext(Dispatchers.IO) { workspaceLinkInventoryReader(vault) } },
+                        readMarkdown = { file -> withContext(Dispatchers.IO) { readWorkspaceLinkMarkdown(file) } },
+                        refreshMarkdown = refreshMarkdown,
+                        lastModified = { file ->
+                            withContext(Dispatchers.IO) {
+                                WorkspaceLoadDiagnostics.io(WorkspaceLoadIo.MTIME) { workspaceLinkLastModifiedReader(file) }
+                            }
+                        },
+                    )
+                }
+
+    /** A commit restore can replace every path/body, including unknown-time process records. */
+    internal suspend fun reconcileWorkspaceAfterRestore(workspace: PlatformFile) {
+        val selected = _bookmarks.value
+        if (selected.projectData?.let { sameLocation(it, workspace) } != true) return
+        val keys = workspaceMetadataIndex.snapshot(workspace, selected.workspaceKind)?.entries?.keys.orEmpty()
+        workspaceMetadataIndex.invalidate(workspace, selected.workspaceKind, keys)
+        selected.vaultData?.let { rebuildWorkspaceLinkIndex(it, refreshMarkdown = true) }
+    }
+
+    suspend fun openWorkspaceAttachment(path: WorkspaceLinkPath): Boolean {
+        val file = workspaceLinkIndex.platformFile(path) ?: return false
+        if (!workspaceExists(file)) return false
+        return openPlatformFile(file)
+    }
+
+    internal suspend fun awaitWorkspaceLinkIndexPreparation(vault: PlatformFile): WorkspaceLinkIndexPreparation {
+        val identity = vault.toString()
+        while (true) {
+            workspaceLinkIndex.readyPreparation(identity)?.let { return it }
+            val observed = workspaceLinkIndexState.value
+            when (observed) {
+                WorkspaceLinkIndexState.Inactive -> rebuildWorkspaceLinkIndex(vault)
+                is WorkspaceLinkIndexState.Error -> error(observed.message)
+                is WorkspaceLinkIndexState.Building -> {
+                    check(observed.vaultIdentity == identity) { "Vault가 변경되었습니다." }
+                    workspaceLinkIndexState.first { it !== observed }
+                }
+                is WorkspaceLinkIndexState.Ready -> {
+                    check(observed.vaultIdentity == identity) { "Vault가 변경되었습니다." }
+                    workspaceLinkIndexState.first { it !== observed }
+                }
+            }
         }
     }
+
+    /** Wait before taking transaction locks; validate again after both locks are held. */
+    private suspend fun <T> withProjectLinkIndex(action: suspend (WorkspaceLinkIndexPreparation?) -> T): T {
+        val vault = _bookmarks.value.vaultData
+        val prepared = vault?.let { awaitWorkspaceLinkIndexPreparation(it) }
+        return workspaceLinkRebuildMutex.withLock {
+            projectConfigMutex.withLock {
+                check(sameLocation(_bookmarks.value.vaultData, vault) &&
+                    (prepared == null || workspaceLinkIndex.isCurrent(prepared))) {
+                    "링크 인덱스 또는 Vault가 변경되었습니다. 다시 시도해 주세요."
+                }
+                action(prepared)
+            }
+        }
+    }
+
+    private suspend fun <T> withWorkspaceLinkIndex(
+        vault: PlatformFile,
+        action: suspend (WorkspaceLinkIndexPreparation) -> T,
+    ): T {
+        val prepared = awaitWorkspaceLinkIndexPreparation(vault)
+        return workspaceOpenMutex.withLock {
+            workspaceLinkRebuildMutex.withLock {
+                check(_bookmarks.value.vaultData?.let { sameLocation(it, vault) } == true &&
+                    workspaceLinkIndex.isCurrent(prepared)) { "작업 공간 또는 링크 인덱스가 변경되었습니다." }
+                action(prepared)
+            }
+        }
+    }
+
+    private suspend fun publishKnownTransaction(
+        prepared: WorkspaceLinkIndexPreparation?,
+        pathChanges: List<WorkspaceLinkPathChange>,
+        sources: List<WorkspaceLinkSourceUpdate>,
+    ): List<WorkspaceLinkMarkdownChange> {
+        if (prepared == null) return emptyList()
+        val targets = pathChanges.associateBy(WorkspaceLinkPathChange::previousPath)
+        val rawChanges = linkedMapOf<WorkspaceLinkPath, WorkspaceLinkMarkdownChange>()
+        for (source in sources) {
+            val observed = readWorkspaceLinkMarkdown(source.file)
+            check(observed == source.after) { "링크 원문이 인덱스 반영 전에 변경되었습니다: ${source.path.vaultRelativePath}" }
+            val target = targets[source.path]
+            rawChanges[source.path] = WorkspaceLinkMarkdownChange(
+                target?.previousLocation ?: source.file.toString(), source.path,
+                source.file, target?.path ?: source.path, observed, lastModified(source.file),
+            )
+        }
+        for (target in pathChanges) {
+            if (target.previousPath !in rawChanges &&
+                prepared.index.documents.single { it.path == target.previousPath }.resourceKind == WorkspaceLinkResourceKind.MARKDOWN
+            ) {
+                rawChanges[target.previousPath] = WorkspaceLinkMarkdownChange(
+                    target.previousLocation, target.previousPath, target.platformFile, target.path,
+                    readWorkspaceLinkMarkdown(target.platformFile), lastModified(target.platformFile),
+                )
+            }
+        }
+        check(workspaceLinkIndex.applyKnownPathChangesAndGetIndex(
+            prepared.vaultIdentity, pathChanges, rawChanges.values.toList(), prepared,
+        ) != null) { "링크 인덱스가 변경되어 작업 결과를 반영하지 못했습니다." }
+        val verified = rawChanges.values.toList()
+        workspaceMetadataIndex.acceptKnownMarkdownChanges(verified)
+        return verified
+    }
+
+    private fun isVaultLinkVisibleName(name: String): Boolean =
+        name.isNotBlank() && !name.startsWith('.') && !name.startsWith(".machum", ignoreCase = true)
+
+    private fun vaultLinkEntryKind(name: String): VaultLinkEntryKind =
+        if (name.endsWith(".md", ignoreCase = true)) VaultLinkEntryKind.MARKDOWN
+        else VaultLinkEntryKind.ATTACHMENT
 
     /** 지정 폴더에 파일을 만들고, 관리 Project인 경우 생성 시점의 ID·Project 태그를 기록한다. */
     suspend fun createProjectFile(
@@ -1363,6 +1655,12 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                 }
             } else generalSources.createFile(project, folder.platformFile, name, initial.inject(), initialSource)
             created?.let { file ->
+                val key = folder.key.file(file.name)
+                workspace.vaultData?.let { vault ->
+                    workspaceLinkIndex.insertKnownMarkdown(vault.toString(), file,
+                        WorkspaceLinkPath(workspace.workspaceKind, project.name, key.relativePath),
+                        readWorkspaceLinkMarkdown(file), lastModified(file))
+                }
                 projectIndexer.invalidateHierarchySnapshot()
                 ProjectFile(folder.key.file(file.name), file)
             }
@@ -1392,6 +1690,12 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             } catch (error: Exception) {
                 throw incompleteFileCreation(failure.file, failure.expectedContent, error)
             }
+            check(failure.file.readString() == failure.expectedContent) { "생성 파일의 기록 결과를 확인하지 못했습니다." }
+            _bookmarks.value.vaultData?.let { vault ->
+                workspaceLinkIndex.insertKnownMarkdown(vault.toString(), failure.file,
+                    WorkspaceLinkPath(_bookmarks.value.workspaceKind, project.name, folder.key.file(failure.file.name).relativePath),
+                    failure.expectedContent, lastModified(failure.file))
+            }
             projectIndexer.invalidateHierarchySnapshot()
             ProjectFile(folder.key.file(failure.file.name), failure.file)
         }
@@ -1401,13 +1705,19 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     suspend fun applyDefaultOrder(
         folder: ProjectFolder,
         orderedFileKeys: List<FileKey>,
-    ): List<DefaultOrderUpdate>? = withContext(Dispatchers.IO) {
+    ): List<DefaultOrderUpdate>? = applyDefaultOrderWithReferences(folder, orderedFileKeys)?.updates
+
+    internal suspend fun applyDefaultOrderWithReferences(
+        folder: ProjectFolder,
+        orderedFileKeys: List<FileKey>,
+    ): FileOrderBatchResult<DefaultOrderUpdate>? {
+      val works = withContext(Dispatchers.IO) {
         if (_bookmarks.value.workspaceKind == WorkspaceKind.GENERAL) return@withContext null
         if (orderedFileKeys.toSet().size != orderedFileKeys.size) return@withContext null
 
         val files = listProjectFiles(folder)
         val filesByKey = files.associateBy(ProjectFile::key)
-        val managedFiles = files.filter { it.numberedPrefix() != null }
+        val managedFiles = files.filter { it.defaultOrderPrefix() != null }
         val managedKeys = managedFiles.mapTo(mutableSetOf(), ProjectFile::key)
         if (orderedFileKeys.toSet() != managedKeys) return@withContext null
         if (orderedFileKeys.any { it.folder != folder.key }) return@withContext null
@@ -1436,21 +1746,29 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         if (works.map { it.finalBaseName.lowercase() }.toSet().size != works.size) {
             return@withContext null
         }
-        if (!applyMarkdownOrderTransaction(folder, works)) return@withContext null
-
-        works.map { work ->
-            DefaultOrderUpdate(
-                oldKey = work.oldKey,
-                projectFile = ProjectFile(folder.key.file(work.currentFile.name), work.currentFile),
-            )
-        }
+        works
+      } ?: return null
+      if (works.isEmpty()) return FileOrderBatchResult(emptyList())
+      val references = applyMarkdownOrderTransaction(folder, works) ?: return null
+      return FileOrderBatchResult(works.map { work ->
+          DefaultOrderUpdate(
+              oldKey = work.oldKey,
+              projectFile = ProjectFile(folder.key.file(work.currentFile.name), work.currentFile),
+          )
+      }, references)
     }
 
     /** PLOT 순서 초안을 frontmatter와 정확한 파일명에 일괄 반영한다. */
     suspend fun applyPlotOrder(
         folder: ProjectFolder,
         assignments: List<PlotOrderAssignment>,
-    ): List<PlotOrderUpdate>? = withContext(Dispatchers.IO) {
+    ): List<PlotOrderUpdate>? = applyPlotOrderWithReferences(folder, assignments)?.updates
+
+    internal suspend fun applyPlotOrderWithReferences(
+        folder: ProjectFolder,
+        assignments: List<PlotOrderAssignment>,
+    ): FileOrderBatchResult<PlotOrderUpdate>? {
+      val works = withContext(Dispatchers.IO) {
         if (_bookmarks.value.workspaceKind == WorkspaceKind.GENERAL) return@withContext null
         if (assignments.isEmpty()) return@withContext emptyList()
         if (assignments.map { it.fileKey }.toSet().size != assignments.size) return@withContext null
@@ -1500,15 +1818,17 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             return@withContext null
         }
 
-        if (!applyMarkdownOrderTransaction(folder, works)) return@withContext null
-
-        works.map { work ->
-            PlotOrderUpdate(
-                oldKey = work.oldKey,
-                projectFile = ProjectFile(folder.key.file(work.currentFile.name), work.currentFile),
-                noteFile = work.updatedNoteFile ?: return@withContext null,
-            )
-        }
+        works
+      } ?: return null
+      if (works.isEmpty()) return FileOrderBatchResult(emptyList())
+      val references = applyMarkdownOrderTransaction(folder, works) ?: return null
+      return FileOrderBatchResult(works.map { work ->
+          PlotOrderUpdate(
+              oldKey = work.oldKey,
+              projectFile = ProjectFile(folder.key.file(work.currentFile.name), work.currentFile),
+              noteFile = checkNotNull(work.updatedNoteFile),
+          )
+      }, references)
     }
 
     /** Create a unique direct child and persist its explicit type before reporting success. */
@@ -1596,7 +1916,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         folder: ProjectFolder,
         newName: String,
         folderConfig: FolderConfig,
-    ): FolderRenameUpdate? = projectConfigMutex.withLock {
+    ): FolderRenameUpdate? = withProjectLinkIndex withLock@{ prepared ->
         val project = _bookmarks.value.projectData ?: return@withLock null
         val previousKey = folder.key
         if (previousKey == FolderKey.Base) return@withLock null
@@ -1609,6 +1929,8 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         var configWriteReceipt: ProjectConfigWriteReceipt? = null
         var renamedDirectory: PlatformFile? = null
         var bookmarkWriteAttempted = false
+        var linkRewriteWorks: List<WorkspaceLinkRewriteWork> = emptyList()
+        val writtenLinkSources = mutableSetOf<WorkspaceLinkPath>()
 
         try {
             // catch는 IO context 바깥에 둔다. IO 완료 후 caller로 복귀할 때의 취소도 rollback 대상이다.
@@ -1616,10 +1938,43 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                 if (!sameLocation(resolveFolder(project, previousKey), folder.platformFile)) return@withContext null
                 val children = project.list()
                 if (children.any { it.name.equals(directoryName, ignoreCase = true) }) return@withContext null
-                val previousFileNames = listProjectFiles(folder).mapTo(mutableSetOf()) { it.key.fileName }
+                val previousFiles = listProjectFiles(folder)
+                val previousFileNames = previousFiles.mapTo(mutableSetOf()) { it.key.fileName }
+                val workspaceName = previousBookmarks.projectData?.name ?: project.name
+                val linkIndex = prepared?.index
+                val pathChangesForLinks = linkIndex?.documents.orEmpty()
+                    .asSequence()
+                    .map(WorkspaceLinkDocument::path)
+                    .filter { path ->
+                        path.workspaceKind == previousBookmarks.workspaceKind &&
+                            path.workspaceName == workspaceName &&
+                            path.parentPath == previousKey.relativePath
+                    }
+                    .associateWith { path ->
+                        WorkspaceLinkPath(
+                            path.workspaceKind,
+                            path.workspaceName,
+                            FolderKey.of(directoryName).file(path.fileName).relativePath,
+                        )
+                    }
+                val originalFiles = pathChangesForLinks.keys.associateWith { path ->
+                    workspaceLinkIndex.platformFile(path) ?: error("이름 변경 대상 파일을 찾지 못했습니다.")
+                }
+                linkRewriteWorks = linkIndex?.planPathRewrites(pathChangesForLinks).orEmpty()
+                    .groupBy(WorkspaceLinkRewrite::source)
+                    .map { (source, edits) ->
+                        val file = workspaceLinkIndex.platformFile(source)
+                            ?: error("링크 원문 파일을 찾지 못했습니다: ${source.vaultRelativePath}")
+                        val before = readWorkspaceLinkMarkdown(file)
+                        check(WorkspaceLinkDocument.markdown(source, before) == linkIndex?.documents?.single { it.path == source }) {
+                            "링크 원문이 인덱싱 이후 변경되었습니다: ${source.vaultRelativePath}"
+                        }
+                        WorkspaceLinkRewriteWork(source, file, before, applyWorkspaceLinkRewrites(before, edits))
+                    }
 
                 // 실제 이름 변경의 결과를 반드시 확보한 뒤 취소를 검사해야 이전 경로로 되돌릴 수 있다.
                 currentCoroutineContext().ensureActive()
+                check(prepared == null || workspaceLinkIndex.isCurrent(prepared)) { "링크 인덱스가 변경되었습니다." }
                 withContext(NonCancellable) {
                     renamedDirectory = renameDirectoryExact(project, folder.platformFile, directoryName)
                 }
@@ -1631,6 +1986,22 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                 val updatedFiles = listProjectFiles(updatedFolder)
                 check(updatedFiles.mapTo(mutableSetOf()) { it.key.fileName } == previousFileNames) {
                     "folder contents changed during rename"
+                }
+                val sourceUpdates = linkRewriteWorks.map { rewrite ->
+                    val renamedSource = if (
+                        rewrite.sourcePath.workspaceName == workspaceName &&
+                        rewrite.sourcePath.relativePath.substringBeforeLast('/', "") == previousKey.relativePath
+                    ) {
+                        updatedFiles.firstOrNull { it.key.fileName == rewrite.sourcePath.fileName }?.platformFile
+                    } else null
+                    val file = renamedSource ?: rewrite.originalFile
+                    check(readWorkspaceLinkMarkdown(file) == rewrite.before) {
+                        "링크 원문이 외부에서 변경되었습니다: ${rewrite.sourcePath.vaultRelativePath}"
+                    }
+                    file.writeString(rewrite.after)
+                    check(readWorkspaceLinkMarkdown(file) == rewrite.after)
+                    writtenLinkSources += rewrite.sourcePath
+                    WorkspaceLinkSourceUpdate(rewrite.sourcePath, file, rewrite.before, rewrite.after)
                 }
                 val updatedConfig = previousConfig.renameFolder(
                     previousPath = previousKey.relativePath,
@@ -1665,6 +2036,16 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                     )
                 }
                 currentCoroutineContext().ensureActive()
+                val allUpdatedFiles = listDirectoryEntries(renamed, strict = true).filterNot { it.isDirectory }
+                    .associate { it.name to it.platformFile }
+                val knownChanges = publishKnownTransaction(prepared, pathChangesForLinks.map { (old, updated) ->
+                    WorkspaceLinkPathChange(originalFiles.getValue(old).toString(), old,
+                        allUpdatedFiles[updated.fileName] ?: error("이름 변경 후 대상 파일을 찾지 못했습니다."), updated)
+                }, sourceUpdates)
+                workspaceMetadataIndex.relocate(project, previousBookmarks.workspaceKind,
+                    updatedFiles.associateBy { previousKey.file(it.key.fileName) },
+                    knownChanges.filter { it.path.workspaceName == workspaceName && it.path.workspaceKind == previousBookmarks.workspaceKind }
+                        .associate { FileKey.of(it.path.relativePath) to NoteFile.parse(it.rawMarkdown) })
                 FolderRenameUpdate(
                     previousKey = previousKey,
                     projectFolder = updatedFolder,
@@ -1689,6 +2070,18 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                                     "original directory restore failed"
                                 }
                             }.exceptionOrNull()?.let(::add)
+                            linkRewriteWorks.asReversed().forEach { rewrite ->
+                                if (rewrite.sourcePath !in writtenLinkSources) return@forEach
+                                runCatching {
+                                    val file = (if (rewrite.sourcePath.workspaceName == previousBookmarks.projectData?.name) {
+                                        resolveRelativeFile(project, rewrite.sourcePath.relativePath)
+                                    } else null) ?: rewrite.originalFile
+                                    val observed = readWorkspaceLinkMarkdown(file)
+                                    check(observed == rewrite.after || observed == rewrite.before)
+                                    if (observed == rewrite.after) file.writeString(rewrite.before)
+                                    check(readWorkspaceLinkMarkdown(file) == rewrite.before)
+                                }.exceptionOrNull()?.let(::add)
+                            }
                             val receipt = configWriteReceipt
                             if (receipt != null) {
                                 runCatching {
@@ -1718,6 +2111,13 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                         }
                     }
                 }
+                previousBookmarks.vaultData?.let { vault ->
+                    withContext(NonCancellable) {
+                        workspaceMetadataIndex.invalidateForRecovery()
+                        workspaceLinkIndex.deactivate()
+                        runCatching { rebuildWorkspaceLinkIndexUnlocked(vault, true) }.onFailure { workspaceLinkIndex.deactivate() }
+                    }
+                }
                 if (rollbackFailures.isNotEmpty()) {
                     throw FolderRenameRollbackException(previousKey.relativePath, directoryName, error, rollbackFailures)
                 }
@@ -1737,7 +2137,9 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     }
 
     /** 점검 결과가 안전한 직속 폴더를 Vault 휴지통으로 옮기고 Project일 때 설정도 정리한다. */
-    suspend fun deleteProjectFolder(folderKey: FolderKey): FolderDeletionUpdate? = workspaceOpenMutex.withLock {
+    suspend fun deleteProjectFolder(folderKey: FolderKey): FolderDeletionUpdate? {
+        val vaultAtRequest = _bookmarks.value.vaultData ?: return null
+        return withWorkspaceLinkIndex(vaultAtRequest) { prepared ->
         withContext(Dispatchers.IO) {
             if (folderKey == FolderKey.Base) return@withContext null
             val selected = _bookmarks.value
@@ -1790,12 +2192,19 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                 )
                 writeWorkspaceTrashReceipt(entry, receiptFile, receipt)
                 withContext(NonCancellable) {
+                    val workspaceName = project.name
+                    val indexedLocations = prepared.index.documents.filter {
+                        it.path.workspaceKind == workspaceKind && it.path.workspaceName == workspaceName &&
+                            it.path.relativePath.startsWith("${folderKey.relativePath}/")
+                    }.mapNotNull { workspaceLinkIndex.platformFile(it.path)?.toString() }
                     val moved = moveWorkspaceItemNative(
                         vault,
                         project,
                         preview.folder.platformFile,
                         entry,
                     )
+                    indexedLocations.forEach { workspaceLinkIndex.removeByLocation(it) }
+                    workspaceMetadataIndex.invalidate(project, selected.workspaceKind, preview.markdownFiles.map(ProjectFile::key))
                     receipt = receipt.copy(
                         movedLocation = moved.toString(),
                     )
@@ -1821,6 +2230,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                 }
             }
         }
+    }
     }
 
     private suspend fun inspectProjectFolderDeletion(
@@ -1864,15 +2274,29 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     }
 
     /** workspaceOpenMutex 안에서만 호출한다. 화면 교체 후에도 이미 시작한 진입을 완료한다. */
-    private suspend fun activateProject(project: PlatformFile) = withContext(Dispatchers.IO + NonCancellable) {
+    private suspend fun activateProject(
+        project: PlatformFile,
+        knownVaultConfig: VaultConfig? = null,
+    ) = withContext(Dispatchers.IO + NonCancellable) {
+        val trace = WorkspaceLoadDiagnostics.begin("project-activate")
         projectIndexer.prepare(project)
         try {
-            val preferences = getPreferences()
-            preferences.vaultData?.let { vault -> runCatching { rememberProject(vault, project) } }
+            val preferences = _bookmarks.value
+            preferences.vaultData?.let { vault ->
+                if (
+                    knownVaultConfig == null ||
+                    knownVaultConfig.lastProject != project.name ||
+                    project.name in knownVaultConfig.generalFolders
+                ) {
+                    runCatching { rememberProject(vault, project) }
+                }
+            }
             setPreferences(preferences.copy(projectData = project, fileData = null,
                 fileRelativePath = null, workspaceKind = WorkspaceKind.PROJECT))
-            loadProjectConfig(project)
+            checkNotNull(loadProjectConfig(project)) { "프로젝트 설정을 불러오지 못했습니다." }
+            trace.complete()
         } catch (e: Exception) {
+            trace.fail(e)
             projectIndexer.fail(project, e)
             throw e
         }
@@ -1881,7 +2305,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     suspend fun pickFile(projectFile: ProjectFile): PlatformFile = withContext(Dispatchers.IO) {
         val file = projectFile.platformFile
         setPreferences(
-            getPreferences().copy(
+            _bookmarks.value.copy(
                 fileData = file,
                 fileRelativePath = projectFile.key.relativePath,
             )
@@ -1891,7 +2315,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     /** 현재 작업 공간은 유지하고 더 이상 존재하지 않는 선택 파일 bookmark만 비운다. */
     suspend fun clearPickedFile() = withContext(Dispatchers.IO) {
         setPreferences(
-            getPreferences().copy(
+            _bookmarks.value.copy(
                 fileData = null,
                 fileRelativePath = null,
             ),
@@ -1905,6 +2329,20 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         configJson.decodeFromString(ProjectConfig.serializer(), content).validateDocumentPropertyDefinitions()
     }
 
+    private suspend fun hasValidProjectMarker(marker: PlatformDirectoryEntry): Boolean {
+        if (marker.isDirectory) return false
+        val content = marker.platformFile.readString()
+        if (content.isBlank()) return false
+        return try {
+            configJson.decodeFromString(ProjectConfig.serializer(), content).validateDocumentPropertyDefinitions()
+            true
+        } catch (_: SerializationException) {
+            false
+        } catch (_: IllegalArgumentException) {
+            false
+        }
+    }
+
     /**
      * 프로젝트 설정을 읽어 라이브 상태로 전환한다.
      * 빈 파일 또는 base 설정이 없는 구 설정은 기본값을 보완해 즉시 디스크에도 기록한다.
@@ -1912,7 +2350,8 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     private suspend fun loadProjectConfig(project: PlatformFile): ProjectConfig? = withContext(Dispatchers.IO) {
         if (_bookmarks.value.workspaceKind == WorkspaceKind.GENERAL) return@withContext _projectConfig.value
         projectConfigMutex.withLock {
-            val configFile = setConfig(project, PROJECT_CONFIG_FILE_NAME) ?: return@withLock null
+            val configFile = setConfig(project, PROJECT_CONFIG_FILE_NAME)
+                ?: error("프로젝트 설정을 불러오지 못했습니다.")
             val stored = readConfig(configFile)
             val normalized = (stored ?: ProjectConfig()).withDefaultBaseFolder()
 
@@ -1920,7 +2359,16 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                 persistConfig(configFile, normalized, expected = stored)
             }
 
-            projectIndexer.index(project, normalized)
+            val indexTrace = WorkspaceLoadDiagnostics.begin("project-index")
+            val indexResult = try {
+                projectIndexer.index(project, normalized)
+            } catch (error: Throwable) {
+                indexTrace.fail(error)
+                throw error
+            }
+            indexTrace.complete(
+                "total=${indexResult.total}|updated=${indexResult.updated}|unchanged=${indexResult.unchanged}",
+            )
 
             if (!sameLocation(_bookmarks.value.projectData, project)) return@withLock null
             _projectConfig.value = normalized
@@ -1934,7 +2382,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      */
     suspend fun lastModified(file: PlatformFile): Long? = withContext(Dispatchers.IO) {
         try {
-            lastModifiedReader(file)
+            WorkspaceLoadDiagnostics.io(WorkspaceLoadIo.MTIME) { lastModifiedReader(file) }
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (e: Exception) {
@@ -1942,9 +2390,58 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         }
     }
 
-    /** 선택된 작업 공간과 무관한 순수 읽기. ID·태그 생성이나 파일 쓰기를 하지 않는다. */
-    suspend fun readMarkdown(file: PlatformFile): NoteFile = withContext(Dispatchers.IO) {
-        NoteFile.parse(markdownReader(file))
+    private suspend fun readWorkspaceLinkMarkdown(file: PlatformFile): String =
+        WorkspaceLoadDiagnostics.io(WorkspaceLoadIo.READ) { workspaceLinkMarkdownReader(file) }
+
+    private suspend fun writeWorkspaceLinkMarkdown(file: PlatformFile, raw: String) =
+        WorkspaceLoadDiagnostics.io(WorkspaceLoadIo.WRITE) { workspaceLinkMarkdownWriter(file, raw) }
+
+    internal suspend fun acceptVerifiedWorkspaceMarkdown(file: PlatformFile, raw: String) =
+        refreshWorkspaceLinkDocument(file, raw)
+
+    private suspend fun refreshWorkspaceLinkDocument(file: PlatformFile, raw: String) {
+        // The index is derived state. A cache/index failure must never turn a completed file read
+        // or durable write into a document failure; the next strict reconciliation rebuilds it.
+        try {
+            WorkspaceLoadDiagnostics.measure("link-document-refresh") {
+                val modified = WorkspaceLoadDiagnostics.io(WorkspaceLoadIo.MTIME) { workspaceLinkLastModifiedReader(file) }
+                workspaceLinkIndex.upsertByLocation(file.toString(), raw, modified)
+            }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * 선택된 작업 공간과 무관하게 Vault 원문을 읽는다.
+     * 활성 링크 index가 있으면 앱 전용 파생 cache만 갱신하며 Vault 원문은 수정하지 않는다.
+     */
+    internal suspend fun readMarkdownForDisplay(file: PlatformFile): WorkspaceDocumentRead = withContext(Dispatchers.IO) {
+        val selected = _bookmarks.value
+        val prepared = selected.vaultData?.let { workspaceLinkIndex.readyPreparation(it.toString()) }
+        val metadataIdentity = selected.projectData?.let {
+            workspaceMetadataIndex.snapshot(it, selected.workspaceKind)?.workspaceIdentity
+        }
+        val raw = WorkspaceLoadDiagnostics.io(WorkspaceLoadIo.READ) { markdownReader(file) }
+        currentCoroutineContext().ensureActive()
+        val note = WorkspaceLoadDiagnostics.measure("markdown-parse") { NoteFile.parse(raw) }
+        WorkspaceDocumentRead(note, raw, prepared, metadataIdentity)
+    }
+
+    internal suspend fun acceptWorkspaceDocumentRead(file: PlatformFile, read: WorkspaceDocumentRead) {
+        val prepared = read.preparation ?: return
+        try {
+            val modified = WorkspaceLoadDiagnostics.io(WorkspaceLoadIo.MTIME) { workspaceLinkLastModifiedReader(file) }
+            workspaceLinkIndex.upsertByLocation(file.toString(), read.rawMarkdown, modified, prepared)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {}
+    }
+
+    suspend fun readMarkdown(file: PlatformFile): NoteFile {
+        val read = readMarkdownForDisplay(file)
+        acceptWorkspaceDocumentRead(file, read)
+        return read.noteFile
     }
 
     internal suspend fun inspectProjectMetadata(
@@ -1972,7 +2469,8 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
      * @param body 파일 내용
      */
     suspend fun write(file: PlatformFile, body: String) = withContext(Dispatchers.IO) {
-        file.writeString(body)
+        WorkspaceLoadDiagnostics.io(WorkspaceLoadIo.WRITE) { file.writeString(body) }
+        refreshWorkspaceLinkDocument(file, body)
     }
 
     /** 설정 전체를 현재 프로젝트에 저장하고 라이브 상태를 함께 갱신한다. */
@@ -2156,7 +2654,9 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     }
 
     suspend fun writeMarkdown(file: PlatformFile, noteFile: NoteFile) = withContext(Dispatchers.IO) {
-        file.writeString(noteFile.inject())
+        val raw = noteFile.inject()
+        WorkspaceLoadDiagnostics.io(WorkspaceLoadIo.WRITE) { file.writeString(raw) }
+        refreshWorkspaceLinkDocument(file, raw)
     }
 
     /**
@@ -2167,6 +2667,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     suspend fun delete(file: PlatformFile) = withContext(Dispatchers.IO) {
         try {
             file.delete()
+            workspaceLinkIndex.removeByLocation(file.toString())
             true
         } catch (e: Exception) {
             throw e
@@ -2241,7 +2742,9 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         vault: PlatformFile,
         directory: PlatformFile,
         name: String,
-    ): PlatformFile? = workspaceOpenMutex.withLock {
+    ): PlatformFile? {
+        if (_bookmarks.value.vaultData?.let { sameLocation(it, vault) } != true) return null
+        return withWorkspaceLinkIndex(vault) { prepared ->
         withContext(Dispatchers.IO) {
             if (_bookmarks.value.vaultData?.let { sameLocation(it, vault) } != true) return@withContext null
             val child = requireVaultChild(directory, listProject(vault))
@@ -2251,14 +2754,41 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
             if (targetName.equals(child.name, ignoreCase = true) || vault.list().any {
                     it.name.equals(targetName, ignoreCase = true)
                 }) return@withContext null
-            val setup = workspaceSetup(child)
-            if (setup == WorkspaceSetup.NEEDS_CONFIRMATION) return@withContext null
-            val oldName = child.name
             val oldBookmarks = getPreferences()
             val active = oldBookmarks.projectData?.let { sameLocation(it, child) } == true
+            val detectedSetup = workspaceSetup(child)
+            val setup = when {
+                detectedSetup != WorkspaceSetup.NEEDS_CONFIRMATION -> detectedSetup
+                active && oldBookmarks.workspaceKind == WorkspaceKind.GENERAL -> WorkspaceSetup.GENERAL
+                active && oldBookmarks.workspaceKind == WorkspaceKind.PROJECT -> WorkspaceSetup.PROJECT
+                else -> return@withContext null
+            }
+            val oldName = child.name
             val oldProjectConfig = _projectConfig.value
             val oldConfig = vaultConfigMutex.withLock { readVaultConfigUnlocked(vault) }
+            val workspaceKind = if (setup == WorkspaceSetup.GENERAL) WorkspaceKind.GENERAL else WorkspaceKind.PROJECT
+            val linkIndex = prepared.index
+            val pathChanges = linkIndex.documents
+                .map(WorkspaceLinkDocument::path)
+                .filter { it.workspaceKind == workspaceKind && it.workspaceName == oldName }
+                .associateWith { old -> WorkspaceLinkPath(old.workspaceKind, targetName, old.relativePath) }
+            val originalFiles = pathChanges.keys.associateWith { path ->
+                workspaceLinkIndex.platformFile(path) ?: error("이름 변경 대상 파일을 찾지 못했습니다.")
+            }
+            val linkRewriteWorks = linkIndex.planPathRewrites(pathChanges)
+                .groupBy(WorkspaceLinkRewrite::source)
+                .map { (source, edits) ->
+                    val file = workspaceLinkIndex.platformFile(source)
+                        ?: error("링크 원문 파일을 찾지 못했습니다: ${source.vaultRelativePath}")
+                    val before = readWorkspaceLinkMarkdown(file)
+                    check(WorkspaceLinkDocument.markdown(source, before) == linkIndex.documents.single { it.path == source }) {
+                        "링크 원문이 인덱싱 이후 변경되었습니다: ${source.vaultRelativePath}"
+                    }
+                    WorkspaceLinkRewriteWork(source, file, before, applyWorkspaceLinkRewrites(before, edits))
+                }
+            val writtenLinkSources = mutableSetOf<WorkspaceLinkPath>()
             currentCoroutineContext().ensureActive()
+            check(workspaceLinkIndex.isCurrent(prepared)) { "링크 인덱스가 변경되었습니다." }
             withContext(NonCancellable) rename@{
                 val renamed = renameDirectoryExact(vault, child, targetName) ?: return@rename null
                 check(renamed.name == targetName && renamed.isDirectory()) {
@@ -2266,6 +2796,22 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                 }
                 var configUpdated = false
                 try {
+                    val sourceUpdates = linkRewriteWorks.map { rewrite ->
+                        val file = if (
+                            rewrite.sourcePath.workspaceKind == workspaceKind &&
+                            rewrite.sourcePath.workspaceName == oldName
+                        ) {
+                            resolveRelativeFile(renamed, rewrite.sourcePath.relativePath)
+                                ?: error("이름 변경 후 링크 원문을 찾지 못했습니다.")
+                        } else rewrite.originalFile
+                        check(readWorkspaceLinkMarkdown(file) == rewrite.before) {
+                            "링크 원문이 외부에서 변경되었습니다: ${rewrite.sourcePath.vaultRelativePath}"
+                        }
+                        file.writeString(rewrite.after)
+                        check(readWorkspaceLinkMarkdown(file) == rewrite.after)
+                        writtenLinkSources += rewrite.sourcePath
+                        WorkspaceLinkSourceUpdate(rewrite.sourcePath, file, rewrite.before, rewrite.after)
+                    }
                     updateWorkspaceVaultConfig(vault) { config ->
                         config.copy(
                             generalFolders = if (setup == WorkspaceSetup.GENERAL)
@@ -2293,8 +2839,43 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                             })
                         }
                     }
+                    if (setup == WorkspaceSetup.PROJECT) {
+                        synchronizeProjectNameTag(renamed, oldName, failOnError = true)
+                    }
+                    val finalSources = sourceUpdates.map { update ->
+                        if (update.path.workspaceKind == workspaceKind && update.path.workspaceName == oldName)
+                            update.copy(after = readWorkspaceLinkMarkdown(update.file)) else update
+                    }
+                    val relocatedFiles = pathChanges.map { (old, updated) ->
+                        val file = resolveRelativeFile(renamed, old.relativePath) ?: error("이름 변경 후 대상 파일을 찾지 못했습니다.")
+                        WorkspaceLinkPathChange(originalFiles.getValue(old).toString(), old, file, updated)
+                    }
+                    val knownChanges = publishKnownTransaction(prepared, relocatedFiles, finalSources)
+                    workspaceMetadataIndex.relocateWorkspace(child, renamed, workspaceKind,
+                        relocatedFiles.filter { original ->
+                            linkIndex.documents.single { it.path == original.previousPath }.resourceKind == WorkspaceLinkResourceKind.MARKDOWN
+                        }.associate { FileKey.of(it.previousPath.relativePath) to ProjectFile(FileKey.of(it.path.relativePath), it.platformFile) },
+                        knownChanges.filter { it.path.workspaceKind == workspaceKind && it.path.workspaceName == targetName }
+                            .associate { FileKey.of(it.path.relativePath) to NoteFile.parse(it.rawMarkdown) })
                 } catch (error: Exception) {
                     val restored = renameDirectoryExact(vault, renamed, oldName)
+                    linkRewriteWorks.asReversed().forEach { rewrite ->
+                        if (rewrite.sourcePath !in writtenLinkSources) return@forEach
+                        runCatching {
+                            val file = if (
+                                restored != null &&
+                                rewrite.sourcePath.workspaceKind == workspaceKind &&
+                                rewrite.sourcePath.workspaceName == oldName
+                            ) {
+                                resolveRelativeFile(restored, rewrite.sourcePath.relativePath)
+                                    ?: error("복구된 링크 원문을 찾지 못했습니다.")
+                            } else rewrite.originalFile
+                            val observed = readWorkspaceLinkMarkdown(file)
+                            check(observed == rewrite.after || observed == rewrite.before)
+                            if (observed == rewrite.after) file.writeString(rewrite.before)
+                            check(readWorkspaceLinkMarkdown(file) == rewrite.before)
+                        }.onFailure(error::addSuppressed)
+                    }
                     if (restored != null && configUpdated) {
                         runCatching { updateWorkspaceVaultConfig(vault) { config ->
                             config.copy(
@@ -2307,6 +2888,9 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                             )
                         } }.onFailure { error.addSuppressed(it) }
                     }
+                    workspaceMetadataIndex.invalidateForRecovery()
+                    workspaceLinkIndex.deactivate()
+                    runCatching { rebuildWorkspaceLinkIndexUnlocked(vault, true) }.onFailure { workspaceLinkIndex.deactivate() }
                     throw IllegalStateException(
                         (if (restored != null) "이름 변경 기록에 실패하여 폴더 이름을 되돌렸습니다."
                         else "이름 변경 기록에 실패했습니다. 실제 폴더 위치를 확인해 주세요: $renamed") + " ${error.message}",
@@ -2314,11 +2898,6 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                     )
                 }
                 if (setup == WorkspaceSetup.PROJECT) {
-                    try {
-                        synchronizeProjectNameTag(renamed, oldName, failOnError = true)
-                    } catch (error: Exception) {
-                        throw IllegalStateException("폴더 이름은 변경되었지만 프로젝트 태그 갱신에 실패했습니다: $renamed", error)
-                    }
                     if (active) {
                         projectIndexer.prepare(renamed)
                         loadProjectConfig(renamed)
@@ -2327,6 +2906,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                 renamed
             }
         }
+    }
     }
 
     private suspend fun initializeNewProject(project: PlatformFile): Boolean {
@@ -2406,58 +2986,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         val vault = _bookmarks.value.vaultData ?: return@withContext null
         val selectedProject = _bookmarks.value.projectData ?: return@withContext null
         if (!sameLocation(selectedProject, project)) return@withContext null
-
-        val projectName = name.trim()
-        if (!isValidProjectFolderName(projectName)) return@withContext null
-        if (projectName == project.name) return@withContext project
-        // 플랫폼별 대소문자 처리 차이로 인한 충돌을 피한다.
-        if (projectName.equals(project.name, ignoreCase = true)) return@withContext null
-        if (vault.list().any { child ->
-                !sameLocation(child, project) && child.name.equals(projectName, ignoreCase = true)
-            }
-        ) {
-            return@withContext null
-        }
-
-        val previousName = project.name
-        val previousBookmarks = getPreferences()
-        val previousVaultConfig = loadVaultConfig(vault, listProject(vault))
-        val renamedProject = renameDirectoryExact(vault, project, projectName)
-            ?: return@withContext null
-        val selectedFile = previousBookmarks.fileRelativePath
-            ?.let { relativePath -> resolveRelativeFile(renamedProject, relativePath) }
-
-        projectIndexer.prepare(renamedProject)
-        val vaultConfigUpdated = runCatching {
-            rememberProject(vault, renamedProject, previousName)
-        }.isSuccess
-        val bookmarkUpdated = runCatching {
-            setPreferences(
-                previousBookmarks.copy(
-                    projectData = renamedProject,
-                    fileData = selectedFile,
-                    fileRelativePath = previousBookmarks.fileRelativePath
-                        .takeIf { selectedFile != null },
-                )
-            )
-        }.isSuccess
-        if (!bookmarkUpdated) {
-            renameDirectoryExact(vault, renamedProject, previousName)
-            if (vaultConfigUpdated) {
-                runCatching { updateVaultConfig(vault) { previousVaultConfig } }
-            }
-            projectIndexer.reset()
-            return@withContext null
-        }
-
-        // 프로젝트명은 관리 태그이므로 기존 이름은 제거하고 새 이름을 첫 태그로 둔다.
-        synchronizeProjectNameTag(
-            project = renamedProject,
-            previousName = previousName,
-        )
-        runCatching { loadProjectConfig(renamedProject) }
-            .onFailure { error -> projectIndexer.fail(renamedProject, error) }
-        renamedProject
+        renameWorkspace(vault, project, name)
     }
 
     private suspend fun synchronizeProjectNameTag(
@@ -2467,33 +2996,268 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     ) {
         val previousTag = normalizeTag(previousName)
         val updatedTag = normalizeTag(project.name)
-        listFolders(project)
+        val projectFiles = listFolders(project)
             .flatMap { folder -> listProjectFiles(folder) }
-            .forEach { projectFile ->
-                val synchronized = runCatching {
-                    val original = NoteFile.parse(projectFile.platformFile.readString())
-                    val withId = original.ensureId()
-                    val updatedTags = buildList {
-                        add(updatedTag)
-                        withId.tags
-                            .filterNot { tag -> tag == previousTag || tag == updatedTag }
-                            .forEach { tag -> if (tag !in this) add(tag) }
-                    }
-                    val updated = withId.withTags(updatedTags)
-                    if (updated.inject() != original.inject()) {
-                        projectFile.platformFile.writeString(updated.inject())
-                    }
-                }
-                if (failOnError) synchronized.getOrThrow()
+
+        fun updatedContent(originalContent: String): String {
+            val original = NoteFile.parse(originalContent)
+            val withId = original.ensureId()
+            val updatedTags = buildList {
+                add(updatedTag)
+                withId.tags
+                    .filterNot { tag -> tag == previousTag || tag == updatedTag }
+                    .forEach { tag -> if (tag !in this) add(tag) }
             }
+            return withId.withTags(updatedTags).inject()
+        }
+
+        if (!failOnError) {
+            projectFiles.forEach { projectFile ->
+                runCatching {
+                    val before = projectFile.platformFile.readString()
+                    val after = updatedContent(before)
+                    if (after != before) projectFile.platformFile.writeString(after)
+                }
+            }
+            return
+        }
+
+        data class TagRewrite(
+            val file: PlatformFile,
+            val before: String,
+            val after: String,
+        )
+
+        val rewrites = projectFiles.mapNotNull { projectFile ->
+            val before = projectFile.platformFile.readString()
+            val after = updatedContent(before)
+            TagRewrite(projectFile.platformFile, before, after).takeIf { before != after }
+        }
+        val written = mutableListOf<TagRewrite>()
+        try {
+            rewrites.forEach { rewrite ->
+                check(rewrite.file.readString() == rewrite.before) {
+                    "프로젝트 문서가 외부에서 변경되었습니다: ${rewrite.file}"
+                }
+                rewrite.file.writeString(rewrite.after)
+                check(rewrite.file.readString() == rewrite.after) {
+                    "프로젝트 태그 저장 결과를 확인하지 못했습니다: ${rewrite.file}"
+                }
+                written += rewrite
+            }
+        } catch (error: Exception) {
+            written.asReversed().forEach { rewrite ->
+                runCatching {
+                    val observed = rewrite.file.readString()
+                    check(observed == rewrite.after || observed == rewrite.before)
+                    if (observed == rewrite.after) rewrite.file.writeString(rewrite.before)
+                    check(rewrite.file.readString() == rewrite.before)
+                }.onFailure(error::addSuppressed)
+            }
+            throw error
+        }
     }
 
-    suspend fun renameFile(projectFile: ProjectFile, name: String): PlatformFile? = withContext(Dispatchers.IO) {
-        if (!isValidProjectFileTitle(name)) return@withContext null
-        val project = _bookmarks.value.projectData ?: return@withContext null
-        val parent = resolveFolder(project, projectFile.key.folder) ?: return@withContext null
-        renameMarkdownExact(parent, projectFile.platformFile, name)
-    }
+    suspend fun renameFile(projectFile: ProjectFile, name: String): PlatformFile? =
+        renameFileWithReferences(projectFile, name)?.renamedFile?.platformFile
+
+    internal suspend fun renameFileWithReferences(projectFile: ProjectFile, name: String): FileRenameResult? =
+        withProjectLinkIndex withLock@{ prepared ->
+            if (!isValidProjectFileTitle(name)) return@withLock null
+            val selected = _bookmarks.value
+            val project = selected.projectData ?: return@withLock null
+            val oldKey = projectFile.key
+            val oldPath = WorkspaceLinkPath(selected.workspaceKind, project.name, oldKey.relativePath)
+            var currentFile = projectFile.platformFile
+            var renamed = false
+            var parent: PlatformFile? = null
+            var rewrites: List<WorkspaceLinkRewriteWork> = emptyList()
+            val attempted = mutableSetOf<WorkspaceLinkPath>()
+            suspend fun rebuildForRename(phase: String, refreshMarkdown: Boolean = true): WorkspaceLinkIndex? {
+                val vault = selected.vaultData ?: return null
+                val trace = WorkspaceLoadDiagnostics.start("file-rename-index-$phase")
+                return try {
+                    rebuildWorkspaceLinkIndexUnlocked(vault, refreshMarkdown = refreshMarkdown).also { index ->
+                        trace.complete("documents=${index.documents.size}")
+                    }
+                } catch (error: Throwable) {
+                    trace.fail(error)
+                    throw error
+                }
+            }
+            suspend fun applyIndexAfterRename(changes: List<WorkspaceLinkMarkdownChange>): WorkspaceLinkIndex? {
+                val vault = selected.vaultData ?: return null
+                val trace = WorkspaceLoadDiagnostics.start("file-rename-index-after")
+                return try {
+                    val appliedIndex = workspaceLinkIndex.applyKnownMarkdownChangesAndGetIndex(vault.toString(), changes, prepared)
+                    if (appliedIndex != null) {
+                        val index = appliedIndex
+                        workspaceMetadataIndex.acceptKnownMarkdownChanges(changes)
+                        trace.complete("mode=known-changes|changes=${changes.size}|documents=${index.documents.size}")
+                        index
+                    } else {
+                        error("링크 인덱스가 변경되어 이름 변경을 반영하지 못했습니다.")
+                    }
+                } catch (error: Throwable) {
+                    trace.fail(error)
+                    throw error
+                }
+            }
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    val directory = resolveFolder(project, oldKey.folder) ?: return@withContext null
+                    parent = directory
+                    val preflightTrace = WorkspaceLoadDiagnostics.begin("file-rename-preflight")
+                    val entries = try {
+                        listDirectoryEntries(directory, strict = true).also {
+                            preflightTrace.complete("entries=${it.size}")
+                        }
+                    } catch (error: Throwable) {
+                        preflightTrace.fail(error)
+                        throw error
+                    }
+                    val source = entries.singleOrNull {
+                        !it.isDirectory && it.name == oldKey.fileName && sameLocation(it.platformFile, projectFile.platformFile)
+                    }?.platformFile ?: return@withContext null
+                    if (!source.name.endsWith(".md", ignoreCase = true)) return@withContext null
+                    val targetName = "$name.${source.name.substringAfterLast('.')}"
+                    if (targetName == source.name) return@withContext FileRenameResult(projectFile)
+                    if (entries.any { it.name.equals(targetName, ignoreCase = true) }) return@withContext null
+                    val newPath = oldPath.copy(relativePath = oldKey.rename(targetName).relativePath)
+                    val changes = mapOf(oldPath to newPath)
+                    val index = prepared?.index
+                    check(index == null || index.documents.none { it.issue != null }) {
+                        "읽지 못한 링크 원문이 있어 이름을 변경하지 않았습니다."
+                    }
+                    val plannedRewrites = WorkspaceLoadDiagnostics.time("file-rename.plan") {
+                        index?.planPathRewrites(changes).orEmpty()
+                    }
+                    rewrites = WorkspaceLoadDiagnostics.time("file-rename.prepare-sources") {
+                        plannedRewrites.groupBy(WorkspaceLinkRewrite::source).map { (path, edits) ->
+                            val file = workspaceLinkIndex.platformFile(path)
+                                ?: error("링크 원문 파일을 찾지 못했습니다: ${path.vaultRelativePath}")
+                            val before = readWorkspaceLinkMarkdown(file)
+                            check(WorkspaceLinkDocument.markdown(path, before) == index?.documents?.single { it.path == path }) {
+                                "링크 원문이 인덱싱 이후 변경되었습니다: ${path.vaultRelativePath}"
+                            }
+                            WorkspaceLinkRewriteWork(path, file, before, applyWorkspaceLinkRewrites(before, edits))
+                        }
+                    }
+                    check(_bookmarks.value.projectData?.let { sameLocation(it, project) } == true &&
+                        _bookmarks.value.workspaceKind == selected.workspaceKind) { "작업 공간이 변경되었습니다." }
+                    currentCoroutineContext().ensureActive()
+                    check(prepared == null || workspaceLinkIndex.isCurrent(prepared)) { "링크 인덱스가 변경되었습니다." }
+                    withContext(NonCancellable) {
+                        currentFile = renameMarkdownExact(directory, source, name) ?: return@withContext null
+                        renamed = true
+                        WorkspaceLoadDiagnostics.time("file-rename.result-name") {
+                            check(currentFile.name == targetName) { "이름 변경 결과가 요청과 다릅니다." }
+                        }
+                        val updates = WorkspaceLoadDiagnostics.time("file-rename.references-write") { writeTrace ->
+                            rewrites.map { rewrite ->
+                                val file = if (rewrite.sourcePath == oldPath) currentFile else rewrite.originalFile
+                                WorkspaceLoadDiagnostics.time("file-rename.reference-before", parent = writeTrace) {
+                                    check(readWorkspaceLinkMarkdown(file) == rewrite.before) {
+                                        "링크 원문이 외부에서 변경되었습니다: ${rewrite.sourcePath.vaultRelativePath}"
+                                    }
+                                }
+                                attempted += rewrite.sourcePath
+                                WorkspaceLoadDiagnostics.time("file-rename.reference-write", parent = writeTrace) {
+                                    writeWorkspaceLinkMarkdown(file, rewrite.after)
+                                }
+                                WorkspaceLoadDiagnostics.time("file-rename.reference-after", parent = writeTrace) {
+                                    check(readWorkspaceLinkMarkdown(file) == rewrite.after) {
+                                        "링크 원문 갱신 결과를 확인하지 못했습니다: ${rewrite.sourcePath.vaultRelativePath}"
+                                    }
+                                }
+                                WorkspaceLinkSourceUpdate(rewrite.sourcePath, file, rewrite.before, rewrite.after)
+                            }
+                        }
+                        val indexChanges = WorkspaceLoadDiagnostics.time("file-rename.final-verify") { verifyTrace ->
+                            val verifiedAfterByPath = WorkspaceLoadDiagnostics.time("file-rename.final-sources", parent = verifyTrace) {
+                                updates.associate { update ->
+                                    val observed = readWorkspaceLinkMarkdown(update.file)
+                                    check(observed == update.after) {
+                                        "링크 원문이 인덱스 반영 전에 외부에서 변경되었습니다: ${update.path.vaultRelativePath}"
+                                    }
+                                    update.path to observed
+                                }
+                            }
+                            val targetRaw = verifiedAfterByPath[oldPath]
+                                ?: WorkspaceLoadDiagnostics.time("file-rename.final-target", parent = verifyTrace) {
+                                    readWorkspaceLinkMarkdown(currentFile)
+                                }
+                            buildList {
+                                add(WorkspaceLinkMarkdownChange(
+                                    previousLocation = source.toString(),
+                                    previousPath = oldPath,
+                                    platformFile = currentFile,
+                                    path = newPath,
+                                    rawMarkdown = targetRaw,
+                                    modifiedAt = lastModified(currentFile),
+                                ))
+                                updates.filter { it.path != oldPath }.forEach { update ->
+                                    add(WorkspaceLinkMarkdownChange(
+                                        previousLocation = update.file.toString(),
+                                        previousPath = update.path,
+                                        platformFile = update.file,
+                                        path = update.path,
+                                        rawMarkdown = verifiedAfterByPath.getValue(update.path),
+                                        modifiedAt = lastModified(update.file),
+                                    ))
+                                }
+                            }
+                        }
+                        applyIndexAfterRename(indexChanges)
+                        FileRenameResult(ProjectFile(oldKey.rename(targetName), currentFile), updates, index, changes)
+                    }
+                }
+                currentCoroutineContext().ensureActive()
+                result
+            } catch (error: Exception) {
+                if (renamed) {
+                    val failures = withContext(NonCancellable + Dispatchers.IO) {
+                        val failures = mutableListOf<Throwable>()
+                        rewrites.asReversed().filter { it.sourcePath in attempted }.forEach { rewrite ->
+                            runCatching {
+                                val file = if (rewrite.sourcePath == oldPath) currentFile else rewrite.originalFile
+                                val observed = readWorkspaceLinkMarkdown(file)
+                                check(observed == rewrite.before || observed == rewrite.after) {
+                                    "링크 원문이 복구 전에 외부에서 변경되었습니다: ${rewrite.sourcePath.vaultRelativePath}"
+                                }
+                                if (observed == rewrite.after) writeWorkspaceLinkMarkdown(file, rewrite.before)
+                                check(readWorkspaceLinkMarkdown(file) == rewrite.before) { "링크 원문을 복구하지 못했습니다." }
+                            }.exceptionOrNull()?.let(failures::add)
+                        }
+                        runCatching {
+                            currentFile = renameMarkdownExact(checkNotNull(parent), currentFile, oldKey.fileName.substringBeforeLast('.'))
+                                ?: error("원래 파일 이름을 복구하지 못했습니다.")
+                            check(currentFile.name == oldKey.fileName) { "복구된 파일 이름이 원래 이름과 다릅니다." }
+                        }.exceptionOrNull()?.let(failures::add)
+                        selected.vaultData?.let {
+                            workspaceMetadataIndex.invalidateForRecovery()
+                            workspaceLinkIndex.deactivate()
+                            runCatching { rebuildForRename("rollback") }
+                                .onFailure { workspaceLinkIndex.deactivate() }
+                        }
+                        failures
+                    }
+                    if (failures.isNotEmpty()) {
+                        throw FileRenameRollbackException(
+                            currentFile = ProjectFile(oldKey.rename(currentFile.name), currentFile),
+                            affectedPaths = rewrites.mapTo(mutableSetOf()) { it.sourcePath }.also {
+                                it += oldPath
+                                it += oldPath.copy(relativePath = oldKey.rename("$name.${oldKey.fileName.substringAfterLast('.')}").relativePath)
+                            },
+                            cause = error,
+                        ).also { failure -> failures.forEach(failure::addSuppressed) }
+                    }
+                }
+                if (error is CancellationException) throw error
+                currentCoroutineContext().ensureActive()
+                null
+            }
+        }
 
     /**
      * Moves an explicit Project file between the Project root and one of its direct folders.
@@ -2532,7 +3296,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         targetFolder: ProjectFolder,
         assignments: List<ProjectFileMoveAssignment>,
         expectedMarkdownKeys: Set<FileKey>? = null,
-    ): ProjectFileMoveBatchResult? = projectConfigMutex.withLock {
+    ): ProjectFileMoveBatchResult? = withProjectLinkIndex withLock@{ prepared ->
         val project = _bookmarks.value.projectData ?: return@withLock null
         val previousConfig = _projectConfig.value ?: return@withLock null
         val previousBookmarks = _bookmarks.value
@@ -2545,8 +3309,11 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
 
         var works: List<ProjectFileMoveWork> = emptyList()
         var resolvedTarget: ProjectFolder? = null
+        var namesChanged = false
         var configWriteReceipt: ProjectConfigWriteReceipt? = null
         var bookmarkWriteAttempted = false
+        var linkRewriteWorks: List<WorkspaceLinkRewriteWork> = emptyList()
+        val writtenLinkSources = mutableSetOf<WorkspaceLinkPath>()
 
         try {
             val result = withContext(Dispatchers.IO) {
@@ -2649,7 +3416,41 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                 }
                 works = resolved
 
+                val workspaceName = previousBookmarks.projectData?.name ?: project.name
+                val pathChangesForLinks = works.associate { work ->
+                    WorkspaceLinkPath(
+                        WorkspaceKind.PROJECT,
+                        workspaceName,
+                        work.oldKey.relativePath,
+                    ) to WorkspaceLinkPath(
+                        WorkspaceKind.PROJECT,
+                        workspaceName,
+                        work.finalFolder.file("${work.finalBaseName}.md").relativePath,
+                    )
+                }
+                val linkIndex = prepared?.index
+                check(linkIndex == null || linkIndex.documents.none { it.issue != null }) { "읽지 못한 링크 원문이 있습니다." }
+                val originalFiles = works.associate { work ->
+                    WorkspaceLinkPath(WorkspaceKind.PROJECT, workspaceName, work.oldKey.relativePath) to work.currentFile
+                }
+                val rewrites = linkIndex?.planPathRewrites(pathChangesForLinks).orEmpty()
+                linkRewriteWorks = rewrites.groupBy(WorkspaceLinkRewrite::source).map { (source, edits) ->
+                    val file = workspaceLinkIndex.platformFile(source)
+                        ?: error("링크 원문 파일을 찾지 못했습니다: ${source.vaultRelativePath}")
+                    val before = readWorkspaceLinkMarkdown(file)
+                    check(WorkspaceLinkDocument.markdown(source, before) == linkIndex?.documents?.single { it.path == source }) {
+                        "링크 원문이 인덱싱 이후 변경되었습니다: ${source.vaultRelativePath}"
+                    }
+                    WorkspaceLinkRewriteWork(
+                        sourcePath = source,
+                        originalFile = file,
+                        before = before,
+                        after = applyWorkspaceLinkRewrites(before, edits),
+                    )
+                }
+
                 currentCoroutineContext().ensureActive()
+                check(prepared == null || workspaceLinkIndex.isCurrent(prepared)) { "링크 인덱스가 변경되었습니다." }
                 withContext(NonCancellable) {
                     works.forEach { work ->
                         work.currentFile = renameMarkdownExact(
@@ -2657,6 +3458,7 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                             work.currentFile,
                             work.temporaryBaseName,
                         ) ?: error("temporary move rename failed")
+                        namesChanged = true
                     }
                     val movedWork = works.single { it.oldKey == sourceKey }
                     if (movedWork.currentFolder != movedWork.finalFolder) {
@@ -2688,6 +3490,26 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                 val pathChanges = updates.mapKeys { (oldKey, _) -> oldKey.relativePath }
                     .mapValues { (_, updated) -> updated.key.relativePath }
 
+                val sourceUpdates = linkRewriteWorks.map { rewrite ->
+                    val movedSource = updates.entries.firstOrNull {
+                        rewrite.sourcePath.workspaceKind == WorkspaceKind.PROJECT &&
+                            rewrite.sourcePath.workspaceName == workspaceName &&
+                        it.key.relativePath == rewrite.sourcePath.relativePath
+                    }?.value?.platformFile
+                    val file = movedSource ?: rewrite.originalFile
+                    check(readWorkspaceLinkMarkdown(file) == rewrite.before) {
+                        "링크 원문이 외부에서 변경되었습니다: ${rewrite.sourcePath.vaultRelativePath}"
+                    }
+                    withContext(NonCancellable) {
+                        writtenLinkSources += rewrite.sourcePath
+                        writeWorkspaceLinkMarkdown(file, rewrite.after)
+                        check(readWorkspaceLinkMarkdown(file) == rewrite.after) {
+                            "링크 원문 갱신 결과를 확인하지 못했습니다: ${rewrite.sourcePath.vaultRelativePath}"
+                        }
+                    }
+                    WorkspaceLinkSourceUpdate(rewrite.sourcePath, file, rewrite.before, rewrite.after)
+                }
+
                 val updatedConfig = previousConfig.copy(
                     fileIds = previousConfig.fileIds.mapValues { (_, path) ->
                         pathChanges[path] ?: path
@@ -2714,18 +3536,22 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                     ))
                 }
                 currentCoroutineContext().ensureActive()
-                workspaceMetadataIndex.invalidate(
-                    project,
-                    previousBookmarks.workspaceKind,
-                    updates.flatMap { (oldKey, updated) -> listOf(oldKey, updated.key) }.distinct(),
+                publishKnownTransaction(prepared, updates.map { (oldKey, updated) ->
+                    val oldPath = WorkspaceLinkPath(WorkspaceKind.PROJECT, workspaceName, oldKey.relativePath)
+                    WorkspaceLinkPathChange(originalFiles.getValue(oldPath).toString(), oldPath, updated.platformFile,
+                        oldPath.copy(relativePath = updated.key.relativePath))
+                }, sourceUpdates)
+                ProjectFileMoveBatchResult(
+                    movedFile = moved,
+                    filesByPreviousKey = updates,
+                    references = WorkspaceLinkRewriteReceipt(sourceUpdates, linkIndex, pathChangesForLinks),
                 )
-                ProjectFileMoveBatchResult(movedFile = moved, filesByPreviousKey = updates)
             }
             currentCoroutineContext().ensureActive()
             result
         } catch (error: Exception) {
             val target = resolvedTarget
-            if (works.isNotEmpty() && target != null) {
+            if (namesChanged && works.isNotEmpty() && target != null) {
                 var restoredToSource = works.single { it.oldKey == sourceKey }.currentFolder == sourceKey.folder
                 val rollbackFailures = withContext(NonCancellable) {
                     withContext(Dispatchers.IO) {
@@ -2773,6 +3599,25 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                                 ) ?: error("original name restore failed")
                             }.exceptionOrNull()?.let(failures::add)
                         }
+                        linkRewriteWorks.asReversed().forEach { rewrite ->
+                            if (rewrite.sourcePath !in writtenLinkSources) return@forEach
+                            runCatching {
+                                val restoredMovedSource = works.firstOrNull {
+                                    rewrite.sourcePath.workspaceKind == WorkspaceKind.PROJECT &&
+                                        rewrite.sourcePath.workspaceName == project.name &&
+                                    it.oldKey.relativePath == rewrite.sourcePath.relativePath
+                                }?.currentFile
+                                val file = restoredMovedSource ?: rewrite.originalFile
+                                val observed = readWorkspaceLinkMarkdown(file)
+                                check(observed == rewrite.after || observed == rewrite.before) {
+                                    "링크 원문이 복구 전에 외부에서 변경되었습니다."
+                                }
+                                if (observed == rewrite.after) writeWorkspaceLinkMarkdown(file, rewrite.before)
+                                check(readWorkspaceLinkMarkdown(file) == rewrite.before) {
+                                    "링크 원문 복구 결과를 확인하지 못했습니다."
+                                }
+                            }.exceptionOrNull()?.let(failures::add)
+                        }
                         val receipt = configWriteReceipt
                         if (receipt != null) {
                             runCatching {
@@ -2794,6 +3639,12 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                             runCatching { setPreferences(restoredBookmarks) }
                                 .exceptionOrNull()?.let(failures::add)
                         }
+                        previousBookmarks.vaultData?.let { vault ->
+                            workspaceMetadataIndex.invalidateForRecovery()
+                            workspaceLinkIndex.deactivate()
+                            runCatching { rebuildWorkspaceLinkIndexUnlocked(vault, refreshMarkdown = true) }
+                                .onFailure { workspaceLinkIndex.deactivate() }
+                        }
                         failures
                     }
                 }
@@ -2810,6 +3661,13 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                                 work.currentFolder.file(work.currentFile.name),
                                 work.finalFolder.file("${work.finalBaseName}.md"),
                             )
+                        },
+                        affectedPaths = linkRewriteWorks.mapTo(mutableSetOf()) { it.sourcePath }.also { paths ->
+                            works.forEach { work ->
+                                paths += WorkspaceLinkPath(WorkspaceKind.PROJECT, project.name, work.oldKey.relativePath)
+                                paths += WorkspaceLinkPath(WorkspaceKind.PROJECT, project.name, work.currentFolder.file(work.currentFile.name).relativePath)
+                                paths += WorkspaceLinkPath(WorkspaceKind.PROJECT, project.name, work.finalFolder.file("${work.finalBaseName}.md").relativePath)
+                            }
                         },
                         cause = error,
                     )
@@ -2847,69 +3705,112 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     private suspend fun applyMarkdownOrderTransaction(
         folder: ProjectFolder,
         works: List<MarkdownOrderWork>,
-    ): Boolean = projectConfigMutex.withLock {
-        val project = _bookmarks.value.projectData ?: return@withLock false
+    ): WorkspaceLinkRewriteReceipt? = withProjectLinkIndex withLock@{ prepared ->
+        val project = _bookmarks.value.projectData ?: return@withLock null
         // fileIds는 문서 identity의 일부다. 설정이 로드되지 않은 상태에서 파일명만
         // 바뀌는 반쪽 성공을 만들지 않도록 mutation 전에 실패한다.
-        val previousConfig = _projectConfig.value ?: return@withLock false
+        val previousConfig = _projectConfig.value ?: return@withLock null
         val previousBookmarks = _bookmarks.value
         var configWriteReceipt: ProjectConfigWriteReceipt? = null
-        val rollbackBaseNames = allocateRollbackBaseNames(folder, works)
+        var bookmarkWriteAttempted = false
+        var renamed = false
+        var linkRewriteWorks: List<WorkspaceLinkRewriteWork> = emptyList()
+        val attemptedSources = mutableSetOf<WorkspaceLinkPath>()
+        val workspaceName = project.name
+        fun sourcePath(key: FileKey) = WorkspaceLinkPath(WorkspaceKind.PROJECT, workspaceName, key.relativePath)
+        fun finalKey(work: MarkdownOrderWork) = folder.key.file("${work.finalBaseName}.${work.oldKey.fileName.substringAfterLast('.')}")
+        val changes = works.associate { sourcePath(it.oldKey) to sourcePath(finalKey(it)) }
+        var rollbackBaseNames: List<String> = emptyList()
 
         try {
-            works.forEach { work ->
-                work.currentFile = renameMarkdownExact(
-                    folder.platformFile,
-                    work.currentFile,
-                    work.temporaryBaseName,
-                ) ?: error("temporary order rename failed")
-            }
-            works.forEach { work ->
-                work.updatedNoteFile?.let { noteFile ->
-                    writeMarkdown(work.currentFile, noteFile)
+            val result = withContext(Dispatchers.IO) {
+                check(previousBookmarks.workspaceKind == WorkspaceKind.PROJECT &&
+                    sameLocation(resolveFolder(project, folder.key), folder.platformFile)) { "순서 변경 위치가 변경되었습니다." }
+                rollbackBaseNames = allocateRollbackBaseNames(folder, works)
+                val index = prepared?.index
+                check(index == null || index.documents.none { it.issue != null }) { "읽지 못한 링크 원문이 있습니다." }
+                val workByPath = works.associateBy { sourcePath(it.oldKey) }
+                val originalFiles = workByPath.mapValues { it.value.currentFile }
+                val sourceOverrides = works.mapNotNull { work ->
+                    work.updatedNoteFile?.let { sourcePath(work.oldKey) to it.inject() }
+                }.toMap()
+                val edits = index?.planPathRewrites(changes, sourceOverrides).orEmpty().groupBy(WorkspaceLinkRewrite::source)
+                linkRewriteWorks = (edits.keys + sourceOverrides.keys).mapNotNull { path ->
+                    val work = workByPath[path]
+                    val file = work?.currentFile ?: workspaceLinkIndex.platformFile(path)
+                        ?: error("링크 원문 파일을 찾지 못했습니다: ${path.vaultRelativePath}")
+                    val before = readWorkspaceLinkMarkdown(file)
+                    check(work?.originalMarkdown == null || work.originalMarkdown == before) { "순서 변경 원문이 외부에서 변경되었습니다." }
+                    check(index == null || WorkspaceLinkDocument.markdown(path, before) == index.documents.single { it.path == path }) {
+                        "링크 원문이 인덱싱 이후 변경되었습니다: ${path.vaultRelativePath}"
+                    }
+                    val after = applyWorkspaceLinkRewrites(sourceOverrides[path] ?: before, edits[path].orEmpty())
+                    if (work?.updatedNoteFile != null) work.updatedNoteFile = NoteFile.parse(after)
+                    WorkspaceLinkRewriteWork(path, file, before, after).takeIf { before != after }
                 }
-            }
-            works.forEach { work ->
-                work.currentFile = renameMarkdownExact(
-                    folder.platformFile,
-                    work.currentFile,
-                    work.finalBaseName,
-                ) ?: error("final order rename failed")
-            }
-
-            val pathChanges = works.associate { work ->
-                work.oldKey.relativePath to folder.key.file(work.currentFile.name).relativePath
-            }
-            val updatedConfig = previousConfig.copy(
-                fileIds = previousConfig.fileIds.mapValues { (_, relativePath) ->
-                    pathChanges[relativePath] ?: relativePath
-                },
-            )
-            withContext(NonCancellable) {
-                val persistence = persistProjectConfigWithReceipt(project, updatedConfig)
-                configWriteReceipt = persistence.receipt
-                persistence.projectConfig ?: error("config save failed")
+                currentCoroutineContext().ensureActive()
+                check(prepared == null || workspaceLinkIndex.isCurrent(prepared)) { "링크 인덱스가 변경되었습니다." }
+                withContext(NonCancellable) {
+                    works.forEach { work ->
+                        work.currentFile = renameMarkdownExact(folder.platformFile, work.currentFile, work.temporaryBaseName)
+                            ?: error("temporary order rename failed")
+                        renamed = true
+                    }
+                    works.forEach { work ->
+                        work.currentFile = renameMarkdownExact(folder.platformFile, work.currentFile, work.finalBaseName)
+                            ?: error("final order rename failed")
+                        check(work.currentFile.name == finalKey(work).fileName) { "순서 변경 결과 이름이 요청과 다릅니다." }
+                    }
+                }
+                val sourceUpdates = linkRewriteWorks.map { rewrite ->
+                    val file = workByPath[rewrite.sourcePath]?.currentFile ?: rewrite.originalFile
+                    check(readWorkspaceLinkMarkdown(file) == rewrite.before) { "링크 원문이 외부에서 변경되었습니다." }
+                    withContext(NonCancellable) {
+                        attemptedSources += rewrite.sourcePath
+                        writeWorkspaceLinkMarkdown(file, rewrite.after)
+                        check(readWorkspaceLinkMarkdown(file) == rewrite.after) { "링크 원문 갱신 결과를 확인하지 못했습니다." }
+                    }
+                    WorkspaceLinkSourceUpdate(rewrite.sourcePath, file, rewrite.before, rewrite.after)
+                }
+                val pathChanges = changes.mapKeys { it.key.relativePath }.mapValues { it.value.relativePath }
+                val updatedConfig = previousConfig.copy(
+                    fileIds = previousConfig.fileIds.mapValues { (_, path) -> pathChanges[path] ?: path },
+                )
+                withContext(NonCancellable) {
+                    val persistence = persistProjectConfigWithReceipt(project, updatedConfig)
+                    configWriteReceipt = persistence.receipt
+                    persistence.projectConfig ?: error("config save failed")
+                }
+                currentCoroutineContext().ensureActive()
+                val selected = works.firstOrNull { it.oldKey.relativePath == previousBookmarks.fileRelativePath }
+                if (selected != null) {
+                    bookmarkWriteAttempted = true
+                    setPreferences(previousBookmarks.copy(fileData = selected.currentFile, fileRelativePath = finalKey(selected).relativePath))
+                }
+                currentCoroutineContext().ensureActive()
+                publishKnownTransaction(prepared, works.map { work ->
+                    val oldPath = sourcePath(work.oldKey)
+                    WorkspaceLinkPathChange(originalFiles.getValue(oldPath).toString(), oldPath, work.currentFile,
+                        sourcePath(finalKey(work)))
+                }, sourceUpdates)
+                WorkspaceLinkRewriteReceipt(sourceUpdates, index, changes)
             }
             currentCoroutineContext().ensureActive()
-
-            val selectedPath = previousBookmarks.fileRelativePath
-            val updatedSelectedPath = selectedPath?.let(pathChanges::get)
-            if (updatedSelectedPath != null) {
-                val selectedFile = works
-                    .firstOrNull { work -> work.oldKey.relativePath == selectedPath }
-                    ?.currentFile
-                    ?: error("renamed selected file missing")
-                setPreferences(
-                    previousBookmarks.copy(
-                        fileData = selectedFile,
-                        fileRelativePath = updatedSelectedPath,
-                    ),
-                )
-            }
-            true
+            result
         } catch (error: Exception) {
-            withContext(NonCancellable) {
-                rollbackMarkdownOrder(folder, works, rollbackBaseNames)
+            if (renamed) {
+              val failures = withContext(NonCancellable + Dispatchers.IO) {
+                val failures = mutableListOf<Throwable>()
+                linkRewriteWorks.asReversed().filter { it.sourcePath in attemptedSources }.forEach { rewrite ->
+                    runCatching {
+                        val file = works.firstOrNull { sourcePath(it.oldKey) == rewrite.sourcePath }?.currentFile ?: rewrite.originalFile
+                        val observed = readWorkspaceLinkMarkdown(file)
+                        check(observed == rewrite.before || observed == rewrite.after) { "링크 원문이 복구 전에 외부에서 변경되었습니다." }
+                        if (observed == rewrite.after) writeWorkspaceLinkMarkdown(file, rewrite.before)
+                        check(readWorkspaceLinkMarkdown(file) == rewrite.before) { "링크 원문을 복구하지 못했습니다." }
+                    }.exceptionOrNull()?.let(failures::add)
+                }
+                failures += rollbackMarkdownOrder(folder, works, rollbackBaseNames)
                 runCatching {
                     val receipt = configWriteReceipt
                     if (receipt != null) {
@@ -2924,11 +3825,27 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
                             it.name == PROJECT_CONFIG_FILE_NAME && !it.isDirectory()
                         }?.let { readConfig(it) }?.withDefaultBaseFolder()?.let { _projectConfig.value = it }
                     }
-                }.onFailure(error::addSuppressed)
-                runCatching { setPreferences(previousBookmarks) }
+                }.exceptionOrNull()?.let(failures::add)
+                if (bookmarkWriteAttempted) runCatching {
+                    val selected = works.firstOrNull { it.oldKey.relativePath == previousBookmarks.fileRelativePath }
+                    setPreferences(previousBookmarks.copy(fileData = selected?.currentFile ?: previousBookmarks.fileData))
+                }.exceptionOrNull()?.let(failures::add)
+                previousBookmarks.vaultData?.let { vault ->
+                    workspaceMetadataIndex.invalidateForRecovery()
+                    workspaceLinkIndex.deactivate()
+                    runCatching { rebuildWorkspaceLinkIndexUnlocked(vault, refreshMarkdown = true) }.onFailure { workspaceLinkIndex.deactivate() }
+                }
+                failures
+              }
+              if (failures.isNotEmpty()) throw FileOrderRollbackException(
+                  currentFilesByPreviousKey = works.associate { it.oldKey to ProjectFile(folder.key.file(it.currentFile.name), it.currentFile) },
+                  affectedPaths = changes.keys + changes.values + linkRewriteWorks.map { it.sourcePath } + works.map { sourcePath(folder.key.file(it.currentFile.name)) },
+                  cause = error,
+              ).also { failure -> failures.forEach(failure::addSuppressed) }
             }
             if (error is CancellationException) throw error
-            false
+            currentCoroutineContext().ensureActive()
+            null
         }
     }
 
@@ -2936,28 +3853,30 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
         folder: ProjectFolder,
         works: List<MarkdownOrderWork>,
         rollbackBaseNames: List<String>,
-    ) {
+    ): List<Throwable> {
+        val failures = mutableListOf<Throwable>()
         works.forEachIndexed { index, work ->
+            if (work.currentFile.name == work.oldKey.fileName) return@forEachIndexed
             runCatching {
                 work.currentFile = renameMarkdownExact(
                     folder.platformFile,
                     work.currentFile,
                     rollbackBaseNames[index],
-                ) ?: work.currentFile
-            }
+                ) ?: error("순서 변경 복구용 이름을 확보하지 못했습니다.")
+            }.exceptionOrNull()?.let(failures::add)
         }
         works.forEach { work ->
+            if (work.currentFile.name == work.oldKey.fileName) return@forEach
             runCatching {
-                work.originalMarkdown?.let { raw ->
-                    write(work.currentFile, raw)
-                }
                 work.currentFile = renameMarkdownExact(
                     folder.platformFile,
                     work.currentFile,
                     work.originalBaseName,
-                ) ?: work.currentFile
-            }
+                ) ?: error("원래 파일 이름을 복구하지 못했습니다.")
+                check(work.currentFile.name == work.oldKey.fileName) { "복구된 파일 이름이 원래 이름과 다릅니다." }
+            }.exceptionOrNull()?.let(failures::add)
         }
+        return failures
     }
 
     private fun allocateRollbackBaseNames(
@@ -2987,16 +3906,11 @@ class FileManager(private val dataStore: DataStore<Preferences>) {
     }
 }
 
-private val defaultOrderPrefixRegex = Regex("""^\d+\.\s*""")
-
-private fun ProjectFile.defaultOrderTitle(): String =
-    platformFile.nameWithoutExtension.replace(defaultOrderPrefixRegex, "")
-
 private data class MarkdownOrderWork(
     val oldKey: FileKey,
     val originalBaseName: String,
     val originalMarkdown: String?,
-    val updatedNoteFile: NoteFile?,
+    var updatedNoteFile: NoteFile?,
     val finalBaseName: String,
     val temporaryBaseName: String,
     var currentFile: PlatformFile,
@@ -3045,6 +3959,69 @@ data class FolderDeletionUpdate(
     val cleanupWarning: String? = null,
 )
 
+private data class WorkspaceLinkRewriteWork(
+    val sourcePath: WorkspaceLinkPath,
+    val originalFile: PlatformFile,
+    val before: String,
+    val after: String,
+)
+
+internal data class WorkspaceLinkSourceUpdate(
+    val path: WorkspaceLinkPath,
+    val file: PlatformFile,
+    val before: String,
+    val after: String,
+)
+
+internal data class FileRenameResult(
+    val renamedFile: ProjectFile,
+    val sourceUpdates: List<WorkspaceLinkSourceUpdate> = emptyList(),
+    private val previousIndex: WorkspaceLinkIndex? = null,
+    private val pathChanges: Map<WorkspaceLinkPath, WorkspaceLinkPath> = emptyMap(),
+) {
+    val references = WorkspaceLinkRewriteReceipt(sourceUpdates, previousIndex, pathChanges)
+    fun rewriteSource(path: WorkspaceLinkPath, raw: String): String = references.rewriteSource(path, raw)
+}
+
+internal data class WorkspaceLinkRewriteReceipt(
+    val sourceUpdates: List<WorkspaceLinkSourceUpdate> = emptyList(),
+    private val previousIndex: WorkspaceLinkIndex? = null,
+    private val pathChanges: Map<WorkspaceLinkPath, WorkspaceLinkPath> = emptyMap(),
+) {
+    fun updatedPath(path: WorkspaceLinkPath): WorkspaceLinkPath = pathChanges[path] ?: path
+
+    /** Rescan late input; references that the new title cannot express retain their original text. */
+    fun rewriteSource(path: WorkspaceLinkPath, raw: String): String = applyWorkspaceLinkRewrites(
+        raw,
+        previousIndex?.planPathRewrites(pathChanges, mapOf(path to raw), skipUnrepresentableReferences = true)
+            .orEmpty().filter { it.source == path },
+    )
+}
+
+class FileRenameRollbackException internal constructor(
+    val currentFile: ProjectFile,
+    val affectedPaths: Set<WorkspaceLinkPath>,
+    cause: Throwable,
+) : IllegalStateException("파일 이름 변경과 링크 갱신을 완전히 되돌리지 못했습니다.", cause)
+
+class FileOrderRollbackException internal constructor(
+    val currentFilesByPreviousKey: Map<FileKey, ProjectFile>,
+    val affectedPaths: Set<WorkspaceLinkPath>,
+    cause: Throwable,
+) : IllegalStateException("파일 순서 변경과 링크 갱신을 완전히 되돌리지 못했습니다.", cause)
+
+internal fun applyWorkspaceLinkRewrites(
+    raw: String,
+    rewrites: List<WorkspaceLinkRewrite>,
+): String = rewrites.sortedByDescending { it.targetRange.start }.fold(raw) { text, rewrite ->
+    val range = rewrite.targetRange
+    require(range.endExclusive <= text.length) { "링크 원문 위치가 변경되었습니다." }
+    require(text.substring(range.start, range.endExclusive) == rewrite.expectedTarget) {
+        "링크 원문이 외부에서 변경되었습니다."
+    }
+    text.replaceRange(range.start, range.endExclusive, rewrite.replacement)
+}
+
 internal data class ProjectFileMoveAssignment(
     val projectFile: ProjectFile,
     val finalFolder: FolderKey,
@@ -3054,6 +4031,12 @@ internal data class ProjectFileMoveAssignment(
 internal data class ProjectFileMoveBatchResult(
     val movedFile: ProjectFile,
     val filesByPreviousKey: Map<FileKey, ProjectFile>,
+    val references: WorkspaceLinkRewriteReceipt = WorkspaceLinkRewriteReceipt(),
+)
+
+internal data class FileOrderBatchResult<T>(
+    val updates: List<T>,
+    val references: WorkspaceLinkRewriteReceipt = WorkspaceLinkRewriteReceipt(),
 )
 
 private data class ProjectFileMoveWork(
@@ -3159,9 +4142,18 @@ internal data class PlatformDirectoryEntry(
     val platformFile: PlatformFile,
     val name: String,
     val isDirectory: Boolean,
+    val modifiedAt: Long? = null,
 )
 
-internal expect suspend fun listDirectoryEntries(directory: PlatformFile): List<PlatformDirectoryEntry>
+internal data class ProjectFileListing(
+    val file: ProjectFile,
+    val modifiedAt: Long?,
+)
+
+internal expect suspend fun listDirectoryEntries(
+    directory: PlatformFile,
+    strict: Boolean = false,
+): List<PlatformDirectoryEntry>
 
 internal expect suspend fun FileManager.createFolder(parentDirectory: PlatformFile, name: String): PlatformFile?
 
@@ -3242,6 +4234,7 @@ class ProjectFileMoveRollbackException internal constructor(
     val targetKey: FileKey,
     val restoredToSource: Boolean,
     val affectedKeys: Set<FileKey> = setOf(sourceKey, targetKey),
+    val affectedPaths: Set<WorkspaceLinkPath> = emptySet(),
     cause: Throwable,
 ) : IllegalStateException("문서 이동을 완전히 되돌리지 못했습니다.", cause)
 
@@ -3252,3 +4245,10 @@ internal suspend fun incompleteFileCreation(
 ): FileCreationIncompleteException = withContext(NonCancellable) {
     FileCreationIncompleteException(file, expectedContent, runCatching { file.readString() }.getOrNull(), cause)
 }
+
+internal data class WorkspaceDocumentRead(
+    val noteFile: NoteFile,
+    val rawMarkdown: String,
+    val preparation: WorkspaceLinkIndexPreparation?,
+    val metadataIdentity: WorkspaceMetadataIdentity?,
+)

@@ -13,6 +13,12 @@ internal object CommitObjectCodec {
     fun encodeHead(commitId: String): String =
         json.encodeToString(CommitHead.serializer(), CommitHead(commitId))
 
+    fun encodeMessageOverrides(messages: Map<String, String>): String =
+        json.encodeToString(CommitMessageOverrides.serializer(), CommitMessageOverrides(messages.toSortedMap()))
+
+    fun decodeMessageOverrides(content: String): Map<String, String> =
+        decode(CommitMessageOverrides.serializer(), content, "커밋 메시지").messages
+
     fun encodeTree(tree: CommitTree): String = json.encodeToString(
         CommitTree.serializer(),
         tree.copy(

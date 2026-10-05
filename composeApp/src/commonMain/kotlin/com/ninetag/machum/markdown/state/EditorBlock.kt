@@ -54,44 +54,126 @@ sealed class EditorBlock {
         val calloutType: String,
         val titleState: TextFieldState,
         val bodyBlocks: List<EditorBlock>,
+        val foldMarker: Char? = null,
+        val titlePrefix: String = " ",
+        val bodyLinePrefixes: List<String> = emptyList(),
     ) : EditorBlock() {
         override fun toMarkdown(): String {
-            val header = "> [!$calloutType] ${titleState.text}"
+            val header = "> [!$calloutType]${foldMarker ?: ""}$titlePrefix${titleState.text}"
             if (bodyBlocks.isEmpty()) return header
-            val body = bodyBlocks.joinToString("\n") { block ->
-                block.toMarkdown().lines().joinToString("\n") { "> $it" }
-            }
+            val body = bodyBlocks.joinToString("\n", transform = EditorBlock::toMarkdown)
+                .lines()
+                .mapIndexed { index, line -> "${bodyLinePrefixes.getOrElse(index) { "> " }}$line" }
+                .joinToString("\n")
             return "$header\n$body"
         }
     }
 
-    /**
-     * 코드 블록 (``` 펜스).
-     * 펜스 줄은 toMarkdown()에서 자동 생성 (에디터에는 코드만 표시).
-     */
+    /** 코드 블록. backtick/tilde 펜스 원문은 에디터에서 숨기되 직렬화할 때 복원한다. */
     data class Code(
         override val id: String = generateId(),
         val language: String,
         val codeState: TextFieldState,
+        val openingIndent: String = "",
+        val fence: String = "```",
+        val openingSuffix: String = language,
+        val closingIndent: String = "",
+        val closingFence: String = fence,
+        val closingSuffix: String = "",
+        val emptyContentLineCount: Int = 1,
     ) : EditorBlock() {
-        override fun toMarkdown(): String = "```$language\n${codeState.text}\n```"
+        override fun toMarkdown(): String {
+            val code = codeState.text.toString()
+            val fenceChar = fence.first()
+            val longestRun = code.lineSequence()
+                .mapNotNull { line -> closingFenceRunLength(line, fenceChar, fence.length) }
+                .maxOrNull()
+                ?: 0
+            val requiredLength = maxOf(fence.length, longestRun + 1)
+            val safeOpeningFence = if (requiredLength == fence.length) fence else fenceChar.toString().repeat(requiredLength)
+            val safeClosingFence = if (
+                closingFence.all { it == fenceChar } && closingFence.length >= requiredLength
+            ) closingFence else safeOpeningFence
+            val opening = "$openingIndent$safeOpeningFence$openingSuffix"
+            val closing = "$closingIndent$safeClosingFence$closingSuffix"
+            return when {
+                code.isNotEmpty() -> "$opening\n$code\n$closing"
+                emptyContentLineCount > 0 -> "$opening\n\n$closing"
+                else -> "$opening\n$closing"
+            }
+        }
     }
 
-    /**
-     * 테이블 블록 (| 구분자).
-     * 구분자 줄(`| --- |`)은 toMarkdown()에서 자동 생성.
-     */
+    /** 테이블 블록. 정렬 구분자와 선택적인 외곽 pipe를 직렬화할 때 복원한다. */
     data class Table(
         override val id: String = generateId(),
         val headerStates: List<TextFieldState>,
         val rowStates: List<List<TextFieldState>>,
+        val delimiterCells: List<String> = List(headerStates.size) { "---" },
+        val leadingPipe: Boolean = true,
+        val trailingPipe: Boolean = true,
+        val delimiterLeadingPipe: Boolean = leadingPipe,
+        val delimiterTrailingPipe: Boolean = trailingPipe,
+        val rowLeadingPipes: List<Boolean> = List(rowStates.size) { leadingPipe },
+        val rowTrailingPipes: List<Boolean> = List(rowStates.size) { trailingPipe },
+        val headerSource: TableLineSource? = null,
+        val delimiterSource: TableLineSource? = null,
+        val rowSources: List<TableLineSource?> = emptyList(),
     ) : EditorBlock() {
         override fun toMarkdown(): String {
-            val headerLine = "| ${headerStates.joinToString(" | ") { it.text.toString() }} |"
-            val sepLine = "| ${headerStates.joinToString(" | ") { "---" }} |"
-            val dataLines = rowStates.joinToString("\n") { row ->
-                "| ${row.joinToString(" | ") { it.text.toString() }} |"
+            fun line(cells: List<String>, hasLeadingPipe: Boolean, hasTrailingPipe: Boolean): String {
+                val content = cells.joinToString(" | ", transform = ::escapeTableCellPipes)
+                return buildString {
+                    if (hasLeadingPipe) append("| ")
+                    append(content)
+                    if (hasTrailingPipe) append(" |")
+                }
             }
+
+            val originalColumnCount = listOfNotNull(
+                headerSource?.cells?.size,
+                delimiterSource?.cells?.size,
+                rowSources.mapNotNull { it?.cells?.size }.maxOrNull(),
+            ).maxOrNull() ?: headerStates.size
+
+            fun serialize(
+                cells: List<String>,
+                source: TableLineSource?,
+                hasLeadingPipe: Boolean,
+                hasTrailingPipe: Boolean,
+            ): String {
+                val unchanged = source != null &&
+                    cells.size == originalColumnCount &&
+                    cells.indices.all { cells[it] == source.cells.getOrElse(it) { "" } }
+                if (unchanged) return source.raw
+                val lastValueIndex = cells.indexOfLast(String::isNotEmpty)
+                val cellCount = if (source == null) {
+                    cells.size
+                } else {
+                    maxOf(
+                        source.cells.size,
+                        if (cells.size > originalColumnCount) cells.size else lastValueIndex + 1,
+                    )
+                }
+                return line(cells.take(cellCount), hasLeadingPipe, hasTrailingPipe)
+            }
+
+            val headerLine = serialize(headerStates.map { it.text.toString() }, headerSource, leadingPipe, trailingPipe)
+            val sepLine = serialize(
+                List(headerStates.size) { delimiterCells.getOrElse(it) { "---" }.ifBlank { "---" } },
+                delimiterSource,
+                delimiterLeadingPipe,
+                delimiterTrailingPipe,
+            )
+            val dataLines = rowStates.mapIndexed { index, row ->
+                serialize(
+                    row.map { it.text.toString() },
+                    rowSources.getOrNull(index),
+                    rowLeadingPipes.getOrElse(index) { leadingPipe },
+                    rowTrailingPipes.getOrElse(index) { trailingPipe },
+                )
+            }
+                .joinToString("\n")
             return "$headerLine\n$sepLine" + if (dataLines.isNotEmpty()) "\n$dataLines" else ""
         }
     }
@@ -109,6 +191,58 @@ sealed class EditorBlock {
         val target: String,
     ) : EditorBlock() {
         override fun toMarkdown(): String = "![[$target]]"
+    }
+}
+
+data class TableLineSource(
+    val raw: String,
+    val cells: List<String>,
+)
+
+internal fun EditorBlock.Table.removeDataRow(index: Int): EditorBlock.Table? {
+    if (index !in rowStates.indices) return null
+    return copy(
+        rowStates = rowStates.filterIndexed { rowIndex, _ -> rowIndex != index },
+        rowLeadingPipes = rowLeadingPipes.filterIndexed { rowIndex, _ -> rowIndex != index },
+        rowTrailingPipes = rowTrailingPipes.filterIndexed { rowIndex, _ -> rowIndex != index },
+        rowSources = rowSources.filterIndexed { rowIndex, _ -> rowIndex != index },
+    )
+}
+
+internal fun EditorBlock.Table.removeColumn(index: Int): EditorBlock.Table? {
+    if (headerStates.size <= 1 || index !in headerStates.indices) return null
+    return copy(
+        headerStates = headerStates.filterIndexed { column, _ -> column != index },
+        rowStates = rowStates.map { row -> row.filterIndexed { column, _ -> column != index } },
+        delimiterCells = delimiterCells.filterIndexed { column, _ -> column != index },
+        // A structural edit cannot reuse a raw line with the old column count.
+        headerSource = null,
+        delimiterSource = null,
+        rowSources = List(rowStates.size) { null },
+    )
+}
+
+private fun closingFenceRunLength(line: String, fenceChar: Char, minimumLength: Int): Int? {
+    val indent = line.takeWhile { it == ' ' }.length
+    if (indent > 3) return null
+    val content = line.drop(indent)
+    val runLength = content.takeWhile { it == fenceChar }.length
+    if (runLength < minimumLength || content.drop(runLength).isNotBlank()) return null
+    return runLength
+}
+
+private fun escapeTableCellPipes(cell: String): String = buildString(cell.length) {
+    for ((index, char) in cell.withIndex()) {
+        if (char == '|') {
+            var precedingBackslashes = 0
+            var cursor = index - 1
+            while (cursor >= 0 && cell[cursor] == '\\') {
+                precedingBackslashes++
+                cursor--
+            }
+            if (precedingBackslashes % 2 == 0) append('\\')
+        }
+        append(char)
     }
 }
 

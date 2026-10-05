@@ -36,7 +36,7 @@ internal fun WorkspaceTrashDialog(
                 modifier = Modifier.heightIn(min = 48.dp)) { Text("취소") }
         },
     ) {
-        Text("${target.directory.name} 폴더 전체를 현재 Vault 내부 휴지통으로 이동하고 작업 공간 목록에서 제외합니다.")
+        Text("${target.directory.name} 작업 공간 전체를 현재 Vault 내부 휴지통으로 이동하고 작업 공간 목록에서 제외합니다.")
         Text("하위 문서, 설정, 커밋 이력이 함께 이동합니다. 지금 영구 삭제하는 것은 아닙니다.")
         Text("이동 후 30일이 지나면 앱이 자동으로 영구 삭제합니다. 앱 실행이나 목록 갱신 시 정리합니다.")
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())

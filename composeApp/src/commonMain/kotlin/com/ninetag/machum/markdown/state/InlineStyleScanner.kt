@@ -1,9 +1,5 @@
 package com.ninetag.machum.markdown.state
 
-import com.ninetag.machum.markdown.service.*
-
-import androidx.compose.ui.text.SpanStyle
-
 /** Inline scanner가 분기할 때만 사용하는 경량 블록 타입. */
 internal sealed interface MarkdownBlock {
     data class Heading(val level: Int) : MarkdownBlock
@@ -12,11 +8,10 @@ internal sealed interface MarkdownBlock {
 }
 
 /**
- * 비활성 블록의 raw 텍스트에 적용할 SpanStyle 범위 리스트를 계산한다.
+ * 비활성 블록의 raw 텍스트에서 Markdown 의미 범위를 계산한다.
  *
- * 전략: 서식 마커(**, ~~, # 등)를 fontSize=0.sp + Color.Transparent 로 설정해
- * 시각적으로 완전히 사라지게 하고, 컨텐츠에는 해당 스타일(bold, italic 등)을 적용한다.
- * 텍스트 길이는 변하지 않으므로 cursor 위치 매핑이 자연스럽게 유지된다.
+ * 전략: 일반 서식 마커(**, ~~, # 등)는 OutputTransformation에서 제거하고, inline code의 backtick은
+ * 폭을 유지한 채 투명하게 표시한다. 링크 문법과 목록 선행 공백은 hiddenSyntax로 구분한다.
  *
  * v2 블록 에디터에서는 TextBlock 콘텐츠에만 적용. Callout/Code/Table/Embed 는
  * 각각 전용 Composable 이 처리하므로 본 스캐너는 다루지 않는다.
@@ -27,20 +22,20 @@ internal object InlineStyleScanner {
      * @param block      파서가 인식한 블록 타입 (처리 전략 결정에 사용)
      * @param blockText  블록의 raw 텍스트 (blockRanges 기준)
      * @param docOffset  블록의 문서 내 시작 오프셋
-     * @param config     서식 스타일 설정
-     * @return (문서 내 절대 범위, SpanStyle) 쌍의 리스트
+     * @return 문서 내 절대 범위와 Markdown 의미 목록
      */
     fun computeSpans(
         block: MarkdownBlock,
         blockText: String,
         docOffset: Int,
-        config: MarkdownStyleConfig,
-    ): List<Pair<IntRange, SpanStyle>> {
+    ): List<MarkdownSpan> {
         if (blockText.isEmpty()) return emptyList()
         return when (block) {
-            is MarkdownBlock.HorizontalRule -> listOf((docOffset until docOffset + blockText.length) to config.blockTransparent)
-            is MarkdownBlock.Heading        -> headingSpans(block.level, blockText, docOffset, config)
-            MarkdownBlock.TextBlock         -> lineScannedSpans(blockText, docOffset, config)
+            is MarkdownBlock.HorizontalRule -> listOf(
+                MarkdownSpan(docOffset until docOffset + blockText.length, MarkdownInlineRole.BlockTransparent),
+            )
+            is MarkdownBlock.Heading        -> headingSpans(block.level, blockText, docOffset)
+            MarkdownBlock.TextBlock         -> lineScannedSpans(blockText, docOffset)
         }
     }
 
@@ -51,11 +46,10 @@ internal object InlineStyleScanner {
     fun computeMultiLineSpans(
         blockText: String,
         docOffset: Int,
-        config: MarkdownStyleConfig,
-    ): List<Pair<IntRange, SpanStyle>> {
+    ): List<MarkdownSpan> {
         if (blockText.isEmpty()) return emptyList()
-        val spans = mutableListOf<Pair<IntRange, SpanStyle>>()
-        scanInline(blockText, 0, blockText.length, docOffset, spans, config)
+        val spans = mutableListOf<MarkdownSpan>()
+        scanInline(blockText, 0, blockText.length, docOffset, spans)
         return spans
     }
 
@@ -67,17 +61,16 @@ internal object InlineStyleScanner {
         level: Int,
         blockText: String,
         docOffset: Int,
-        config: MarkdownStyleConfig,
-    ): List<Pair<IntRange, SpanStyle>> {
-        val spans = mutableListOf<Pair<IntRange, SpanStyle>>()
+    ): List<MarkdownSpan> {
+        val spans = mutableListOf<MarkdownSpan>()
         // "# " (level 개의 # + 공백)
         val markerLen = (level + 1).coerceAtMost(blockText.length)
-        spans += (docOffset until docOffset + markerLen) to config.marker
+        spans += MarkdownSpan(docOffset until docOffset + markerLen, MarkdownInlineRole.Marker)
         val contentEnd = docOffset + blockText.length
         if (docOffset + markerLen < contentEnd) {
-            spans += (docOffset + markerLen until contentEnd) to config.headingStyle(level)
+            spans += MarkdownSpan(docOffset + markerLen until contentEnd, MarkdownInlineRole.Heading(level))
             // heading 컨텐츠 내부 인라인 스타일
-            scanInline(blockText, markerLen, blockText.length, docOffset, spans, config)
+            scanInline(blockText, markerLen, blockText.length, docOffset, spans)
         }
         return spans
     }
@@ -86,35 +79,33 @@ internal object InlineStyleScanner {
     private fun lineScannedSpans(
         blockText: String,
         docOffset: Int,
-        config: MarkdownStyleConfig,
-    ): List<Pair<IntRange, SpanStyle>> {
-        val spans = mutableListOf<Pair<IntRange, SpanStyle>>()
+    ): List<MarkdownSpan> {
+        val spans = mutableListOf<MarkdownSpan>()
         val lines = blockText.split('\n')
         var lineStart = 0
         for (line in lines) {
             val lineDocStart = docOffset + lineStart
-            val contentStart = hideLinePrefix(line, lineDocStart, spans, config)
-            scanInline(line, contentStart, line.length, lineDocStart, spans, config)
+            val contentStart = hideLinePrefix(line, lineDocStart, spans)
+            scanInline(line, contentStart, line.length, lineDocStart, spans)
             lineStart += line.length + 1
         }
         return spans
     }
 
     /**
-     * 줄 앞의 블록 레벨 마커(>, -, *, 숫자.)를 숨기고 컨텐츠 시작 인덱스를 반환.
+     * 줄 앞의 블록 레벨 마커(>, -, *, +, 숫자.)를 숨기고 컨텐츠 시작 인덱스를 반환.
      * 마커가 없으면 0 반환.
      */
     private fun hideLinePrefix(
         line: String,
         lineDocStart: Int,
-        spans: MutableList<Pair<IntRange, SpanStyle>>,
-        config: MarkdownStyleConfig,
+        spans: MutableList<MarkdownSpan>,
     ): Int {
         // Blockquote / Callout: ">" 를 투명 처리 (정상 크기 유지 → 테두리와 자연스러운 간격)
         if (line.startsWith(">")) {
             var pos = 0
             while (pos < line.length && line[pos] == '>') {
-                spans += (lineDocStart + pos until lineDocStart + pos + 1) to config.blockTransparent
+                spans += MarkdownSpan(lineDocStart + pos until lineDocStart + pos + 1, MarkdownInlineRole.BlockTransparent)
                 pos++
                 if (pos < line.length && line[pos] == ' ') pos++ // 공백은 유지
             }
@@ -126,10 +117,26 @@ internal object InlineStyleScanner {
 
         val rest = line.substring(indent)
 
-        // Unordered list: "- " or "* "
-        if (rest.startsWith("- ") || rest.startsWith("* ")) {
+        markdownTaskPrefixRegex.find(rest)?.takeIf { it.range.first == 0 }?.let { match ->
+            val markerEnd = indent + match.value.length
+            val checked = match.groupValues[3].equals("x", ignoreCase = true)
+            spans += MarkdownSpan(
+                lineDocStart until lineDocStart + markerEnd,
+                MarkdownInlineRole.TaskPrefix(checked),
+            )
+            if (checked && markerEnd < line.length) {
+                spans += MarkdownSpan(
+                    lineDocStart + markerEnd until lineDocStart + line.length,
+                    MarkdownInlineRole.CheckedTaskBody,
+                )
+            }
+            return markerEnd
+        }
+
+        // CommonMark unordered list: "- ", "* ", or "+ "
+        if (rest.startsWith("- ") || rest.startsWith("* ") || rest.startsWith("+ ")) {
             val markerEnd = indent + 2
-            spans += (lineDocStart until lineDocStart + markerEnd) to config.bulletPrefix
+            spans += MarkdownSpan(lineDocStart until lineDocStart + markerEnd, MarkdownInlineRole.BulletPrefix)
             return markerEnd
         }
 
@@ -137,7 +144,7 @@ internal object InlineStyleScanner {
         val orderedMatch = Regex("^(\\d+)\\. ").find(rest)
         if (orderedMatch != null) {
             val markerEnd = indent + orderedMatch.value.length
-            spans += (lineDocStart until lineDocStart + markerEnd) to config.orderedPrefix
+            spans += MarkdownSpan(lineDocStart until lineDocStart + markerEnd, MarkdownInlineRole.OrderedPrefix)
             return markerEnd
         }
 
@@ -157,33 +164,69 @@ internal object InlineStyleScanner {
         from: Int,
         to: Int,
         lineDocStart: Int,
-        spans: MutableList<Pair<IntRange, SpanStyle>>,
-        config: MarkdownStyleConfig,
+        spans: MutableList<MarkdownSpan>,
     ) {
         var i = from
         while (i < to) {
             val ch = line[i]
             when {
+                // CommonMark escape: preview에서는 escape marker만 숨기고 다음 문자는 literal로 둔다.
+                i + 1 < to && ch == '\\' && line[i + 1] in escapableAsciiPunctuation -> {
+                    spans += MarkdownSpan(abs(lineDocStart + i, lineDocStart + i + 1), MarkdownInlineRole.Marker)
+                    i += 2
+                }
+
                 // Bold+Italic: ***text***
                 i + 2 < to && ch == '*' && line[i+1] == '*' && line[i+2] == '*' -> {
                     val close = line.indexOf("***", i + 3).takeIf { it in 0 until to }
                     if (close != null) {
-                        spans += abs(lineDocStart + i, lineDocStart + i + 3) to config.marker
+                        spans += MarkdownSpan(abs(lineDocStart + i, lineDocStart + i + 3), MarkdownInlineRole.Marker)
                         if (i + 3 < close)
-                            spans += abs(lineDocStart + i + 3, lineDocStart + close) to config.boldItalic
-                        spans += abs(lineDocStart + close, lineDocStart + close + 3) to config.marker
+                            spans += MarkdownSpan(abs(lineDocStart + i + 3, lineDocStart + close), MarkdownInlineRole.BoldItalic)
+                        spans += MarkdownSpan(abs(lineDocStart + close, lineDocStart + close + 3), MarkdownInlineRole.Marker)
                         i = close + 3
                     } else i++
+                }
+
+                // CommonMark underscore emphasis. Intraword underscores (snake_case) stay literal.
+                ch == '_' -> {
+                    val runLength = when {
+                        i + 2 < to && line[i + 1] == '_' && line[i + 2] == '_' -> 3
+                        i + 1 < to && line[i + 1] == '_' -> 2
+                        else -> 1
+                    }
+                    val marker = "_".repeat(runLength)
+                    val canOpen = i + runLength < to && !line[i + runLength].isWhitespace() &&
+                        !(i > from && line[i - 1].isLetterOrDigit() && line[i + runLength].isLetterOrDigit())
+                    val close = if (canOpen) line.indexOf(marker, i + runLength).takeIf { candidate ->
+                        candidate in 0 until to && candidate > i + runLength &&
+                            !line[candidate - 1].isWhitespace() &&
+                            !(candidate + runLength < to && line[candidate - 1].isLetterOrDigit() &&
+                                line[candidate + runLength].isLetterOrDigit())
+                    } else null
+                    if (close != null) {
+                        val role = when (runLength) {
+                            3 -> MarkdownInlineRole.BoldItalic
+                            2 -> MarkdownInlineRole.Bold
+                            else -> MarkdownInlineRole.Italic
+                        }
+                        spans += MarkdownSpan(abs(lineDocStart + i, lineDocStart + i + runLength), MarkdownInlineRole.Marker)
+                        spans += MarkdownSpan(abs(lineDocStart + i + runLength, lineDocStart + close), role)
+                        spans += MarkdownSpan(abs(lineDocStart + close, lineDocStart + close + runLength), MarkdownInlineRole.Marker)
+                        i = close + runLength
+                    } else {
+                        i += runLength
+                    }
                 }
 
                 // Bold: **text**
                 i + 1 < to && ch == '*' && line[i+1] == '*' -> {
                     val close = line.indexOf("**", i + 2).takeIf { it in 0 until to }
                     if (close != null) {
-                        spans += abs(lineDocStart + i, lineDocStart + i + 2) to config.marker
+                        spans += MarkdownSpan(abs(lineDocStart + i, lineDocStart + i + 2), MarkdownInlineRole.Marker)
                         if (i + 2 < close)
-                            spans += abs(lineDocStart + i + 2, lineDocStart + close) to config.bold
-                        spans += abs(lineDocStart + close, lineDocStart + close + 2) to config.marker
+                            spans += MarkdownSpan(abs(lineDocStart + i + 2, lineDocStart + close), MarkdownInlineRole.Bold)
+                        spans += MarkdownSpan(abs(lineDocStart + close, lineDocStart + close + 2), MarkdownInlineRole.Marker)
                         i = close + 2
                     } else i++
                 }
@@ -192,10 +235,10 @@ internal object InlineStyleScanner {
                 i + 1 < to && ch == '~' && line[i+1] == '~' -> {
                     val close = line.indexOf("~~", i + 2).takeIf { it in 0 until to }
                     if (close != null) {
-                        spans += abs(lineDocStart + i, lineDocStart + i + 2) to config.marker
+                        spans += MarkdownSpan(abs(lineDocStart + i, lineDocStart + i + 2), MarkdownInlineRole.Marker)
                         if (i + 2 < close)
-                            spans += abs(lineDocStart + i + 2, lineDocStart + close) to config.strikethrough
-                        spans += abs(lineDocStart + close, lineDocStart + close + 2) to config.marker
+                            spans += MarkdownSpan(abs(lineDocStart + i + 2, lineDocStart + close), MarkdownInlineRole.Strikethrough)
+                        spans += MarkdownSpan(abs(lineDocStart + close, lineDocStart + close + 2), MarkdownInlineRole.Marker)
                         i = close + 2
                     } else i++
                 }
@@ -204,10 +247,10 @@ internal object InlineStyleScanner {
                 i + 1 < to && ch == '=' && line[i+1] == '=' -> {
                     val close = line.indexOf("==", i + 2).takeIf { it in 0 until to }
                     if (close != null) {
-                        spans += abs(lineDocStart + i, lineDocStart + i + 2) to config.marker
+                        spans += MarkdownSpan(abs(lineDocStart + i, lineDocStart + i + 2), MarkdownInlineRole.Marker)
                         if (i + 2 < close)
-                            spans += abs(lineDocStart + i + 2, lineDocStart + close) to config.highlight
-                        spans += abs(lineDocStart + close, lineDocStart + close + 2) to config.marker
+                            spans += MarkdownSpan(abs(lineDocStart + i + 2, lineDocStart + close), MarkdownInlineRole.Highlight)
+                        spans += MarkdownSpan(abs(lineDocStart + close, lineDocStart + close + 2), MarkdownInlineRole.Marker)
                         i = close + 2
                     } else i++
                 }
@@ -224,9 +267,15 @@ internal object InlineStyleScanner {
                     } else {
                         val close = line.indexOf('`', i + 1).takeIf { it in 0 until to }
                         if (close != null && close > i + 1) {
-                            spans += abs(lineDocStart + i, lineDocStart + i + 1) to config.marker
-                            spans += abs(lineDocStart + i + 1, lineDocStart + close) to config.codeInline
-                            spans += abs(lineDocStart + close, lineDocStart + close + 1) to config.marker
+                            spans += MarkdownSpan(
+                                abs(lineDocStart + i, lineDocStart + i + 1),
+                                MarkdownInlineRole.InlineCodeMarker,
+                            )
+                            spans += MarkdownSpan(abs(lineDocStart + i + 1, lineDocStart + close), MarkdownInlineRole.InlineCode)
+                            spans += MarkdownSpan(
+                                abs(lineDocStart + close, lineDocStart + close + 1),
+                                MarkdownInlineRole.InlineCodeMarker,
+                            )
                             i = close + 1
                         } else i++
                     }
@@ -236,10 +285,10 @@ internal object InlineStyleScanner {
                 i + 2 < to && ch == '!' && line[i+1] == '[' && line[i+2] == '[' -> {
                     val close = line.indexOf("]]", i + 3).takeIf { it in 0 until to }
                     if (close != null) {
-                        spans += abs(lineDocStart + i, lineDocStart + i + 3) to config.marker   // ![[
+                        spans += MarkdownSpan(abs(lineDocStart + i, lineDocStart + i + 3), MarkdownInlineRole.HiddenSyntax)
                         if (i + 3 < close)
-                            spans += abs(lineDocStart + i + 3, lineDocStart + close) to config.link
-                        spans += abs(lineDocStart + close, lineDocStart + close + 2) to config.marker // ]]
+                            spans += MarkdownSpan(abs(lineDocStart + i + 3, lineDocStart + close), MarkdownInlineRole.Embed)
+                        spans += MarkdownSpan(abs(lineDocStart + close, lineDocStart + close + 2), MarkdownInlineRole.HiddenSyntax) // ]]
                         i = close + 2
                     } else i++
                 }
@@ -252,17 +301,17 @@ internal object InlineStyleScanner {
                         val pipe  = inner.indexOf('|')
                         if (pipe == -1) {
                             // [[target]] → [[ 숨김, target 링크색, ]] 숨김
-                            spans += abs(lineDocStart + i, lineDocStart + i + 2) to config.marker
+                            spans += MarkdownSpan(abs(lineDocStart + i, lineDocStart + i + 2), MarkdownInlineRole.HiddenSyntax)
                             if (i + 2 < close)
-                                spans += abs(lineDocStart + i + 2, lineDocStart + close) to config.link
-                            spans += abs(lineDocStart + close, lineDocStart + close + 2) to config.marker
+                                spans += MarkdownSpan(abs(lineDocStart + i + 2, lineDocStart + close), MarkdownInlineRole.Link)
+                            spans += MarkdownSpan(abs(lineDocStart + close, lineDocStart + close + 2), MarkdownInlineRole.HiddenSyntax)
                         } else {
                             // [[target|alias]] → [[target| 숨김, alias 링크색, ]] 숨김
                             val aliasStart = i + 2 + pipe + 1
-                            spans += abs(lineDocStart + i, lineDocStart + aliasStart) to config.marker
+                            spans += MarkdownSpan(abs(lineDocStart + i, lineDocStart + aliasStart), MarkdownInlineRole.HiddenSyntax)
                             if (aliasStart < close)
-                                spans += abs(lineDocStart + aliasStart, lineDocStart + close) to config.link
-                            spans += abs(lineDocStart + close, lineDocStart + close + 2) to config.marker
+                                spans += MarkdownSpan(abs(lineDocStart + aliasStart, lineDocStart + close), MarkdownInlineRole.Link)
+                            spans += MarkdownSpan(abs(lineDocStart + close, lineDocStart + close + 2), MarkdownInlineRole.HiddenSyntax)
                         }
                         i = close + 2
                     } else i++
@@ -273,12 +322,25 @@ internal object InlineStyleScanner {
                     val closeBracket = line.indexOf(']', i + 1).takeIf { it in 0 until to }
                     val openParen    = closeBracket?.let { if (it + 1 < to && line[it + 1] == '(') it + 1 else null }
                     val closeParen   = openParen?.let { line.indexOf(')', it + 1).takeIf { p -> p in 0 until to } }
-                    if (closeBracket != null && openParen != null && closeParen != null) {
-                        spans += abs(lineDocStart + i, lineDocStart + i + 1) to config.marker          // [
+                    if (closeBracket != null && openParen != null && closeParen != null &&
+                        line.indexOf('[', i + 1).let { it < 0 || it >= closeBracket }
+                    ) {
+                        spans += MarkdownSpan(abs(lineDocStart + i, lineDocStart + i + 1), MarkdownInlineRole.HiddenSyntax) // [
                         if (i + 1 < closeBracket)
-                            spans += abs(lineDocStart + i + 1, lineDocStart + closeBracket) to config.link  // text
-                        spans += abs(lineDocStart + closeBracket, lineDocStart + closeParen + 1) to config.marker // ](url)
+                            spans += MarkdownSpan(abs(lineDocStart + i + 1, lineDocStart + closeBracket), MarkdownInlineRole.Link) // text
+                        spans += MarkdownSpan(abs(lineDocStart + closeBracket, lineDocStart + closeParen + 1), MarkdownInlineRole.HiddenSyntax) // ](url)
                         i = closeParen + 1
+                    } else i++
+                }
+
+                // Bare external URL
+                line.startsWith("https://", i) || line.startsWith("http://", i) -> {
+                    var end = i
+                    while (end < to && !line[end].isWhitespace() && line[end] !in "<>()") end++
+                    while (end > i && line[end - 1] in ".,;:!?") end--
+                    if (end > i) {
+                        spans += MarkdownSpan(abs(lineDocStart + i, lineDocStart + end), MarkdownInlineRole.Link)
+                        i = end
                     } else i++
                 }
 
@@ -286,10 +348,10 @@ internal object InlineStyleScanner {
                 ch == '*' -> {
                     val close = line.indexOf('*', i + 1).takeIf { it in 0 until to }
                     if (close != null) {
-                        spans += abs(lineDocStart + i, lineDocStart + i + 1) to config.marker
+                        spans += MarkdownSpan(abs(lineDocStart + i, lineDocStart + i + 1), MarkdownInlineRole.Marker)
                         if (i + 1 < close)
-                            spans += abs(lineDocStart + i + 1, lineDocStart + close) to config.italic
-                        spans += abs(lineDocStart + close, lineDocStart + close + 1) to config.marker
+                            spans += MarkdownSpan(abs(lineDocStart + i + 1, lineDocStart + close), MarkdownInlineRole.Italic)
+                        spans += MarkdownSpan(abs(lineDocStart + close, lineDocStart + close + 1), MarkdownInlineRole.Marker)
                         i = close + 1
                     } else i++
                 }
@@ -305,4 +367,6 @@ internal object InlineStyleScanner {
 
     /** 절대 범위 생성 (start inclusive, end exclusive → IntRange inclusive) */
     private fun abs(start: Int, end: Int): IntRange = start until end
+
+    private const val escapableAsciiPunctuation = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
 }

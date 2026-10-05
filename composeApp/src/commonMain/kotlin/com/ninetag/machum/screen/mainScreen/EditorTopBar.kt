@@ -61,7 +61,7 @@ import androidx.compose.ui.platform.testTag
 import kotlin.math.roundToInt
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -85,7 +85,8 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import com.ninetag.machum.external.ProjectFile
-import com.ninetag.machum.external.markdownName
+import com.ninetag.machum.external.MarkdownName
+import com.ninetag.machum.external.WorkspaceLoadDiagnostics
 import com.ninetag.machum.theme.WorkspaceUiMetrics
 import kotlinx.coroutines.launch
 
@@ -97,34 +98,38 @@ fun EditorTopBar(
     onMenuClick: () -> Unit,
     onCommitClick: (() -> Unit)?,
     onRenameFile: suspend (ProjectFile, String) -> String?,
+    editFullFileName: Boolean = false,
     documentInfoExpanded: Boolean = false,
     onDocumentInfoToggle: () -> Unit = {},
+    onTitleEditingChanged: (Boolean) -> Unit = {},
     windowInsets: WindowInsets = TopAppBarDefaults.windowInsets,
     minimumContentHeight: Dp = WorkspaceUiMetrics.topBarHeight,
 ) {
-    val fileName = projectFile?.platformFile?.markdownName()
-    var isEditing by remember(projectFile?.key) { mutableStateOf(false) }
-    var editingTitle by remember(projectFile?.key) { mutableStateOf(fileName?.title.orEmpty()) }
-    var originalTitle by remember(projectFile?.key) { mutableStateOf(fileName?.title.orEmpty()) }
+    val fileName = projectFile?.key?.fileName?.markdownName()
+    var isEditing by remember(projectFile?.key, editFullFileName) { mutableStateOf(false) }
+    var editingTitle by remember(projectFile?.key, editFullFileName) { mutableStateOf(fileName?.title.orEmpty()) }
+    var originalTitle by remember(projectFile?.key, editFullFileName) { mutableStateOf(fileName?.title.orEmpty()) }
     var editingTarget by remember(projectFile?.key) { mutableStateOf<ProjectFile?>(null) }
     var hasFocused by remember(projectFile?.key) { mutableStateOf(false) }
     var isSubmitting by remember(projectFile?.key) { mutableStateOf(false) }
     var renameError by remember(projectFile?.key) { mutableStateOf<String?>(null) }
-    val animatedContextAlpha by key(projectFile?.key) {
+    val animatedContextAlpha = key(projectFile?.key) {
         animateFloatAsState(if (isEditing) 0f else 1f, WorkspaceMotion.contentEnterSpec(), label = "titleContext")
     }
-    // Opacity and layout consume the same composition snapshot of the animation.
-    val contextAlpha = animatedContextAlpha
     // Collapse only horizontal context space; the title control and bar keep their heights.
     val contextVisibility = Modifier.clipToBounds().layout { measurable, constraints ->
         val placeable = measurable.measure(constraints)
-        layout((placeable.width * contextAlpha).roundToInt(), placeable.height) {
+        layout((placeable.width * animatedContextAlpha.value).roundToInt(), placeable.height) {
             placeable.placeRelative(0, 0)
         }
-    }.alpha(contextAlpha)
+    }.graphicsLayer { alpha = animatedContextAlpha.value }
         .then(if (isEditing) Modifier.clearAndSetSemantics {} else Modifier)
     val focusRequester = remember { FocusRequester() }
     val scope = rememberCoroutineScope()
+
+    LaunchedEffect(isEditing) {
+        onTitleEditingChanged(isEditing)
+    }
 
     val density = LocalDensity.current
     val titleHeight = with(density) { WorkspaceUiMetrics.titleLineHeight.toDp() }
@@ -172,11 +177,13 @@ fun EditorTopBar(
                 lineHeight = WorkspaceUiMetrics.titleLineHeight,
             )
             val textMeasurer = rememberTextMeasurer()
-            val measuredTitle = textMeasurer.measure(editingTitle, titleStyle, softWrap = false, maxLines = 1)
+            val visibleTitle = if (isEditing) editingTitle else fileName?.title.orEmpty()
+            val measuredTitle = textMeasurer.measure(visibleTitle, titleStyle, softWrap = false, maxLines = 1)
             val entryWidth = if (isEditing) textMeasurer.measure(originalTitle, titleStyle, softWrap = false, maxLines = 1).size.width else 0
             val titleWidth = with(density) { maxOf(measuredTitle.size.width, entryWidth).toDp() } + 2.dp
             val numberWidthLimit = availableTitleWidth * 0.2f
-            val numberWidth = if (fileName?.numbering?.isNotEmpty() == true) {
+            val showSeparateNumber = fileName?.numbering?.isNotEmpty() == true && !(editFullFileName && isEditing)
+            val numberWidth = if (showSeparateNumber) {
                 (with(density) { textMeasurer.measure("${fileName.numbering}.", titleStyle).size.width.toDp() } + 4.dp)
                     .coerceAtMost(numberWidthLimit)
             } else 0.dp
@@ -210,7 +217,7 @@ fun EditorTopBar(
                     )
                 }
                 if (fileName != null) {
-                    if (fileName.numbering.isNotEmpty()) {
+                    if (showSeparateNumber) {
                         Text(
                             text = "${fileName.numbering}.",
                             fontSize = WorkspaceUiMetrics.titleFontSize,
@@ -240,8 +247,8 @@ fun EditorTopBar(
                                 if (titleError != null) {
                                     renameError = titleError
                                 } else {
-                                    val targetName = target.platformFile.markdownName()
-                                    val renamed = if (targetName.numbering.isEmpty()) {
+                                    val targetName = target.key.fileName.markdownName()
+                                    val renamed = if (editFullFileName) editingTitle else if (targetName.numbering.isEmpty()) {
                                         editingTitle
                                     } else {
                                         "${targetName.numbering}. $editingTitle"
@@ -297,7 +304,9 @@ fun EditorTopBar(
                                             keyEvent.key == Key.Escape &&
                                             keyEvent.type == KeyEventType.KeyDown
                                         ) {
-                                            editingTitle = fileName.title
+                                            editingTitle = if (editFullFileName) {
+                                                projectFile.key.fileName.substringBeforeLast('.', projectFile.key.fileName)
+                                            } else fileName.title
                                             renameError = null
                                             isEditing = false
                                             hasFocused = false
@@ -307,6 +316,7 @@ fun EditorTopBar(
                                     }
                                     .onFocusChanged { focusState ->
                                         if (focusState.isFocused) {
+                                            if (!hasFocused) WorkspaceLoadDiagnostics.event("title-edit-focused")
                                             hasFocused = true
                                         } else if (hasFocused) {
                                             submitRename()
@@ -352,15 +362,20 @@ fun EditorTopBar(
                             modifier = Modifier.weight(1f, fill = false)
                                 .height(titleControlHeight)
                                 .clickable {
+                                    WorkspaceLoadDiagnostics.event("title-edit-request")
                                     renameError = null
-                                    originalTitle = fileName.title
+                                    hasFocused = false
+                                    originalTitle = if (editFullFileName) {
+                                        projectFile.key.fileName.substringBeforeLast('.', projectFile.key.fileName)
+                                    } else fileName.title
+                                    editingTitle = originalTitle
                                     editingTarget = projectFile
                                     isEditing = true
                                 },
                             contentAlignment = Alignment.CenterStart,
                         ) {
                             Text(
-                                text = editingTitle,
+                                text = visibleTitle,
                                 modifier = Modifier.padding(horizontal = 1.dp),
                                 fontSize = WorkspaceUiMetrics.titleFontSize,
                                 fontWeight = FontWeight.Normal,
@@ -371,7 +386,7 @@ fun EditorTopBar(
                         }
                     }
                 }
-                if (projectFile != null && (!isEditing || contextAlpha > 0f)) Row(
+                if (projectFile != null) Row(
                     Modifier.testTag("title-info-context").then(contextVisibility),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -413,6 +428,12 @@ fun EditorTopBar(
             }
         }
     )
+}
+
+private fun String.markdownName(): MarkdownName {
+    val baseName = substringBeforeLast('.', this)
+    val parts = baseName.split(". ", limit = 2)
+    return if (parts.size == 2) MarkdownName(parts[0], parts[1]) else MarkdownName("", parts[0])
 }
 
 private class RenameErrorPopupPositionProvider(

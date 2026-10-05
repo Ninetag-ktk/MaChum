@@ -119,7 +119,7 @@ fun ProjectSelectionScreen(
                 choices == null -> Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
-                choices!!.isEmpty() -> ProjectMessage("아직 작업 공간이 없습니다", "프로젝트나 일반 폴더를 만들어 시작하세요.", Modifier.weight(1f))
+                choices!!.isEmpty() -> ProjectMessage("아직 작업 공간이 없습니다", "프로젝트나 일반 작업 공간을 만들어 시작하세요.", Modifier.weight(1f))
                 else -> WorkspaceChoiceList(
                     choices = choices.orEmpty(), blocked = blocked || activeDialog is WorkspaceDialog.Transition,
                     menuTarget = menuTarget, onMenuTargetChange = { menuTarget = it },
@@ -150,7 +150,7 @@ fun ProjectSelectionScreen(
                         }
                     }
                 }, enabled = !blocked && vault != null, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                    Text(if (createdGeneral == null) "새 일반 폴더" else "생성한 일반 폴더 다시 열기")
+                    Text(if (createdGeneral == null) "새 일반 작업 공간" else "생성한 일반 작업 공간 다시 열기")
                 }
             }
         }
@@ -224,6 +224,6 @@ fun ProjectSelectionScreen(
 
 internal fun WorkspaceSetup.label() = when (this) {
     WorkspaceSetup.PROJECT -> "프로젝트"
-    WorkspaceSetup.GENERAL -> "일반 폴더"
+    WorkspaceSetup.GENERAL -> "일반 작업 공간"
     WorkspaceSetup.NEEDS_CONFIRMATION -> "사용 방식 미정"
 }

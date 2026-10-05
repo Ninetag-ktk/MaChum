@@ -10,8 +10,8 @@ import androidx.compose.foundation.text.input.TextFieldState
  */
 object BlockOperations {
 
-    private val calloutHeaderRegex = Regex("^(>+) ?\\[!(\\w+)]\\s*(.*)")
-    private val codeFenceRegex = Regex("^```(\\w*)")
+    private val calloutHeaderRegex = Regex("^(>+) ?\\[!([\\w-]+)]([+-])?(\\s*)(.*)")
+    private val codeFenceRegex = Regex("^( {0,3})(`{3,}|~{3,})(.*)$")
 
     /**
      * TextBlock의 텍스트를 검사하여 블록 분리가 필요한 패턴을 감지한다.
@@ -33,8 +33,11 @@ object BlockOperations {
         // ``` → CodeBlock 분리
         val codeFenceMatch = codeFenceRegex.find(lastLine)
         if (codeFenceMatch != null) {
-            val beforeText = lines.dropLast(1).joinToString("\n").trimEnd()
-            val language = codeFenceMatch.groupValues[1]
+            val beforeText = lines.dropLast(1).joinToString("\n")
+            val fence = codeFenceMatch.groupValues[2]
+            val openingSuffix = codeFenceMatch.groupValues[3]
+            if (fence.first() == '`' && '`' in openingSuffix) return null
+            val language = openingSuffix.trim()
             val newBlocks = blocks.toMutableList()
 
             if (beforeText.isNotEmpty()) {
@@ -42,11 +45,25 @@ object BlockOperations {
                     id = block.id,
                     textFieldState = TextFieldState(beforeText),
                 )
-                val newCode = EditorBlock.Code(language = language, codeState = TextFieldState(""))
+                val newCode = EditorBlock.Code(
+                    language = language,
+                    codeState = TextFieldState(""),
+                    openingIndent = codeFenceMatch.groupValues[1],
+                    fence = fence,
+                    openingSuffix = openingSuffix,
+                    closingFence = fence,
+                )
                 newBlocks.add(blockIndex + 1, newCode)
                 return SplitResult(newBlocks, focusBlockIndex = blockIndex + 1)
             } else {
-                val newCode = EditorBlock.Code(language = language, codeState = TextFieldState(""))
+                val newCode = EditorBlock.Code(
+                    language = language,
+                    codeState = TextFieldState(""),
+                    openingIndent = codeFenceMatch.groupValues[1],
+                    fence = fence,
+                    openingSuffix = openingSuffix,
+                    closingFence = fence,
+                )
                 newBlocks[blockIndex] = newCode
                 return SplitResult(newBlocks, focusBlockIndex = blockIndex)
             }
@@ -55,15 +72,19 @@ object BlockOperations {
         // > [!TYPE] → Callout 분리
         val calloutMatch = calloutHeaderRegex.find(lastLine)
         if (calloutMatch != null) {
-            val beforeText = lines.dropLast(1).joinToString("\n").trimEnd()
+            val beforeText = lines.dropLast(1).joinToString("\n")
             val calloutType = calloutMatch.groupValues[2]
-            val title = calloutMatch.groupValues[3]
+            val foldMarker = calloutMatch.groupValues[3].singleOrNull()
+            val titlePrefix = calloutMatch.groupValues[4]
+            val title = calloutMatch.groupValues[5]
             val newBlocks = blocks.toMutableList()
 
             val newCallout = EditorBlock.Callout(
                 calloutType = calloutType,
                 titleState = TextFieldState(title),
                 bodyBlocks = listOf(EditorBlock.Text(textFieldState = TextFieldState(""))),
+                foldMarker = foldMarker,
+                titlePrefix = titlePrefix,
             )
 
             if (beforeText.isNotEmpty()) {
@@ -181,7 +202,33 @@ object BlockOperations {
         val text = block.textFieldState.text.toString()
         if (text.isEmpty()) return null
 
+        // Enter after a standalone embed leaves an editable body, including an empty last line.
+        // Generic reparsing targets the special block rather than the caret's following line.
+        val newline = text.indexOf('\n')
+        if (newline >= 0 && block.textFieldState.selection.collapsed && block.textFieldState.selection.start > newline) {
+            standaloneMarkdownEmbedTarget(text.substring(0, newline))?.let { target ->
+                val body = EditorBlock.Text(textFieldState = TextFieldState(
+                    text.substring(newline + 1),
+                    androidx.compose.ui.text.TextRange(
+                        block.textFieldState.selection.start - newline - 1,
+                        block.textFieldState.selection.end - newline - 1,
+                    ),
+                ))
+                val newBlocks = blocks.toMutableList()
+                newBlocks[blockIndex] = EditorBlock.Embed(id = block.id, target = target)
+                newBlocks.add(blockIndex + 1, body)
+                return SplitResult(newBlocks, blockIndex + 1, body.textFieldState.selection.end)
+            }
+        }
+
         val parsed = MarkdownBlockParser.parse(text, excludeCalloutTypes)
+
+        // Keep the preview and its resolved content attached while the source row opens/closes.
+        (parsed.singleOrNull() as? EditorBlock.Embed)?.let { embed ->
+            val newBlocks = blocks.toMutableList()
+            newBlocks[blockIndex] = embed.copy(id = block.id)
+            return SplitResult(newBlocks, focusBlockIndex = blockIndex)
+        }
 
         // dissolve 직후 rawMode 블록: focus-out 시점이라 무조건 적용 (v3)
         if (block.rawMode) {
@@ -246,7 +293,7 @@ object BlockOperations {
             textFieldState = TextFieldState(raw),
             rawMode = true,
             rawOrigin = origin,
-        )
+        ).let { if (target is EditorBlock.Embed) it.copy(id = target.id) else it }
         val newBlocks = blocks.toMutableList()
         newBlocks[specialIndex] = newText
         return DissolveResult(

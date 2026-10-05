@@ -168,7 +168,7 @@ private fun CommitHistoryListItem(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = entry.commit.message,
+                    text = entry.displayMessage,
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
@@ -211,6 +211,9 @@ internal fun CommitHistoryDetail(
     workingPreview: CommitPreview?,
     onProjectRestoreRequest: (CommitHistoryEntry) -> Unit,
     onHeadRevertRequest: (CommitHistoryEntry) -> Unit,
+    onMessageEditRequest: (String) -> Unit,
+    messageEditEnabled: Boolean,
+    messageEditButtonModifier: Modifier = Modifier,
     modifier: Modifier = Modifier,
     fixedRestoreFooter: Boolean = false,
     inlineDiff: (@Composable () -> Unit)? = null,
@@ -219,7 +222,7 @@ internal fun CommitHistoryDetail(
     val content: @Composable () -> Unit = {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = entry.commit.message,
+                text = entry.displayMessage,
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
@@ -243,6 +246,9 @@ internal fun CommitHistoryDetail(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        TextButton(onClick = { onMessageEditRequest(entry.commit.id) }, enabled = messageEditEnabled, modifier = messageEditButtonModifier) {
+            Text("메시지 수정")
+        }
         HorizontalDivider()
         Text(
             text = "변경된 파일 ${entry.changes.size}개",

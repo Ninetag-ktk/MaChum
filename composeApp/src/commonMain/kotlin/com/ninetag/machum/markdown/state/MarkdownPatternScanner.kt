@@ -1,9 +1,5 @@
 package com.ninetag.machum.markdown.state
 
-import com.ninetag.machum.markdown.service.*
-
-import androidx.compose.ui.text.SpanStyle
-
 /**
  * 블록 데코레이션이 필요한 특수 블록 타입.
  *
@@ -31,17 +27,17 @@ data class BlockRange(
 /**
  * [MarkdownPatternScanner]의 스캔 결과.
  *
- * @param spans   (문서 내 범위, SpanStyle) 쌍 목록 — OutputTransformation에서 사용
+ * @param spans   문서 내 범위와 Markdown 의미 목록
  * @param blocks  특수 블록 범위 목록 — DrawBehind 에서 사용 (BLOCKQUOTE, HORIZONTAL_RULE)
  */
-data class ScanResult(
-    val spans: List<Pair<IntRange, SpanStyle>>,
+internal data class ScanResult(
+    val spans: List<MarkdownSpan>,
     val blocks: List<BlockRange>,
 )
 
 /**
  * TextBlock 의 raw 텍스트를 스캔하여 인라인 서식 spans 와 데코레이션 blocks 를 반환한다.
- * 기호를 제거하지 않고, 기호 범위(MARKER)와 내용 범위(SpanStyle)만 알려준다.
+ * 원문을 변경하지 않고 기호와 내용의 의미 범위만 알려준다.
  *
  * v2 블록 에디터에서 TextBlockEditor 의 OutputTransformation 이 호출.
  */
@@ -49,13 +45,12 @@ internal object MarkdownPatternScanner {
 
     /**
      * @param text   TextBlock 의 raw 텍스트
-     * @param config 서식 스타일 설정
      * @return [ScanResult] — 인라인 서식 + 데코레이션 블록 범위
      */
-    fun scan(text: String, config: MarkdownStyleConfig): ScanResult {
+    fun scan(text: String): ScanResult {
         if (text.isEmpty()) return ScanResult(emptyList(), emptyList())
 
-        val spans = mutableListOf<Pair<IntRange, SpanStyle>>()
+        val spans = mutableListOf<MarkdownSpan>()
         val blocks = mutableListOf<BlockRange>()
         val lines = text.split('\n')
         var i = 0
@@ -72,17 +67,17 @@ internal object MarkdownPatternScanner {
                 val headingLevel = detectHeadingLevel(line)
                 when {
                     headingLevel > 0 -> {
-                        flushGroup(groupText, groupStart, spans, config)
+                        flushGroup(groupText, groupStart, spans)
                         groupStart = -1
                         spans += InlineStyleScanner.computeSpans(
-                            MarkdownBlock.Heading(headingLevel), line, offset, config,
+                            MarkdownBlock.Heading(headingLevel), line, offset,
                         )
                     }
                     isHorizontalRule(line) -> {
-                        flushGroup(groupText, groupStart, spans, config)
+                        flushGroup(groupText, groupStart, spans)
                         groupStart = -1
                         spans += InlineStyleScanner.computeSpans(
-                            MarkdownBlock.HorizontalRule, line, offset, config,
+                            MarkdownBlock.HorizontalRule, line, offset,
                         )
                         blocks += BlockRange(
                             type = BlockType.HORIZONTAL_RULE,
@@ -90,19 +85,19 @@ internal object MarkdownPatternScanner {
                         )
                     }
                     line.startsWith(">") -> {
-                        flushGroup(groupText, groupStart, spans, config)
+                        flushGroup(groupText, groupStart, spans)
                         groupStart = -1
                         // 연속 > 줄 그룹화
                         val bqStart = offset
                         spans += InlineStyleScanner.computeSpans(
-                            MarkdownBlock.TextBlock, line, offset, config,
+                            MarkdownBlock.TextBlock, line, offset,
                         )
                         var bqEnd = offset + line.length
                         var j = i + 1
                         var bqOffset = offset + line.length + 1
                         while (j < lines.size && lines[j].startsWith(">")) {
                             spans += InlineStyleScanner.computeSpans(
-                                MarkdownBlock.TextBlock, lines[j], bqOffset, config,
+                                MarkdownBlock.TextBlock, lines[j], bqOffset,
                             )
                             bqEnd = bqOffset + lines[j].length
                             bqOffset += lines[j].length + 1
@@ -117,10 +112,10 @@ internal object MarkdownPatternScanner {
                         continue
                     }
                     hasBlockPrefix(line) -> {
-                        flushGroup(groupText, groupStart, spans, config)
+                        flushGroup(groupText, groupStart, spans)
                         groupStart = -1
                         spans += InlineStyleScanner.computeSpans(
-                            MarkdownBlock.TextBlock, line, offset, config,
+                            MarkdownBlock.TextBlock, line, offset,
                         )
                     }
                     else -> {
@@ -135,7 +130,7 @@ internal object MarkdownPatternScanner {
                 }
             } else {
                 // 빈 줄은 그룹을 끊음
-                flushGroup(groupText, groupStart, spans, config)
+                flushGroup(groupText, groupStart, spans)
                 groupStart = -1
             }
 
@@ -144,7 +139,7 @@ internal object MarkdownPatternScanner {
         }
 
         // 남은 그룹 처리
-        flushGroup(groupText, groupStart, spans, config)
+        flushGroup(groupText, groupStart, spans)
 
         return ScanResult(spans, blocks)
     }
@@ -153,16 +148,15 @@ internal object MarkdownPatternScanner {
     private fun flushGroup(
         groupText: StringBuilder,
         groupStart: Int,
-        result: MutableList<Pair<IntRange, SpanStyle>>,
-        config: MarkdownStyleConfig,
+        result: MutableList<MarkdownSpan>,
     ) {
         if (groupText.isEmpty()) return
         val text = groupText.toString()
         if (text.contains('\n')) {
-            result += InlineStyleScanner.computeMultiLineSpans(text, groupStart, config)
+            result += InlineStyleScanner.computeMultiLineSpans(text, groupStart)
         } else {
             result += InlineStyleScanner.computeSpans(
-                MarkdownBlock.TextBlock, text, groupStart, config,
+                MarkdownBlock.TextBlock, text, groupStart,
             )
         }
         groupText.clear()
@@ -185,7 +179,7 @@ internal object MarkdownPatternScanner {
         return level
     }
 
-    /** 줄이 블록 레벨 prefix(>, -, *, 숫자.)로 시작하는지 판별 */
+    /** 줄이 블록 레벨 prefix(>, -, *, +, 숫자.)로 시작하는지 판별 */
     private fun hasBlockPrefix(line: String): Boolean {
         if (line.startsWith(">")) return true
 
@@ -194,7 +188,7 @@ internal object MarkdownPatternScanner {
         if (indent >= line.length) return false
         val rest = line.substring(indent)
 
-        if (rest.startsWith("- ") || rest.startsWith("* ")) return true
+        if (rest.startsWith("- ") || rest.startsWith("* ") || rest.startsWith("+ ")) return true
 
         // Ordered list: "숫자. "
         var j = 0

@@ -27,12 +27,26 @@ class ProjectBackupService(
     ): ProjectBackupResult {
         val remoteHead = remoteStore.readHeadCommitId()
         if (remoteHead == targetCommitId) {
+            val metadata = planSource.metadata(project, identity)
+            val headBeforeMetadata = remoteStore.readHeadCommitId()
+            if (headBeforeMetadata != remoteHead) {
+                throw BackupConcurrencyException(
+                    "메시지 metadata 게시 전 원격 HEAD가 변경되었습니다: $remoteHead → $headBeforeMetadata",
+                )
+            }
+            remoteStore.upsertMetadata(targetCommitId, metadata)
+            val headAfterMetadata = remoteStore.readHeadCommitId()
+            if (headAfterMetadata != targetCommitId) {
+                throw BackupConcurrencyException(
+                    "메시지 metadata 게시 중 원격 HEAD가 변경되었습니다: $targetCommitId → $headAfterMetadata",
+                )
+            }
             return ProjectBackupResult(
                 projectId = identity.projectId,
                 targetCommitId = targetCommitId,
                 createdObjectCount = 0,
                 reusedObjectCount = 0,
-                metadataFileCount = 0,
+                metadataFileCount = metadata.size,
                 workspaceFileCount = 0,
                 alreadyCurrent = true,
             )

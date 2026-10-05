@@ -19,7 +19,11 @@ import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -27,6 +31,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.*
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
@@ -39,6 +48,7 @@ import com.ninetag.machum.commit.CommitHistoryEntry
 import com.ninetag.machum.theme.WorkspaceUiMetrics
 import com.ninetag.machum.theme.WorkspaceMotion
 import com.ninetag.machum.theme.semanticColors
+import com.ninetag.machum.screen.common.PolicyDialog
 
 internal enum class CommitWorkspaceTab { Changes, History }
 
@@ -57,6 +67,10 @@ internal fun CommitWorkspaceScreen(
     onCreateDiffRequest: (CommitChange) -> Unit,
     onHistoryRetry: () -> Unit,
     onCommitSelected: (String) -> Unit,
+    onMessageEditRequest: (String) -> Unit,
+    onEditedMessageChange: (String) -> Unit,
+    onMessageEditSave: () -> Unit,
+    onMessageEditDismiss: () -> Unit,
     onHistoryDiffRequest: (String, CommitChange) -> Unit,
     fileContentRestoreAvailability: (CommitChange, CommitFileSide) -> CommitRestoreActionAvailability,
     fileRestoreAvailability: (CommitChange, CommitFileSide) -> CommitRestoreActionAvailability,
@@ -67,10 +81,14 @@ internal fun CommitWorkspaceScreen(
     onCreateRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val busy = createState.isCommitting || historyState.restore?.isRestoring == true
+    val busy = createState.isCommitting || historyState.restore?.isRestoring == true || historyState.messageEdit != null
     val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) { focusRequester.requestFocus() }
-    Surface(modifier.fillMaxSize().safeDrawingPadding().imePadding().onPreviewKeyEvent {
+    val messageEditButtonFocus = remember { FocusRequester() }
+    var messageEditOpenerId by remember { mutableStateOf<String?>(null) }
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    Box(modifier.fillMaxSize()) {
+    Surface(Modifier.fillMaxSize().safeDrawingPadding().imePadding().onPreviewKeyEvent {
         if (it.key == Key.Escape && it.type == KeyEventType.KeyDown) {
             if (!busy && historyState.restore == null) onBack()
             true
@@ -78,6 +96,23 @@ internal fun CommitWorkspaceScreen(
     }.focusRequester(focusRequester).focusable(), color = MaterialTheme.colorScheme.background) {
       BoxWithConstraints(Modifier.fillMaxSize()) {
         val wideHeader = maxWidth >= WorkspaceUiMetrics.commitHistoryWideMinWidth
+        LaunchedEffect(createState.isCommitting, historyState.messageEdit != null) {
+            if (createState.isCommitting) {
+                focusManager.clearFocus(force = true)
+                keyboard?.hide()
+            }
+            if (historyState.messageEdit != null) {
+                messageEditOpenerId = historyState.messageEdit.commitId
+            } else {
+                if (messageEditOpenerId != null) withFrameNanos { }
+                val restoredToOpener = messageEditOpenerId != null && selectedTab == CommitWorkspaceTab.History &&
+                    (wideHeader || historyState.diff == null) &&
+                    historyState.history.any { it.commit.id == messageEditOpenerId && it.commit.id == historyState.selectedCommitId } &&
+                    runCatching { messageEditButtonFocus.requestFocus() }.getOrDefault(false)
+                if (!restoredToOpener) focusRequester.requestFocus()
+                messageEditOpenerId = null
+            }
+        }
         Column {
             Row(
                 Modifier.fillMaxWidth().heightIn(min = WorkspaceUiMetrics.topBarHeight).padding(end = 16.dp),
@@ -118,7 +153,7 @@ internal fun CommitWorkspaceScreen(
                 val wide = maxWidth >= WorkspaceUiMetrics.commitHistoryWideMinWidth
                 when (selectedTab) {
                     CommitWorkspaceTab.Changes -> CommitChangesWorkspace(
-                        createState, message, onMessageChange, onCommit, onCreateDiffRequest, onCreateRetry, wide,
+                        createState, message, onMessageChange, onCommit, onCreateDiffRequest, onCreateRetry, onBack, wide,
                     )
                     CommitWorkspaceTab.History -> {
                         val entry = historyState.history.firstOrNull { it.commit.id == historyState.selectedCommitId }
@@ -139,6 +174,9 @@ internal fun CommitWorkspaceScreen(
                                 workingPreview = historyState.workingPreview,
                                 onProjectRestoreRequest = onProjectRestoreRequest,
                                 onHeadRevertRequest = onHeadRevertRequest,
+                                onMessageEditRequest = onMessageEditRequest,
+                                messageEditEnabled = !busy && !historyState.isLoading && historyState.diff?.isLoading != true,
+                                messageEditButtonModifier = Modifier.focusRequester(messageEditButtonFocus),
                                 modifier = Modifier.fillMaxSize(),
                                 fixedRestoreFooter = wide,
                                 inlineDiff = if (wide && historyState.diff != null) ({ fileDiff(false) }) else null,
@@ -170,6 +208,53 @@ internal fun CommitWorkspaceScreen(
         }
       }
     }
+    if (createState.isCommitting) {
+        Box(
+            Modifier.matchParentSize()
+                .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.6f))
+                .semantics { contentDescription = "커밋 진행 중" }
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
+                    }
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                CircularProgressIndicator()
+                Text("커밋 중…", color = Color.White)
+            }
+        }
+    }
+    }
+    historyState.messageEdit?.let { edit ->
+        PolicyDialog(
+            title = "커밋 메시지 수정",
+            onDismissRequest = { if (!edit.isSaving) onMessageEditDismiss() },
+            confirmButton = {
+                Button(onClick = onMessageEditSave, enabled = !edit.isSaving && edit.message.isNotBlank()) {
+                    Text(if (edit.isSaving) "저장 중…" else "저장")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = onMessageEditDismiss, enabled = !edit.isSaving) { Text("취소") }
+            },
+        ) {
+            val inputFocus = remember(edit.commitId) { FocusRequester() }
+            LaunchedEffect(edit.commitId) { inputFocus.requestFocus() }
+            OutlinedTextField(
+                value = edit.message,
+                onValueChange = onEditedMessageChange,
+                label = { Text("커밋 메시지") },
+                enabled = !edit.isSaving,
+                modifier = Modifier.fillMaxWidth().focusRequester(inputFocus),
+                minLines = 2,
+                maxLines = 6,
+                shape = MaterialTheme.shapes.medium,
+            )
+            edit.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        }
+    }
 }
 
 @Composable
@@ -180,8 +265,18 @@ private fun CommitChangesWorkspace(
     onCommit: (String) -> Unit,
     onDiffRequest: (CommitChange) -> Unit,
     onRetry: () -> Unit,
+    onClose: () -> Unit,
     wide: Boolean,
 ) {
+    if (state.isCompleted) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text("커밋을 완료했습니다.", style = MaterialTheme.typography.titleMedium)
+                Button(onClick = onClose) { Text("닫기") }
+            }
+        }
+        return
+    }
     val busy = state.isLoading || state.isCommitting
     val canCommit = state.preview?.hasChanges == true && message.isNotBlank() && !busy
     BoxWithConstraints(Modifier.fillMaxSize()) {

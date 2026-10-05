@@ -23,16 +23,59 @@ private fun trashDocument(context: Context, file: PlatformFile): DocumentFile =
     DocumentFile.fromTreeUri(context, file.toAndroidUri("com.ninetag.machum.fileprovider"))
         ?: error("저장소 폴더를 읽지 못했습니다.")
 
+private fun hasFreshDirectChildName(context: Context, parent: DocumentFile, targetName: String): Boolean {
+    val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+        parent.uri,
+        DocumentsContract.getDocumentId(parent.uri),
+    )
+    var nameIndex = -1
+    return directoryNameSnapshotContains(
+        targetName = targetName,
+        query = {
+            context.contentResolver.query(
+                childrenUri,
+                arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                null, null, null,
+            )
+        },
+        hasNameColumn = { cursor ->
+            nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            nameIndex >= 0
+        },
+        isIncomplete = { cursor ->
+            val extras = checkNotNull(cursor.extras) { "Directory cursor extras are missing." }
+            @Suppress("DEPRECATION")
+            val loading = extras.get(DocumentsContract.EXTRA_LOADING)
+            directoryNameSnapshotIsIncomplete(
+                loadingPresent = extras.containsKey(DocumentsContract.EXTRA_LOADING),
+                loading = loading,
+                errorPresent = extras.containsKey(DocumentsContract.EXTRA_ERROR),
+            )
+        },
+        moveToNext = { it.moveToNext() },
+        displayName = { cursor -> if (cursor.isNull(nameIndex)) null else cursor.getString(nameIndex) },
+    )
+}
+
 internal actual suspend fun listDirectoryEntries(
     directory: PlatformFile,
+    strict: Boolean,
 ): List<PlatformDirectoryEntry> = withContext(Dispatchers.IO) {
+    WorkspaceLoadDiagnostics.io(WorkspaceLoadIo.DIRECTORY) {
     when (val androidFile = directory.androidFile) {
-        is AndroidFile.FileWrapper -> androidFile.file.listFiles().orEmpty().map { child ->
-            PlatformDirectoryEntry(
-                platformFile = PlatformFile(child),
-                name = child.name,
-                isDirectory = child.isDirectory,
-            )
+        is AndroidFile.FileWrapper -> {
+            val file = androidFile.file
+            if (strict) check(file.isDirectory) { "디렉터리 경로를 읽을 수 없습니다: $file" }
+            val children = file.listFiles()
+            if (strict) checkNotNull(children) { "디렉터리 파일 목록을 읽을 수 없습니다: $file" }
+            children.orEmpty().map { child ->
+                PlatformDirectoryEntry(
+                    platformFile = PlatformFile(child),
+                    name = child.name,
+                    isDirectory = child.isDirectory,
+                    modifiedAt = child.lastModified().takeIf { it > 0L },
+                )
+            }
         }
 
         is AndroidFile.UriWrapper -> {
@@ -56,16 +99,32 @@ internal actual suspend fun listDirectoryEntries(
                 val idIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
                 val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
                 val mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                val modifiedIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
                 check(idIndex >= 0 && nameIndex >= 0 && mimeIndex >= 0) {
                     "저장소가 파일 목록 메타데이터를 제공하지 않았습니다."
                 }
                 buildList {
                     while (cursor.moveToNext()) {
+                        if (strict) {
+                            check(
+                                !cursor.isNull(idIndex) &&
+                                    !cursor.isNull(nameIndex) &&
+                                    !cursor.isNull(mimeIndex)
+                            ) { "저장소 파일 목록에 필수 메타데이터가 누락되었습니다." }
+                        }
                         if (cursor.isNull(idIndex) || cursor.isNull(nameIndex)) continue
                         val documentId = cursor.getString(idIndex)
                         val name = cursor.getString(nameIndex)
+                        if (strict) {
+                            check(!documentId.isNullOrBlank() && !name.isNullOrBlank()) {
+                                "저장소 파일 목록에 빈 식별자 또는 이름이 있습니다."
+                            }
+                        }
                         if (name.isNullOrBlank()) continue
                         val mimeType = if (cursor.isNull(mimeIndex)) null else cursor.getString(mimeIndex)
+                        if (strict) check(!mimeType.isNullOrBlank()) {
+                            "저장소 파일 목록에 빈 MIME 형식이 있습니다."
+                        }
                         add(
                             PlatformDirectoryEntry(
                                 platformFile = PlatformFile(
@@ -76,6 +135,11 @@ internal actual suspend fun listDirectoryEntries(
                                 ),
                                 name = name,
                                 isDirectory = mimeType == DocumentsContract.Document.MIME_TYPE_DIR,
+                                modifiedAt = if (modifiedIndex < 0 || cursor.isNull(modifiedIndex)) {
+                                    null
+                                } else {
+                                    cursor.getLong(modifiedIndex).takeIf { it > 0L }
+                                },
                             ),
                         )
                     }
@@ -83,12 +147,14 @@ internal actual suspend fun listDirectoryEntries(
             } ?: error("저장소 파일 목록을 읽지 못했습니다.")
         }
     }
+    }
 }
 
 private val DIRECTORY_ENTRY_PROJECTION = arrayOf(
     DocumentsContract.Document.COLUMN_DOCUMENT_ID,
     DocumentsContract.Document.COLUMN_DISPLAY_NAME,
     DocumentsContract.Document.COLUMN_MIME_TYPE,
+    DocumentsContract.Document.COLUMN_LAST_MODIFIED,
 )
 
 internal actual suspend fun validateWorkspaceTrashChild(parent: PlatformFile, child: PlatformFile): Unit = withContext(Dispatchers.IO) {
@@ -213,30 +279,77 @@ internal actual suspend fun FileManager.setConfig(
     parentDirectory: PlatformFile,
     fileName: String,
 ): PlatformFile? = withContext(Dispatchers.IO) {
-    try {
-        val context = trashContext()
-        val parentDoc = DocumentFile.fromTreeUri(
-            context,
-            parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"))
-            ?:return@withContext null
-        val existing = parentDoc.findFile(fileName)
-        if (existing != null && existing.isFile) return@withContext PlatformFile(existing.uri)
-        val newFile = parentDoc.createFile("application/json", fileName)?:return@withContext null
-        PlatformFile(newFile.uri)
-    } catch (e: Exception) {
-        throw e
+    val entries = listDirectoryEntries(parentDirectory, strict = false)
+    val existing = entries
+        .firstOrNull { it.name == fileName }
+    if (existing != null) return@withContext existing.platformFile.takeUnless { existing.isDirectory }
+
+    when (val androidFile = parentDirectory.androidFile) {
+        is AndroidFile.FileWrapper -> {
+            val file = androidFile.file.resolve(fileName)
+            if (!file.createNewFile()) return@withContext null
+            PlatformFile(file)
+        }
+
+        is AndroidFile.UriWrapper -> {
+            val parentUri = runCatching {
+                DocumentsContract.buildDocumentUriUsingTree(
+                    androidFile.uri,
+                    DocumentsContract.getDocumentId(androidFile.uri),
+                )
+            }.getOrElse {
+                DocumentsContract.buildDocumentUriUsingTree(
+                    androidFile.uri,
+                    DocumentsContract.getTreeDocumentId(androidFile.uri),
+                )
+            }
+            val resolver = trashContext().contentResolver
+            val createdUri = DocumentsContract.createDocument(
+                resolver,
+                parentUri,
+                "application/json",
+                fileName,
+            ) ?: return@withContext null
+            val createdId = DocumentsContract.getDocumentId(createdUri)
+            val existedBefore = entries.any { entry ->
+                (entry.platformFile.androidFile as? AndroidFile.UriWrapper)?.let { file ->
+                    runCatching { DocumentsContract.getDocumentId(file.uri) }.getOrNull() == createdId
+                } == true
+            }
+            try {
+                val created = listDirectoryEntries(parentDirectory, strict = true).singleOrNull { entry ->
+                    (entry.platformFile.androidFile as? AndroidFile.UriWrapper)?.let { file ->
+                        runCatching { DocumentsContract.getDocumentId(file.uri) }.getOrNull() == createdId
+                    } == true
+                }
+                check(!existedBefore && created != null && created.name == fileName && !created.isDirectory) {
+                    "저장소가 요청한 설정 파일 이름을 보존하지 않았습니다."
+                }
+                created.platformFile
+            } catch (error: Exception) {
+                if (!existedBefore) runCatching { DocumentsContract.deleteDocument(resolver, createdUri) }
+                throw error
+            }
+        }
     }
 }
 
 internal actual suspend fun FileManager.validPermission(file: PlatformFile): Boolean {
     return try {
         val context = trashContext()
-        context.contentResolver
-            .persistedUriPermissions
-            .any {
-                it.isReadPermission &&
-                        it.isWritePermission
+        when (val androidFile = file.androidFile) {
+            is AndroidFile.FileWrapper -> androidFile.file.canRead() && androidFile.file.canWrite()
+            is AndroidFile.UriWrapper -> {
+                val targetUri = androidFile.uri
+                val targetTreeId = runCatching { DocumentsContract.getTreeDocumentId(targetUri) }.getOrNull()
+                context.contentResolver.persistedUriPermissions.any { permission ->
+                    permission.isReadPermission && permission.isWritePermission &&
+                        permission.uri.authority == targetUri.authority &&
+                        (permission.uri == targetUri || targetTreeId != null &&
+                            runCatching { DocumentsContract.getTreeDocumentId(permission.uri) }.getOrNull() == targetTreeId)
+                }
             }
+        }
     } catch (e: Exception) {
         println("Config 생성 실패: $e")
         throw e
@@ -292,23 +405,36 @@ internal actual suspend fun FileManager.renameMarkdownExact(
     file: PlatformFile,
     name: String,
 ): PlatformFile? = withContext(Dispatchers.IO) {
+    val trace = WorkspaceLoadDiagnostics.start("file-rename.native")
     try {
         val context = trashContext()
         val parentDoc = DocumentFile.fromTreeUri(
             context,
             parentDirectory.toAndroidUri("com.ninetag.machum.fileprovider"),
         ) ?: return@withContext null
-        val extension = file.name.substringAfterLast('.', missingDelimiterValue = "md")
+        val extension = WorkspaceLoadDiagnostics.time("file-rename.native.extension", parent = trace) {
+            file.name.substringAfterLast('.', missingDelimiterValue = "md")
+        }
         val targetName = "$name.$extension"
-        if (parentDoc.findFile(targetName) != null) return@withContext null
+        if (WorkspaceLoadDiagnostics.time("file-rename.native.find-target", parent = trace) {
+            hasFreshDirectChildName(context, parentDoc, targetName)
+        }) return@withContext null
         val doc = DocumentFile.fromTreeUri(
             context,
             file.toAndroidUri("com.ninetag.machum.fileprovider"),
         ) ?: return@withContext null
-        if (!doc.renameTo(targetName)) return@withContext null
+        if (!WorkspaceLoadDiagnostics.time("file-rename.native.rename", parent = trace) {
+            doc.renameTo(targetName)
+        }) return@withContext null
         PlatformFile(doc.uri)
     } catch (error: Exception) {
+        trace.fail(error)
         null
+    } catch (error: Throwable) {
+        trace.fail(error)
+        throw error
+    } finally {
+        trace.complete()
     }
 }
 

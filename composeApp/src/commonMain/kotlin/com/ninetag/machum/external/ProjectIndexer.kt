@@ -25,6 +25,7 @@ internal class ProjectIndexer(
     val state: StateFlow<ProjectIndexState> = _state.asStateFlow()
 
     private var generation = 0L
+    private val retainedCache = MutableStateFlow(RetainedProjectCacheState())
 
     fun prepare(project: PlatformFile) {
         generation += 1
@@ -56,6 +57,7 @@ internal class ProjectIndexer(
         val issues = mutableListOf<ProjectIndexIssue>()
         val files = mutableListOf<ProjectFile>()
         val filesByFolder = linkedMapOf<FolderKey, List<ProjectFile>>()
+        val observedModifiedAt = mutableMapOf<FileKey, Long?>()
         val metadataBaseline = fileManager.workspaceMetadataIndex
             .snapshot(project, WorkspaceKind.PROJECT)
             ?: throw CancellationException("작업 공간이 변경되었습니다.")
@@ -69,11 +71,14 @@ internal class ProjectIndexer(
             }
         var hierarchyEnumerationComplete = true
         folders.forEach { folder ->
-            runCatching { fileManager.listProjectFiles(folder) }
-                .onSuccess { folderFiles ->
-                    val immutableFiles = folderFiles.toList()
+            runCatching { fileManager.listProjectFileListings(folder) }
+                .onSuccess { folderListings ->
+                    val immutableFiles = folderListings.map(ProjectFileListing::file)
                     filesByFolder[folder.key] = immutableFiles
                     files.addAll(immutableFiles)
+                    folderListings.forEach { listing ->
+                        observedModifiedAt[listing.file.key] = listing.modifiedAt
+                    }
                 }
                 .onFailure { error ->
                     if (error is CancellationException) throw error
@@ -98,7 +103,10 @@ internal class ProjectIndexer(
 
         val candidates = mutableListOf<ProjectFile>()
         var unchanged = 0
-        inspectFiles(files, projectTag).forEach { inspection ->
+        // Process archives own metadata lifetime and explicit recovery invalidation. A retained
+        // hierarchy snapshot must never resurrect a body removed from that authoritative cache.
+        val cachedMetadata = metadataBaseline.entries
+        inspectFiles(files, projectTag, cachedMetadata, observedModifiedAt).forEach { inspection ->
             val projectFile = inspection.file
             inspection.metadata?.let { metadata ->
                 if (metadata.requiresUpdate) {
@@ -116,8 +124,17 @@ internal class ProjectIndexer(
         }
 
         if (candidates.isEmpty()) {
-            publishMetadataIndex(project, metadataBaseline, files, indexedMetadata)
-            return completeIfCurrent(token, project, files.size, 0, unchanged, issues, hierarchySnapshot)
+            val publishedMetadata = publishMetadataIndex(project, metadataBaseline, files, indexedMetadata)
+            return completeIfCurrent(
+                token,
+                project,
+                files.size,
+                0,
+                unchanged,
+                issues,
+                hierarchySnapshot,
+                publishedMetadata,
+            )
         }
 
         var updated = 0
@@ -162,13 +179,24 @@ internal class ProjectIndexer(
                 )
             }
         }
-        publishMetadataIndex(project, metadataBaseline, files, indexedMetadata)
-        return completeIfCurrent(token, project, files.size, updated, unchanged, issues, hierarchySnapshot)
+        val publishedMetadata = publishMetadataIndex(project, metadataBaseline, files, indexedMetadata)
+        return completeIfCurrent(
+            token,
+            project,
+            files.size,
+            updated,
+            unchanged,
+            issues,
+            hierarchySnapshot,
+            publishedMetadata,
+        )
     }
 
     private suspend fun inspectFiles(
         files: List<ProjectFile>,
         projectTag: String,
+        cachedMetadata: Map<FileKey, WorkspaceFileMetadata>?,
+        observedModifiedAt: Map<FileKey, Long?>,
     ): List<ProjectInspectionResult> {
         val permits = Semaphore(PROJECT_INDEX_METADATA_PARALLELISM)
         return coroutineScope {
@@ -176,6 +204,26 @@ internal class ProjectIndexer(
                 async {
                     permits.withPermit {
                         try {
+                            val cached = cachedMetadata?.get(file.key)
+                            val currentModifiedAt = cached?.let { observedModifiedAt[file.key] }
+                            if (
+                                cached?.plot?.readSucceeded == true &&
+                                cached.isFresh(file, currentModifiedAt) &&
+                                (cached.projectMetadataVerified || cached.noteFile?.let { note ->
+                                    note.withProjectMetadata(projectTag).inject() == note.inject()
+                                } == true)
+                            ) {
+                                return@withPermit ProjectInspectionResult(
+                                    file = file,
+                                    metadata = IndexedProjectMetadata(
+                                        plotStage = cached.plot.stage,
+                                        requiresUpdate = false,
+                                        modifiedAt = cached.modifiedAt,
+                                        noteFile = cached.noteFile,
+                                    modifiedAtVerified = cached.modifiedAtVerified,
+                                    ),
+                                )
+                            }
                             ProjectInspectionResult(
                                 file = file,
                                 metadata = inspectStableProjectMetadata(file, projectTag),
@@ -206,6 +254,7 @@ internal class ProjectIndexer(
                     plotStage = update.noteFile.plotStage,
                     requiresUpdate = update.changed,
                     modifiedAt = modifiedAfter,
+                    noteFile = update.noteFile,
                 )
             }
         }
@@ -217,17 +266,20 @@ internal class ProjectIndexer(
         baseline: WorkspaceMetadataSnapshot,
         files: List<ProjectFile>,
         metadataByKey: Map<FileKey, IndexedProjectMetadata>,
-    ) {
+    ): Map<FileKey, WorkspaceFileMetadata> {
         val indexed = files.mapNotNull { file ->
             metadataByKey[file.key]?.let { metadata ->
                 WorkspaceFileMetadata(
                     file = file,
                     modifiedAt = metadata.modifiedAt,
                     plot = IndexedPlot(metadata.plotStage),
+                    noteFile = metadata.noteFile,
+                    projectMetadataVerified = true,
+                    modifiedAtVerified = metadata.modifiedAtVerified,
                 )
             }
         }
-        fileManager.workspaceMetadataIndex.reconcileAll(
+        return fileManager.workspaceMetadataIndex.reconcileAll(
             project,
             WorkspaceKind.PROJECT,
             baseline,
@@ -251,8 +303,17 @@ internal class ProjectIndexer(
         )
     }
 
-    fun reset() {
+    fun reset(retainMetadata: Boolean = false) {
         generation += 1
+        if (!retainMetadata) {
+            while (true) {
+                val current = retainedCache.value
+                val cleared = RetainedProjectCacheState(
+                    generationFloor = maxOf(current.generationFloor, generation),
+                )
+                if (retainedCache.compareAndSet(current, cleared)) break
+            }
+        }
         _state.value = ProjectIndexState.Idle
     }
 
@@ -289,8 +350,10 @@ internal class ProjectIndexer(
         unchanged: Int,
         issues: List<ProjectIndexIssue>,
         hierarchySnapshot: ProjectHierarchySnapshot? = null,
+        publishedMetadata: Map<FileKey, WorkspaceFileMetadata>? = null,
     ): ProjectIndexResult {
-        val isCurrent = token == generation
+        val expectedState = _state.value
+        val isCurrent = token == generation && expectedState.activationGeneration == token
         val result = ProjectIndexResult(
             activationGeneration = token,
             projectLocation = project.toString(),
@@ -301,7 +364,19 @@ internal class ProjectIndexer(
             issues = issues.toList(),
             hierarchySnapshot = hierarchySnapshot?.takeIf { isCurrent },
         )
-        if (isCurrent) _state.value = ProjectIndexState.Ready(result)
+        if (isCurrent && _state.compareAndSet(expectedState, ProjectIndexState.Ready(result))) {
+            publishedMetadata?.let { metadata ->
+                val replacement = RetainedProjectMetadata(token, project.toString(), metadata)
+                while (true) {
+                    val current = retainedCache.value
+                    if (
+                        token < current.generationFloor ||
+                        current.metadata?.activationGeneration?.let { it > token } == true
+                    ) break
+                    if (retainedCache.compareAndSet(current, current.copy(metadata = replacement))) break
+                }
+            }
+        }
         return result
     }
 
@@ -310,10 +385,23 @@ internal class ProjectIndexer(
     }
 }
 
+private data class RetainedProjectCacheState(
+    val metadata: RetainedProjectMetadata? = null,
+    val generationFloor: Long = 0L,
+)
+
+private data class RetainedProjectMetadata(
+    val activationGeneration: Long,
+    val projectLocation: String,
+    val entries: Map<FileKey, WorkspaceFileMetadata>,
+)
+
 private data class IndexedProjectMetadata(
     val plotStage: PlotStage?,
     val requiresUpdate: Boolean,
     val modifiedAt: Long?,
+    val noteFile: NoteFile?,
+    val modifiedAtVerified: Boolean = true,
 )
 
 private data class ProjectInspectionResult(

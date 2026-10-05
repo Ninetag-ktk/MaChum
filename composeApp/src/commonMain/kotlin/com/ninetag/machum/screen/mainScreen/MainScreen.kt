@@ -1,6 +1,11 @@
 package com.ninetag.machum.screen.mainScreen
 
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.BringIntoViewSpec
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -10,10 +15,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerDefaults
+import androidx.compose.foundation.pager.PagerSnapDistance
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.DrawerValue
@@ -23,10 +32,12 @@ import com.ninetag.machum.theme.WorkspaceDrawerMotionTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -59,9 +70,12 @@ import kotlinx.coroutines.CancellationException
 import com.ninetag.machum.entity.FolderConfig
 import com.ninetag.machum.entity.FolderType
 import com.ninetag.machum.external.WorkspaceKind
+import com.ninetag.machum.external.WorkspaceLoadDiagnostics
 import com.ninetag.machum.entity.PlotStage
 import com.ninetag.machum.external.FileKey
 import com.ninetag.machum.external.FolderKey
+import com.ninetag.machum.external.WorkspaceLinkIndexState
+import com.ninetag.machum.markdown.service.MarkdownEditorDebugOptions
 import com.ninetag.machum.screen.commitScreen.CommitWorkspaceScreen
 import com.ninetag.machum.screen.commitScreen.CommitWorkspaceTab
 import com.ninetag.machum.screen.commitScreen.CommitRestoreActionAvailability
@@ -77,6 +91,11 @@ import org.koin.compose.viewmodel.koinViewModel
 
 private val GENERAL_PROTECTED_PROPERTY_KEYS = setOf("source", "tags")
 
+private object PagerFocusRelocationSpec : BringIntoViewSpec {
+    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float = 0f
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
 
@@ -93,6 +112,25 @@ fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
     val currentIndex = hierarchy.currentIndex
     val plotFileEntries = hierarchy.plotFileEntries
     val fileLoadStates by viewModel.fileLoadStates.collectAsState()
+    val markdownNavigation by viewModel.markdownNavigation.collectAsState()
+    val ambiguousInternalLink by viewModel.ambiguousInternalLink.collectAsState()
+    val workspaceLinkIndexState by viewModel.workspaceLinkIndexState.collectAsState()
+    val completionRevisionIdentity = when (val state = workspaceLinkIndexState) {
+        is WorkspaceLinkIndexState.Building -> state.index.hashCode()
+        is WorkspaceLinkIndexState.Ready -> state.index.hashCode()
+        is WorkspaceLinkIndexState.Error -> state.previousIndex?.hashCode() ?: 0
+        WorkspaceLinkIndexState.Inactive -> 0
+    }
+    LaunchedEffect(completionRevisionIdentity) {
+        if (MarkdownEditorDebugOptions.logImeDiagnostics) {
+            println(
+                "MaChumIme|completion_revision|state=${workspaceLinkIndexState::class.simpleName}|" +
+                    "index=$completionRevisionIdentity|revision=$completionRevisionIdentity",
+            )
+        }
+    }
+    val generalLinkReturnTarget by viewModel.generalLinkReturnTarget.collectAsState()
+    val projectLinkReturnTarget by viewModel.projectLinkReturnTarget.collectAsState()
     val bookmarks by viewModel.bookmarks.collectAsState()
     val projectConfig by viewModel.projectConfig.collectAsState()
     val pendingFolderDeletion by viewModel.pendingFolderDeletion.collectAsState()
@@ -109,7 +147,43 @@ fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
-    val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    var imeVisible by remember { mutableStateOf(false) }
+    var titleEditing by remember { mutableStateOf(false) }
+    ImeVisibilityObserver { imeVisible = it }
+    LaunchedEffect(imeVisible) {
+        if (imeVisible && titleEditing) WorkspaceLoadDiagnostics.event("title-edit-ime-visible")
+    }
+
+    ambiguousInternalLink?.let { pending ->
+        AlertDialog(
+            onDismissRequest = viewModel::dismissAmbiguousInternalLink,
+            title = { Text("이동할 문서 선택") },
+            text = {
+                LazyColumn(Modifier.heightIn(max = 144.dp)) {
+                    items(pending.candidates, key = { it.vaultRelativePath }) { candidate ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .clickable { viewModel.chooseAmbiguousInternalLink(candidate) }
+                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                        ) {
+                            Text(candidate.fileName, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                candidate.vaultRelativePath,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = viewModel::dismissAmbiguousInternalLink) { Text("취소") }
+            },
+        )
+    }
     LaunchedEffect(workspaceSelectionPending) {
         if (workspaceSelectionPending) focusManager.clearFocus(force = true)
     }
@@ -122,8 +196,13 @@ fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
             projectBaselineUiState.projectLocation != currentProjectLocation
         )
 
-    LaunchedEffect(currentProjectLocation, bookmarks.workspaceKind, baselineNeedsPreparation) {
-        if (baselineNeedsPreparation) {
+    LaunchedEffect(
+        currentProjectLocation,
+        bookmarks.workspaceKind,
+        baselineNeedsPreparation,
+        workspaceSelectionPending,
+    ) {
+        if (baselineNeedsPreparation && !workspaceSelectionPending) {
             focusManager.clearFocus(force = true)
             viewModel.ensureInitialProjectBaseline()
         }
@@ -153,6 +232,18 @@ fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
         selectedPage = currentIndex,
         onPageSettled = viewModel::selectFile,
     )
+    val activeEditorPage = pagerState.settledPage
+    var previousActiveEditorPage by remember(pagerIdentity, pagerState) {
+        mutableStateOf(pagerState.settledPage)
+    }
+    LaunchedEffect(pagerState, activeEditorPage) {
+        if (activeEditorPage != previousActiveEditorPage) {
+            // A pager keeps neighboring pages composed. Drop the old field focus before handing
+            // keyboard/history ownership to the newly settled page.
+            focusManager.clearFocus(force = true)
+            previousActiveEditorPage = activeEditorPage
+        }
+    }
 
     // 앱/창 포커스 상태 → 외부 변경 감지 활성/비활성.
     // 포커스 복귀 시 즉시 재검사(Phase 1) + 포커스 유지 중 주기 폴링(Phase 2). 포커스 상실 시 폴링 중단.
@@ -209,14 +300,15 @@ fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
             else -> focusManager.clearFocus(force = true)
         }
     }
-    WorkspaceBackHandler(commitWorkspaceOpen && commitHistoryUiState.restore == null) {
+    WorkspaceBackHandler(commitWorkspaceOpen && commitHistoryUiState.restore == null && commitHistoryUiState.messageEdit == null) {
         onCommitBack()
     }
 
     WorkspaceDrawerMotionTheme { contentMotionScheme ->
         ModalNavigationDrawer(
             drawerState = drawerState,
-            gesturesEnabled = !commitWorkspaceOpen,
+            // Material also gates scrim dismissal on this flag; closed editor drags stay disabled.
+            gesturesEnabled = drawerState.isOpen,
             drawerContent = {
                 MaterialTheme(motionScheme = contentMotionScheme) {
                     val projectList by viewModel.projectList.collectAsState()
@@ -280,7 +372,6 @@ fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
                         onDeleteDirectoryConfirmed = viewModel::confirmDeleteDirectory,
                         onFileTrashRequested = viewModel::requestMoveFileToTrash,
                         onMoveFile = viewModel::moveFileResult,
-                        onClose = { scope.launch { drawerState.close() } },
                     )
                 }
             },
@@ -294,26 +385,37 @@ fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
                             Modifier
                         },
                         topBar = {
-                            EditorTopBar(
-                                projectFile = currentFile,
-                                folderName = currentFolder
-                                    ?.takeUnless { isProjectRoot }
-                                    ?.key
-                                    ?.relativePath,
-                                onNavigateBack = if (isProjectRoot) null else viewModel::navigateToProjectRoot,
-                                onMenuClick = { scope.launch { drawerState.open() } },
-                                onCommitClick = if (isManagedProject) viewModel::openCommitDialog else null,
-                                documentInfoExpanded = documentInfoExpanded,
-                                onDocumentInfoToggle = {
-                                    focusManager.clearFocus()
-                                    scope.launch {
-                                        try { documentInfoPreferences.setExpanded(!documentInfoExpanded); documentInfoPreferenceError = null }
-                                        catch (e: CancellationException) { throw e }
-                                        catch (e: Exception) { documentInfoPreferenceError = "문서 정보 표시 설정을 저장하지 못했습니다." }
-                                    }
-                                },
-                                onRenameFile = viewModel::renameFile,
-                            )
+                            key(bookmarks.workspaceKind, currentProjectLocation) {
+                                EditorTopBar(
+                                    projectFile = currentFile,
+                                    folderName = currentFolder
+                                        ?.takeUnless { isProjectRoot }
+                                        ?.key
+                                        ?.relativePath,
+                                    onNavigateBack = when {
+                                        bookmarks.workspaceKind == WorkspaceKind.PROJECT && projectLinkReturnTarget != null ->
+                                            viewModel::returnFromProjectLink
+                                        bookmarks.workspaceKind == WorkspaceKind.GENERAL && generalLinkReturnTarget != null ->
+                                            viewModel::returnFromGeneralLink
+                                        !isProjectRoot -> viewModel::navigateToProjectRoot
+                                        else -> null
+                                    },
+                                    onMenuClick = { scope.launch { drawerState.open() } },
+                                    onCommitClick = if (isManagedProject) viewModel::openCommitDialog else null,
+                                    editFullFileName = currentFolderConfig.type == FolderType.GENERAL,
+                                    documentInfoExpanded = documentInfoExpanded,
+                                    onDocumentInfoToggle = {
+                                        focusManager.clearFocus()
+                                        scope.launch {
+                                            try { documentInfoPreferences.setExpanded(!documentInfoExpanded); documentInfoPreferenceError = null }
+                                            catch (e: CancellationException) { throw e }
+                                            catch (e: Exception) { documentInfoPreferenceError = "문서 정보 표시 설정을 저장하지 못했습니다." }
+                                        }
+                                    },
+                                    onRenameFile = viewModel::renameFile,
+                                    onTitleEditingChanged = { titleEditing = it },
+                                )
+                            }
                         },
                     ) { paddingValues ->
                         BoxWithConstraints(modifier = Modifier
@@ -378,62 +480,105 @@ fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
                                             }
                                         }
                                     } else {
-                                        HorizontalPager(
-                                            state = pagerState,
-                                            modifier = Modifier.fillMaxSize(),
-                                            userScrollEnabled = !imeVisible,
-                                            key = { page ->
-                                                fileList.getOrNull(page)
-                                                    ?.let { viewModel.editorSessionKey(it.key) }
-                                                    ?: "empty-$page"
-                                            },
-                                        ) { page ->
-                                            val projectFile = fileList.getOrNull(page) ?: return@HorizontalPager
-                                            val loadState = fileLoadStates[projectFile.key]
-                                            val documentIdentity = viewModel.editorSessionKey(projectFile.key)
-                                            Column(Modifier.fillMaxSize()) {
-                                                DocumentInformationSection(
-                                                    workspaceIdentity = "$currentWorkspaceKind:$currentProjectLocation",
-                                                    file = projectFile,
-                                                    note = (loadState as? FileLoadUiState.Loaded)?.noteFile,
-                                                    documentIdentity = documentIdentity,
-                                                    sharedForms = documentPropertyForms,
-                                                    saveScope = scope,
-                                                    expanded = documentInfoExpanded,
-                                                    maxExpandedHeight = propertyHeightLimit,
-                                                    managedTags = managedTags,
-                                                    propertyTypes = if (isManagedProject) projectConfig?.propertyTypes.orEmpty()
-                                                        else generalSourceState?.propertyTypes.orEmpty(),
-                                                    propertyScopeLabel = if (!isManagedProject) {
-                                                        "General 전체"
-                                                    } else if (currentFolder?.key == FolderKey.Base) {
-                                                        "Project 루트"
-                                                    } else {
-                                                        currentFolder?.key?.relativePath?.let { "$it 디렉터리" }.orEmpty()
-                                                    },
-                                                    // Until the General index resolves, keep source conservative and
-                                                    // read-only; an ungrouped workspace unlocks it when enabled=false arrives.
-                                                    sourceIsManaged = !isManagedProject && generalSourceState?.enabled != false,
-                                                    protectedKeys = if (isManagedProject) emptySet() else GENERAL_PROTECTED_PROPERTY_KEYS,
-                                                    onSave = { fileKey, change ->
-                                                        if (viewModel.bookmarks.value.projectData?.toString() != currentProjectLocation ||
-                                                            viewModel.bookmarks.value.workspaceKind != currentWorkspaceKind) "작업 공간이 변경되었습니다."
-                                                        else viewModel.saveDocumentProperties(
-                                                            fileKey,
-                                                            change,
-                                                            expectedEditorSessionKey = documentIdentity,
-                                                        )
-                                                    },
-                                                )
-                                                Box(Modifier.weight(1f)) {
-                                                    EditorPage(
-                                                        projectFile = projectFile,
-                                                        documentKey = documentIdentity,
-                                                        loadState = loadState,
-                                                        onLoad = viewModel::loadPage,
-                                                        onRetry = viewModel::retryPage,
-                                                        onBodyChange = { body -> viewModel.updateBody(projectFile.key, body) },
+                                        CompositionLocalProvider(
+                                            LocalBringIntoViewSpec provides PagerFocusRelocationSpec,
+                                        ) {
+                                            HorizontalPager(
+                                                state = pagerState,
+                                                modifier = Modifier.fillMaxSize(),
+                                                userScrollEnabled = !imeVisible,
+                                                flingBehavior = PagerDefaults.flingBehavior(
+                                                    state = pagerState,
+                                                    pagerSnapDistance = PagerSnapDistance.atMost(1),
+                                                    snapAnimationSpec = tween(durationMillis = 280),
+                                                    snapPositionalThreshold = 0.65f,
+                                                ),
+                                                key = { page ->
+                                                    fileList.getOrNull(page)
+                                                        ?.let { viewModel.editorSessionKey(it.key) }
+                                                        ?: "empty-$page"
+                                                },
+                                            ) { page ->
+                                                val projectFile = fileList.getOrNull(page) ?: return@HorizontalPager
+                                                val loadState = fileLoadStates[projectFile.key]
+                                                val documentIdentity = viewModel.editorSessionKey(projectFile.key)
+                                                Column(Modifier.fillMaxSize()) {
+                                                    DocumentInformationSection(
+                                                        workspaceIdentity = "$currentWorkspaceKind:$currentProjectLocation",
+                                                        file = projectFile,
+                                                        note = (loadState as? FileLoadUiState.Loaded)?.noteFile,
+                                                        documentIdentity = documentIdentity,
+                                                        sharedForms = documentPropertyForms,
+                                                        saveScope = scope,
+                                                        expanded = documentInfoExpanded,
+                                                        maxExpandedHeight = propertyHeightLimit,
+                                                        managedTags = managedTags,
+                                                        propertyTypes = if (isManagedProject) projectConfig?.propertyTypes.orEmpty()
+                                                         else generalSourceState?.propertyTypes.orEmpty(),
+                                                        propertyScopeLabel = if (!isManagedProject) {
+                                                            "General 전체"
+                                                        } else if (currentFolder?.key == FolderKey.Base) {
+                                                            "Project 루트"
+                                                        } else {
+                                                            currentFolder?.key?.relativePath?.let { "$it 디렉터리" }.orEmpty()
+                                                        },
+                                                        // Until the General index resolves, keep source conservative and
+                                                        // read-only; an ungrouped workspace unlocks it when enabled=false arrives.
+                                                        sourceIsManaged = !isManagedProject && generalSourceState?.enabled != false,
+                                                        protectedKeys = if (isManagedProject) emptySet() else GENERAL_PROTECTED_PROPERTY_KEYS,
+                                                        onSave = { fileKey, change ->
+                                                            if (viewModel.bookmarks.value.projectData?.toString() != currentProjectLocation ||
+                                                                viewModel.bookmarks.value.workspaceKind != currentWorkspaceKind) "작업 공간이 변경되었습니다."
+                                                            else viewModel.saveDocumentProperties(
+                                                                fileKey,
+                                                                change,
+                                                                expectedEditorSessionKey = documentIdentity,
+                                                            )
+                                                        },
                                                     )
+                                                    Box(Modifier.weight(1f)) {
+                                                        val completionRevision = when (val state = workspaceLinkIndexState) {
+                                                            is WorkspaceLinkIndexState.Building -> state.index
+                                                            is WorkspaceLinkIndexState.Ready -> state.index
+                                                            is WorkspaceLinkIndexState.Error -> state.previousIndex ?: Unit
+                                                            WorkspaceLinkIndexState.Inactive -> Unit
+                                                        }
+                                                        EditorPage(
+                                                            projectFile = projectFile,
+                                                            documentKey = documentIdentity,
+                                                            isActive = page == activeEditorPage,
+                                                            completionRevision = completionRevision,
+                                                            loadState = loadState,
+                                                            onLoad = viewModel::loadPage,
+                                                            onRetry = viewModel::retryPage,
+                                                            onBodyChange = { body -> viewModel.updateBody(projectFile.key, body) },
+                                                            onInternalLinkClick = { target ->
+                                                                viewModel.openInternalDocumentLink(projectFile, target)
+                                                            },
+                                                            onInternalLinkCompletion = { request ->
+                                                                viewModel.completeInternalDocumentLink(projectFile, request)
+                                                            },
+                                                            onCreateBlockReference = { creation, isCurrent ->
+                                                                viewModel.createInternalBlockReference(projectFile, creation, isCurrent)
+                                                            },
+                                                            onBlockReferenceError = viewModel::reportBlockReferenceError,
+                                                             isInternalLinkResolved = remember(
+                                                                 projectFile,
+                                                                 workspaceLinkIndexState,
+                                                             ) {
+                                                                 { target ->
+                                                                     viewModel.isInternalDocumentLinkResolved(projectFile, target)
+                                                                 }
+                                                             },
+                                                             onResolveEmbed = { target ->
+                                                                 viewModel.resolveInternalEmbed(projectFile, target)
+                                                             },
+                                                             navigationTarget = markdownNavigation
+                                                                 ?.takeIf { it.fileKey == projectFile.key }
+                                                                 ?.target,
+                                                             onNavigationHandled = viewModel::consumeMarkdownNavigation,
+                                                        )
+                                                    }
                                                 }
                                             }
                                         }
@@ -504,6 +649,10 @@ fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
                             onBack = onCommitBack,
                             onHistoryRetry = viewModel::retryCommitHistory,
                             onCommitSelected = viewModel::selectCommitHistoryEntry,
+                            onMessageEditRequest = viewModel::editCommitHistoryMessage,
+                            onEditedMessageChange = viewModel::updateEditedCommitMessage,
+                            onMessageEditSave = viewModel::saveEditedCommitMessage,
+                            onMessageEditDismiss = viewModel::dismissCommitMessageEdit,
                             onHistoryDiffRequest = viewModel::openCommitHistoryDiff,
                             onProjectRestoreRequest = viewModel::requestProjectRestore,
                             onHeadRevertRequest = viewModel::requestHeadRevert,
@@ -579,6 +728,15 @@ fun MainScreen(viewModel: MainViewModel = koinViewModel()) {
             }) { Text("다시 읽기") } },
             dismissButton = { TextButton(onClick = { conflictReloadTarget = null }) { Text("취소") } },
         ) { Text("${fileKey.relativePath}의 저장하지 않은 본문 초안을 버리고 디스크의 최신 내용을 읽습니다. 디스크 파일은 변경하지 않습니다.") }
+    }
+}
+
+@Composable
+private fun ImeVisibilityObserver(onVisibilityChanged: (Boolean) -> Unit) {
+    val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    val onVisibilityChangedState = rememberUpdatedState(onVisibilityChanged)
+    LaunchedEffect(imeVisible) {
+        onVisibilityChangedState.value(imeVisible)
     }
 }
 
