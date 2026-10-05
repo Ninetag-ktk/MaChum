@@ -2,6 +2,9 @@ package com.ninetag.machum.external
 
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.Clipboard
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.content.TransferableContent
+import androidx.compose.runtime.Composable
 
 /**
  * 평문 문자열을 플랫폼별 [ClipEntry] 로 변환한다.
@@ -17,3 +20,14 @@ expect fun clipEntryOf(text: String): ClipEntry
 
 /** 시스템 clipboard의 첫 plain-text 항목을 읽는다. 텍스트가 없거나 잠겨 있으면 null을 반환한다. */
 expect suspend fun readClipboardText(clipboard: Clipboard): String?
+
+/** Observes text metadata only; an empty text clip is still available until checked on Paste. */
+@Composable
+internal expect fun rememberClipboardHasText(clipboard: Clipboard, isActive: Boolean): Boolean
+
+/** Consumes accepted clipboard text once and returns unhandled items to the native receiver. */
+@OptIn(ExperimentalFoundationApi::class)
+expect fun consumeClipboardText(
+    content: TransferableContent,
+    consumeText: (String) -> Boolean,
+): TransferableContent?

@@ -102,8 +102,9 @@ class GeneralSourceService internal constructor(
     internal suspend fun load(
         workspace: PlatformFile,
         files: List<ProjectFile>?,
+        refreshMetadata: Boolean = true,
     ): GeneralSourceState = mutex.withLock {
-        withContext(Dispatchers.IO) { requireGeneral(workspace); loadUnlocked(workspace, files) }
+        withContext(Dispatchers.IO) { requireGeneral(workspace); loadUnlocked(workspace, files, refreshMetadata) }
     }
 
     /** Updates only General's workspace-wide property definitions under the source-config write fence. */
@@ -132,7 +133,7 @@ class GeneralSourceService internal constructor(
                 defaultPropertyKeys = defaults.defaultPropertyKeys,
             )
             if (updated != config) saveConfig(workspace, raw, updated)
-            loadUnlocked(workspace)
+            loadUnlocked(workspace, refreshMetadata = false)
         }
     }
 
@@ -140,14 +141,14 @@ class GeneralSourceService internal constructor(
         withContext(Dispatchers.IO) {
             requireGeneral(workspace)
             val (raw, config) = readConfig(workspace)
-            val entries = scan(workspace)
+            val entries = scan(workspace, refreshMetadata = false)
             val allNames = (config.groups + entries.mapNotNull { it.value?.takeIf(String::isNotEmpty) }).distinct()
             var name = "무제"
             var suffix = 1
             while (allNames.any { it.equals(name, ignoreCase = true) }) name = "무제_${suffix++}"
             val updated = config.copy(groups = (config.groups + name).distinct().sorted())
             saveConfig(workspace, raw, updated)
-            loadUnlocked(workspace)
+            loadUnlocked(workspace, refreshMetadata = false)
         }
     }
 
@@ -289,6 +290,7 @@ class GeneralSourceService internal constructor(
                     when (current) {
                         change.updated -> {
                             clearRecovery(plan.workspace, file, change.original)
+                            publishVerifiedSource(plan.workspace, change)
                             plan.completedFiles += change.file.key
                             changed += change.file
                         }
@@ -304,6 +306,7 @@ class GeneralSourceService internal constructor(
                                 }
                                 throw error
                             }
+                            publishVerifiedSource(plan.workspace, change)
                             changed += change.file
                             plan.completedFiles += change.file.key
                         }
@@ -315,11 +318,6 @@ class GeneralSourceService internal constructor(
                     failures[change.file.key] = error.message ?: "source 기록 실패"
                 }
             }
-            metadataIndex.invalidate(
-                plan.workspace,
-                WorkspaceKind.GENERAL,
-                plan.changes.map { it.file.key },
-            )
             if (failures.isNotEmpty()) {
                 return@withContext GeneralSourceResult(false, changed, failures, safeLoad(plan.workspace), plan)
             }
@@ -336,7 +334,7 @@ class GeneralSourceService internal constructor(
                         clearRecovery(plan.workspace, it, plan.originalConfig)
                     }
                 }
-                GeneralSourceResult(true, changed, emptyMap(), loadUnlocked(plan.workspace), plan)
+                GeneralSourceResult(true, changed, emptyMap(), cachedState(plan.workspace), plan)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
@@ -361,6 +359,7 @@ class GeneralSourceService internal constructor(
     private suspend fun scan(
         workspace: PlatformFile,
         files: List<ProjectFile>? = null,
+        refreshMetadata: Boolean = true,
     ): List<GeneralSourceEntry> {
         val trace = WorkspaceLoadDiagnostics.begin(
             "general-source-scan",
@@ -369,7 +368,7 @@ class GeneralSourceService internal constructor(
         try {
         // Callers that just built the hierarchy already paid the SAF provider cost. Reuse that
         // immutable snapshot instead of listing every folder and file a second time.
-        val scanFiles = files ?: manager.listFolders(workspace).flatMap { manager.listProjectFiles(it) }
+        val scanFiles = files ?: manager.listWorkspaceFiles(workspace).files
         val snapshot = metadataIndex.snapshot(workspace, WorkspaceKind.GENERAL)
             ?: throw CancellationException("작업 공간이 변경되었습니다.")
         val cached = snapshot.entries
@@ -379,10 +378,16 @@ class GeneralSourceService internal constructor(
                 async(Dispatchers.IO) {
                     permits.withPermit {
                         currentCoroutineContext().ensureActive()
-                        val modifiedAt = manager.lastModified(file.platformFile)
                         val previous = cached[file.key]
+                        val modifiedAt = if (refreshMetadata || previous == null ||
+                            previous.file.platformFile.toString() != file.platformFile.toString())
+                            manager.lastModified(file.platformFile) else previous.modifiedAt
+                        val freshPrevious = previous?.takeIf {
+                            if (refreshMetadata) it.isFresh(file, modifiedAt)
+                            else it.file.platformFile.toString() == file.platformFile.toString()
+                        }
                         val source = previous
-                            ?.takeIf { it.isFresh(file, modifiedAt) }
+                            ?.takeIf { it === freshPrevious }
                             ?.source
                             ?.takeIf(IndexedGeneralSource::readSucceeded)
                             ?: try {
@@ -400,9 +405,14 @@ class GeneralSourceService internal constructor(
                             }
                         WorkspaceFileMetadata(
                             file = file,
-                            modifiedAt = modifiedAt,
+                            modifiedAt = if (freshPrevious?.source?.readSucceeded == true) {
+                                freshPrevious.modifiedAt
+                            } else modifiedAt,
                             source = source,
-                            plot = previous?.takeIf { it.isFresh(file, modifiedAt) }?.plot,
+                            plot = freshPrevious?.plot,
+                            noteFile = freshPrevious?.noteFile,
+                            modifiedAtVerified = freshPrevious?.takeIf { it.source?.readSucceeded == true }
+                                ?.modifiedAtVerified ?: true,
                         )
                     }
                 }
@@ -432,6 +442,7 @@ class GeneralSourceService internal constructor(
     private suspend fun loadUnlocked(
         workspace: PlatformFile,
         files: List<ProjectFile>? = null,
+        refreshMetadata: Boolean = true,
     ): GeneralSourceState {
         val trace = WorkspaceLoadDiagnostics.begin(
             "general-source-load",
@@ -442,8 +453,11 @@ class GeneralSourceService internal constructor(
             "이전 source 기록의 복구 자료가 남아 있습니다. .machum-general-recovery- 파일의 원문을 확인해 주세요."
         }
         val (_, config) = readConfig(workspace)
-        val scannedFiles = scan(workspace, files)
         val enabled = config.groups.isNotEmpty()
+        // A disabled General workspace has no grouping UI to populate. Avoid reading every
+        // Markdown source on ordinary screen load; explicit group creation still scans so
+        // inferred source names remain available for allocation.
+        val scannedFiles = if (enabled) scan(workspace, files, refreshMetadata) else emptyList()
         val state = GeneralSourceState(
             if (enabled) (config.groups + scannedFiles.mapNotNull { it.value?.takeIf(String::isNotEmpty) }).distinct().sorted() else emptyList(),
             scannedFiles,
@@ -462,7 +476,33 @@ class GeneralSourceService internal constructor(
         }
     }
 
-    private suspend fun safeLoad(workspace: PlatformFile): GeneralSourceState? = runCatching { loadUnlocked(workspace) }.getOrNull()
+    private suspend fun publishVerifiedSource(workspace: PlatformFile, change: GeneralSourceChange) {
+        val source = GeneralSourceProperty.read(change.updated)
+        val previous = metadataIndex.snapshot(workspace, WorkspaceKind.GENERAL)?.entries?.get(change.file.key)
+        metadataIndex.put(workspace, WorkspaceKind.GENERAL, WorkspaceFileMetadata(
+            change.file, manager.lastModified(change.file.platformFile),
+            IndexedGeneralSource(source.value, source.error), previous?.plot, NoteFile.parse(change.updated),
+        ))
+        manager.acceptVerifiedWorkspaceMarkdown(change.file.platformFile, change.updated)
+    }
+
+    /** Apply already verified changes without discovering unrelated external files. */
+    private suspend fun cachedState(workspace: PlatformFile): GeneralSourceState {
+        check(workspace.list().none { it.name.startsWith(GENERAL_SOURCE_RECOVERY_PREFIX) }) {
+            "이전 source 기록의 복구 자료가 남아 있습니다. 원문을 확인해 주세요."
+        }
+        val (_, config) = readConfig(workspace)
+        val enabled = config.groups.isNotEmpty()
+        val files = if (enabled) metadataIndex.snapshot(workspace, WorkspaceKind.GENERAL)?.entries.orEmpty()
+            .values.mapNotNull { cached -> cached.source?.let { GeneralSourceEntry(cached.file, it.value, it.error) } }
+            .sortedBy { it.file.key.relativePath } else emptyList()
+        return GeneralSourceState(
+            if (enabled) (config.groups + files.mapNotNull { it.value?.takeIf(String::isNotEmpty) }).distinct().sorted() else emptyList(),
+            files, enabled, config.propertyTypes, config.defaultPropertyKeys, config.groups.sorted(),
+        )
+    }
+
+    private suspend fun safeLoad(workspace: PlatformFile): GeneralSourceState? = runCatching { cachedState(workspace) }.getOrNull()
 
     private fun validName(name: String): String = name.trim().also {
         require(it.isNotEmpty() && it.none(Char::isISOControl)) { "구분 이름을 입력해 주세요." }

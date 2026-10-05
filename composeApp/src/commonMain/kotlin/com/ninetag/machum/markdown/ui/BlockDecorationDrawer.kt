@@ -8,14 +8,16 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.dp
+import com.ninetag.machum.markdown.state.VisualTaskCheckbox
 
 /**
  * BasicTextField의 drawBehind에서 호출하여 블록 데코레이션을 그린다.
  *
  * v2 블록 에디터에서 TextBlockEditor 가 호출. BLOCKQUOTE 좌측 바, HORIZONTAL_RULE 구분선,
- * 인라인 코드 RoundRect 배경만 그린다.
+ * 인라인 코드 RoundRect 외곽선만 그린다.
  *
  * @param scrollOffset BasicTextField의 스크롤 오프셋 (px). 콘텐츠 좌표 → 뷰포트 좌표 변환에 사용.
  */
@@ -26,6 +28,7 @@ internal fun DrawScope.drawBlockDecorations(
     scrollOffset: Float = 0f,
     inlineCodeRanges: List<IntRange> = emptyList(),
     rawZones: List<IntRange> = emptyList(),
+    taskCheckboxes: List<VisualTaskCheckbox> = emptyList(),
 ) {
     for (block in blocks) {
         val rect = getBoundingRect(layout, block.textRange, scrollOffset) ?: continue
@@ -39,13 +42,38 @@ internal fun DrawScope.drawBlockDecorations(
         }
     }
 
-    // ── Inline Code: RoundRect 배경 ──
-    drawInlineCodeBackgrounds(layout, inlineCodeRanges, config, scrollOffset)
+    // ── Inline Code: RoundRect 외곽선 ──
+    drawInlineCodeOutlines(layout, inlineCodeRanges, config, scrollOffset)
+    drawTaskCheckboxes(layout, taskCheckboxes, config, scrollOffset)
 }
 
-// ── Inline Code: RoundRect 배경 ──
+private fun DrawScope.drawTaskCheckboxes(
+    layout: TextLayoutResult,
+    checkboxes: List<VisualTaskCheckbox>,
+    config: MarkdownStyleConfig,
+    scrollOffset: Float,
+) {
+    val size = MarkdownEditorStyleTokens.taskCheckboxSize.toPx()
+    val stroke = 1.4.dp.toPx()
+    val color = config.bulletPrefix.color
+    for (checkbox in checkboxes) {
+        val bounds = layout.getBoundingBox(checkbox.range.first)
+        val top = layout.getLineTop(layout.getLineForOffset(checkbox.range.first)) - scrollOffset
+        val bottom = layout.getLineBottom(layout.getLineForOffset(checkbox.range.first)) - scrollOffset
+        if (bottom < 0f || top > this.size.height) continue
+        val left = (bounds.left + bounds.right - size) / 2f
+        val boxTop = (top + bottom - size) / 2f
+        drawRect(color, Offset(left, boxTop), Size(size, size), style = Stroke(stroke))
+        if (checkbox.checked) {
+            drawLine(color, Offset(left + size * 0.18f, boxTop + size * 0.52f), Offset(left + size * 0.42f, boxTop + size * 0.76f), stroke)
+            drawLine(color, Offset(left + size * 0.42f, boxTop + size * 0.76f), Offset(left + size * 0.84f, boxTop + size * 0.24f), stroke)
+        }
+    }
+}
 
-private fun DrawScope.drawInlineCodeBackgrounds(
+// ── Inline Code: RoundRect 외곽선 ──
+
+private fun DrawScope.drawInlineCodeOutlines(
     layout: TextLayoutResult,
     ranges: List<IntRange>,
     config: MarkdownStyleConfig,
@@ -53,9 +81,12 @@ private fun DrawScope.drawInlineCodeBackgrounds(
 ) {
     if (ranges.isEmpty()) return
     val textLen = layout.layoutInput.text.length
-    val cornerRadius = CornerRadius(4.dp.toPx())
-    val verticalPadding = 0f
-    val horizontalPadding = 2.dp.toPx()
+    val inlineCode = config.inlineCode
+    val cornerRadius = CornerRadius(inlineCode.cornerRadius.toPx())
+    val horizontalPadding = inlineCode.horizontalPadding.toPx()
+    val borderWidth = inlineCode.borderWidth.toPx()
+    val halfBorder = borderWidth / 2f
+    val stroke = Stroke(width = borderWidth)
 
     for (range in ranges) {
         val safeStart = range.first.coerceIn(0, textLen)
@@ -65,29 +96,31 @@ private fun DrawScope.drawInlineCodeBackgrounds(
         val startLine = layout.getLineForOffset(safeStart)
         val endLine = layout.getLineForOffset(safeEnd - 1)
 
-        // 단일 줄: 문자 범위의 좌표로 정확한 배경
-        if (startLine == endLine) {
-            val left = layout.getHorizontalPosition(safeStart, true)
-            val right = layout.getHorizontalPosition(safeEnd, true)
-            val top = layout.getLineTop(startLine) - scrollOffset
-            val bottom = layout.getLineBottom(startLine) - scrollOffset
-            if (bottom < 0f || top > size.height) continue
+        for (line in startLine..endLine) {
+            val rawLeft = if (line == startLine) {
+                layout.getHorizontalPosition(safeStart, true)
+            } else {
+                layout.getLineLeft(line)
+            }
+            val rawRight = if (line == endLine) {
+                layout.getHorizontalPosition(safeEnd, true)
+            } else {
+                layout.getLineRight(line)
+            }
+            val left = minOf(rawLeft, rawRight) - horizontalPadding + halfBorder
+            val right = maxOf(rawLeft, rawRight) + horizontalPadding - halfBorder
+            val lineTop = layout.getLineTop(line) - scrollOffset
+            val lineBottom = layout.getLineBottom(line) - scrollOffset
+            if (lineBottom < 0f || lineTop > size.height) continue
             drawRoundRect(
-                color = config.codeInlineBackground,
-                topLeft = Offset(left - horizontalPadding, top - verticalPadding),
-                size = Size(right - left + horizontalPadding * 2, bottom - top + verticalPadding * 2),
+                color = inlineCode.borderColor,
+                topLeft = Offset(left, lineTop + halfBorder),
+                size = Size(
+                    (right - left).coerceAtLeast(0f),
+                    lineBottom - lineTop - borderWidth,
+                ),
                 cornerRadius = cornerRadius,
-            )
-        } else {
-            // 여러 줄에 걸치는 경우: 줄 전체 폭으로
-            val top = layout.getLineTop(startLine) - scrollOffset
-            val bottom = layout.getLineBottom(endLine) - scrollOffset
-            if (bottom < 0f || top > size.height) continue
-            drawRoundRect(
-                color = config.codeInlineBackground,
-                topLeft = Offset(0f, top - verticalPadding),
-                size = Size(size.width, bottom - top + verticalPadding * 2),
-                cornerRadius = cornerRadius,
+                style = stroke,
             )
         }
     }

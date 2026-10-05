@@ -15,6 +15,27 @@ internal sealed interface EditorHistoryTransaction {
     data object Atomic : EditorHistoryTransaction
 }
 
+/** Marks the next accepted document change as an explicit undo boundary. */
+internal class EditorHistoryBoundary {
+    private var pendingAtomicChange = false
+
+    fun markNextChangeAtomic() {
+        pendingAtomicChange = true
+    }
+
+    fun consume(classified: EditorHistoryTransaction): EditorHistoryTransaction =
+        if (pendingAtomicChange) {
+            pendingAtomicChange = false
+            EditorHistoryTransaction.Atomic
+        } else {
+            classified
+        }
+
+    fun clear() {
+        pendingAtomicChange = false
+    }
+}
+
 /** UI와 Compose에 의존하지 않는 문서 Undo/Redo stack. */
 internal class EditorHistory(
     initialSnapshot: EditorDocumentSnapshot,

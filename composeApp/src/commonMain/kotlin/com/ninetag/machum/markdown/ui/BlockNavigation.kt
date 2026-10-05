@@ -30,6 +30,8 @@ data class BlockMutationActions(
     val onDissolveSelf: () -> Unit = {},
     /** raw 블록의 텍스트가 비면 block id와 text state를 유지한 채 rawMode만 해제한다. */
     val onClearRawMode: () -> Unit = {},
+    /** Quick bar insertion; null when this container cannot contain a DL callout. */
+    val onInsertDlCallout: (() -> Unit)? = null,
 )
 
 /** 블록 단위 selection 확장 및 atomic selection 요청. */

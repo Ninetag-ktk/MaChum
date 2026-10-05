@@ -1,21 +1,24 @@
 package com.ninetag.machum.markdown.ui.block
 
+import com.ninetag.machum.markdown.ui.editorQuickBarTarget
+
 import com.ninetag.machum.markdown.service.MarkdownStyleConfig
 import com.ninetag.machum.markdown.state.EditorBlock
 import com.ninetag.machum.markdown.ui.BlockNavigation
 import com.ninetag.machum.markdown.ui.selection.resetDocumentSelectionOnFocus
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
@@ -25,8 +28,6 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.unit.dp
 
 /**
  * 코드 블록 에디터.
@@ -44,7 +45,8 @@ internal fun CodeBlockEditor(
     focusRequester: FocusRequester = remember { FocusRequester() },
     navigation: BlockNavigation = BlockNavigation(),
 ) {
-    val codeTextStyle = textStyle.merge(TextStyle(fontFamily = FontFamily.Monospace))
+    val codeTextStyle = textStyle.merge(styleConfig.codeBlock.text)
+    var codeFocused by remember(block.id) { mutableStateOf(false) }
 
     val keyHandler = Modifier.onPreviewKeyEvent { event ->
         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
@@ -111,16 +113,23 @@ internal fun CodeBlockEditor(
         }
     }
 
-    BasicTextField(
-        state = block.codeState,
-        modifier = modifier
-            .fillMaxWidth()
-            .focusRequester(focusRequester)
-            .resetDocumentSelectionOnFocus(block.id)
-            .background(styleConfig.codeBlockBackground, RoundedCornerShape(8.dp))
-            .padding(12.dp)
-            .then(keyHandler),
-        textStyle = codeTextStyle,
-        cursorBrush = cursorBrush,
-    )
+    RawEditableBlock(
+        focused = codeFocused,
+        onRawEdit = navigation.mutation.onDissolveSelf,
+        modifier = modifier,
+    ) {
+        BasicTextField(
+            state = block.codeState,
+            modifier = Modifier
+                .fillMaxWidth()
+                .onFocusChanged { codeFocused = it.isFocused }
+                .editorQuickBarTarget(block.codeState)
+                .focusRequester(focusRequester)
+                .resetDocumentSelectionOnFocus(block.id)
+                .codeBlockVisualLayout(styleConfig)
+                .then(keyHandler),
+            textStyle = codeTextStyle,
+            cursorBrush = cursorBrush,
+        )
+    }
 }

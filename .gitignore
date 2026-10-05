@@ -19,6 +19,16 @@ captures
 node_modules/
 /qodana.yaml
 
+/composeApp/src/commonTest/
+/composeApp/src/jvmTest/
+!/composeApp/src/commonTest/
+!/composeApp/src/commonTest/kotlin/
+!/composeApp/src/commonTest/kotlin/com/
+!/composeApp/src/commonTest/kotlin/com/ninetag/
+!/composeApp/src/commonTest/kotlin/com/ninetag/machum/
+!/composeApp/src/commonTest/kotlin/com/ninetag/machum/markdown/
+!/composeApp/src/commonTest/kotlin/com/ninetag/machum/markdown/state/
+!/composeApp/src/commonTest/kotlin/com/ninetag/machum/markdown/state/MarkdownLinkCompletionTest.kt
 docs/design-audit
 /composeApp/outputs
 .tmp-gradle
@@ -31,5 +41,4 @@ outputs
 **/*.log
 /.codex-remote-attachments/
 
-/graphify-out/2026-09-18/
-/graphify-out/cache/
+/graphify-out/*

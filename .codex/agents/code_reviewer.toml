@@ -1,7 +1,7 @@
 name = "code_reviewer"
 description = "구현과 독립적으로 코드 안정성, 과도한 복잡도, 정책 준수와 테스트 타당성을 검토합니다."
 
-model = "gpt-5.6-sol"
+model = "gpt-6.1-sol"
 model_reasoning_effort = "xhigh"
 sandbox_mode = "read-only"
 

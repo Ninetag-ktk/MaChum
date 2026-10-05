@@ -30,6 +30,12 @@ kotlin {
 compose.desktop {
     application {
         mainClass = "com.ninetag.machum.MainKt"
+        if (providers.gradleProperty("machumImeDiagnostics").orNull == "true") {
+            jvmArgs += listOf(
+                "-Dmachum.loadDiagnostics=true",
+                "-Dmachum.imeLogFile=${layout.buildDirectory.file("e19-ime.log").get().asFile.absolutePath}",
+            )
+        }
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)

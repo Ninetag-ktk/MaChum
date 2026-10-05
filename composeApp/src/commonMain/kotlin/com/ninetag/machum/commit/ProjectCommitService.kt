@@ -48,10 +48,30 @@ class ProjectCommitService private constructor(
     }
 
     suspend fun history(project: PlatformFile, limit: Int = 50): List<CommitHistoryEntry> =
+        loadHistory(project, limit, includeLineCounts = true)
+
+    /**
+     * 목록·변경 파일 상세용 조회. commit/tree는 검증하지만 blob 본문과 줄 수는 읽거나 계산하지 않는다.
+     * 변경 파일 수·종류·경로·blob hash는 유지하며, 본문은 diff 또는 복원 시 새로 읽고 검증한다.
+     * 반환된 changes의 addedLines/deletedLines 기본값은 계산된 줄 수가 아니다.
+     */
+    suspend fun historySummary(project: PlatformFile, limit: Int = 50): List<CommitHistoryEntry> =
+        loadHistory(project, limit, includeLineCounts = false)
+
+    private suspend fun loadHistory(
+        project: PlatformFile,
+        limit: Int,
+        includeLineCounts: Boolean,
+    ): List<CommitHistoryEntry> =
         withContext(Dispatchers.IO) {
             require(limit > 0) { "limit must be positive" }
             commitMutex.withLock {
-                val store = FileCommitStore(fileManager, project)
+                // This reader is discarded after each request; mutations and restores use fresh stores.
+                val store = FileCommitStore(fileManager, project, cacheDirectoryListings = !includeLineCounts)
+                val trees = mutableMapOf<String, CommitTree>()
+                suspend fun loadTrackedTree(hash: String): CommitTree =
+                    trees[hash] ?: store.loadTree(hash).trackedContentTree().also { trees[hash] = it }
+                val messageOverrides = store.loadMessageOverrides()
                 val history = mutableListOf<CommitHistoryEntry>()
                 val visited = mutableSetOf<String>()
                 var current = store.loadHead()
@@ -59,20 +79,50 @@ class ProjectCommitService private constructor(
                     if (!visited.add(current.id)) {
                         throw CommitStorageException("커밋 parent 연결에 순환이 있습니다: ${current.id}")
                     }
-                    val tree = store.loadTree(current.treeHash).trackedContentTree()
+                    val tree = loadTrackedTree(current.treeHash)
                     val parent = current.parentId?.let { store.loadCommit(it) }
-                    val parentTree = parent?.let { store.loadTree(it.treeHash).trackedContentTree() }
-                    val changes = enrichChanges(
-                        store = store,
-                        changes = CommitPlanner.changes(parentTree, tree),
-                        currentBlobs = null,
+                    val parentTree = parent?.let { loadTrackedTree(it.treeHash) }
+                    val plannedChanges = CommitPlanner.changes(parentTree, tree)
+                    val changes = if (includeLineCounts) {
+                        enrichChanges(store, plannedChanges, currentBlobs = null)
+                    } else {
+                        plannedChanges
+                    }
+                    history += CommitHistoryEntry(
+                        commit = current,
+                        changes = changes,
+                        displayMessage = messageOverrides[current.id] ?: current.message,
                     )
-                    history += CommitHistoryEntry(current, changes)
                     current = parent
                 }
                 history
             }
         }
+
+    suspend fun updateCommitMessage(
+        project: PlatformFile,
+        commitId: String,
+        message: String,
+        expectedMessage: String,
+    ): String = withContext(Dispatchers.IO) {
+        require(message.isNotBlank()) { "커밋 메시지를 입력해 주세요." }
+        commitMutex.withLock {
+            val store = FileCommitStore(fileManager, project)
+            val commit = store.loadCommit(commitId)
+            val currentOverrides = store.loadMessageOverrides()
+            val currentMessage = currentOverrides[commit.id] ?: commit.message
+            if (currentMessage != expectedMessage) {
+                throw CommitConflictException("커밋 표시 메시지가 이미 변경되었습니다. 취소한 뒤 이력을 다시 불러와 주세요.")
+            }
+            store.saveMessageOverrides(
+                expected = currentOverrides,
+                updated = currentOverrides + (commit.id to message),
+                write = workspaceMutator::write,
+                delete = workspaceMutator::delete,
+            )
+            message
+        }
+    }
 
     suspend fun diff(
         project: PlatformFile,

@@ -7,7 +7,6 @@ import com.ninetag.machum.screen.mainScreen.HierarchyFolderContent
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Box
@@ -29,7 +28,6 @@ import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
@@ -65,6 +63,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationException
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.isPrimaryPressed
 import androidx.compose.ui.input.pointer.isSecondaryPressed
@@ -90,7 +89,7 @@ import com.ninetag.machum.external.PlotOrderAssignment
 import com.ninetag.machum.external.ProjectFile
 import com.ninetag.machum.external.ProjectFolder
 import com.ninetag.machum.external.ProjectFolderDeletionPreview
-import com.ninetag.machum.external.numberedPrefix
+import com.ninetag.machum.external.defaultOrderPrefix
 import com.ninetag.machum.screen.common.PopupUiMetrics
 import com.ninetag.machum.screen.mainScreen.FileMoveResult
 import com.ninetag.machum.theme.WorkspaceUiMetrics
@@ -129,7 +128,6 @@ internal fun ProjectNavigationDrawer(
     onWorkspaceSelection: () -> Unit,
     onProjectSelected: (PlatformFile) -> Unit,
     onProjectWorkspaceSelected: () -> Unit,
-    onClose: () -> Unit,
     generalSourceState: GeneralSourceState?,
     onCreateGeneralSourceGroup: suspend () -> String?,
     onCreateGeneralSourceFile: (String?) -> Unit,
@@ -544,12 +542,6 @@ internal fun ProjectNavigationDrawer(
                             },
                             iconTint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        CompactIconAction(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "사이드바 닫기",
-                            onClick = onClose,
-                            iconTint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
                     }
                 }
                 HorizontalDivider()
@@ -809,10 +801,10 @@ private fun LazyListScope.hierarchyFolderContentItems(
         val moveDestinations = moveDestinationsForPlacement(null)
         val defaultDraft = orderDraft as? DefaultHierarchyOrderDraft
         val displayedFiles = defaultDraft?.reorder(content.files) ?: content.files
-        val managedFileCount = content.files.count { it.numberedPrefix() != null }
+        val managedFileCount = content.files.count { it.defaultOrderPrefix() != null }
         displayedFiles.forEach { file ->
             val orderable = folderConfig.type == FolderType.DEFAULT &&
-                file.numberedPrefix() != null && managedFileCount > 1
+                file.defaultOrderPrefix() != null && managedFileCount > 1
             hierarchyMotionItem(key = "file:${file.key.relativePath}", animate = orderDraft == null && !orderSaving) {
                 HierarchyFileRow(
                     file = file,
@@ -1143,11 +1135,11 @@ internal fun hierarchyFileMoveDragModifier(
             }
         }
         if (touchUi) {
-            detectDragGesturesAfterLongPress(
+            detectTouchDragGesturesAfterLongPress(
                 onDragStart = { start(it) },
                 onDragEnd = end,
                 onDragCancel = cancel,
-                onDrag = { change, _ ->
+                onDrag = { change ->
                     if (active) {
                         change.consume()
                         drag(change.position)
@@ -1162,6 +1154,69 @@ internal fun hierarchyFileMoveDragModifier(
                 onDrag = drag,
             )
         }
+    }
+}
+
+/**
+ * The list owns file movement, while each row owns click/long-click. Initial-pass
+ * observation lets a touch drag win after the long-press without stealing a tap.
+ */
+private suspend fun PointerInputScope.detectTouchDragGesturesAfterLongPress(
+    onDragStart: (Offset) -> Boolean,
+    onDragEnd: () -> Unit,
+    onDragCancel: () -> Unit,
+    onDrag: (androidx.compose.ui.input.pointer.PointerInputChange) -> Unit,
+) {
+    var dragActive = false
+    try {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            var latest = down
+            var cancelled = false
+            try {
+                withTimeout(viewConfiguration.longPressTimeoutMillis) {
+                    while (true) {
+                        val change = awaitPointerEvent(PointerEventPass.Initial).changes
+                            .firstOrNull { it.id == down.id }
+                            ?: run {
+                                cancelled = true
+                                return@withTimeout
+                            }
+                        latest = change
+                        if (!change.pressed || (change.position - down.position).getDistance() > viewConfiguration.touchSlop) {
+                            cancelled = true
+                            return@withTimeout
+                        }
+                    }
+                }
+            } catch (_: PointerEventTimeoutCancellationException) {
+                // The pointer stayed within the slop window for the long-press timeout.
+            }
+            if (cancelled) return@awaitEachGesture
+            val longPress = latest
+            dragActive = onDragStart(longPress.position)
+            if (!dragActive) return@awaitEachGesture
+            longPress.consume()
+            onDrag(longPress)
+            while (true) {
+                val change = awaitPointerEvent(PointerEventPass.Initial).changes
+                    .firstOrNull { it.id == down.id }
+                    ?: run {
+                        dragActive = false
+                        onDragCancel()
+                        return@awaitEachGesture
+                    }
+                if (!change.pressed) {
+                    dragActive = false
+                    change.consume()
+                    onDragEnd()
+                    return@awaitEachGesture
+                }
+                onDrag(change)
+            }
+        }
+    } finally {
+        if (dragActive) onDragCancel()
     }
 }
 

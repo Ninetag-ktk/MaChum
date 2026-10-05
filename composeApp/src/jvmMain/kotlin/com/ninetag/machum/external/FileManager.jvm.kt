@@ -15,12 +15,35 @@ import java.nio.file.StandardOpenOption
 
 internal actual suspend fun listDirectoryEntries(
     directory: PlatformFile,
+    strict: Boolean,
 ): List<PlatformDirectoryEntry> = withContext(Dispatchers.IO) {
-    directory.file.listFiles().orEmpty().map { child ->
+    val file = directory.file
+    val directoryPath = file.toPath().toAbsolutePath().normalize()
+    val realDirectory = if (strict) {
+        check(Files.isDirectory(directoryPath, LinkOption.NOFOLLOW_LINKS)) {
+            "디렉터리 경로를 읽을 수 없습니다: $file"
+        }
+        check(!Files.isSymbolicLink(directoryPath)) { "디렉터리 경로에 symbolic link가 있습니다: $file" }
+        val real = directoryPath.toRealPath()
+        check(real == directoryPath) {
+            "디렉터리 경로를 읽을 수 없습니다: $file"
+        }
+        real
+    } else null
+    val children = file.listFiles()
+    if (strict) checkNotNull(children) { "디렉터리 파일 목록을 읽을 수 없습니다: $file" }
+    children.orEmpty().map { child ->
+        if (strict) {
+            val childPath = child.toPath().toAbsolutePath().normalize()
+            check(!Files.isSymbolicLink(childPath) && childPath.toRealPath().parent == realDirectory) {
+                "Vault 밖을 가리키는 symbolic link가 있습니다: $child"
+            }
+        }
         PlatformDirectoryEntry(
             platformFile = PlatformFile(child),
             name = child.name,
             isDirectory = child.isDirectory,
+            modifiedAt = child.lastModified().takeIf { it > 0L },
         )
     }
 }

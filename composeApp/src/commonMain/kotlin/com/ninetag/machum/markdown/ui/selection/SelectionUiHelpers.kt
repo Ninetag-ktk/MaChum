@@ -3,6 +3,7 @@ package com.ninetag.machum.markdown.ui.selection
 import com.ninetag.machum.external.clipEntryOf
 import com.ninetag.machum.external.readClipboardText
 import com.ninetag.machum.markdown.state.DocumentSelection
+import com.ninetag.machum.markdown.state.CursorHint
 import com.ninetag.machum.markdown.state.EditorSelectionCoordinator
 import com.ninetag.machum.markdown.state.EditorBlock
 import com.ninetag.machum.markdown.state.NormalizedSelection
@@ -12,9 +13,15 @@ import com.ninetag.machum.markdown.state.SelectionEndpoint
 import com.ninetag.machum.markdown.state.extractMarkdown
 import com.ninetag.machum.markdown.state.normalize
 import com.ninetag.machum.markdown.state.replaceSelectedMarkdown
+import com.ninetag.machum.markdown.state.replaceSelectedText
 import com.ninetag.machum.markdown.ui.MarkdownBlockTextField
+import com.ninetag.machum.markdown.ui.editorQuickBarTarget
 
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
@@ -30,6 +37,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -44,14 +53,19 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.isPrimaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextStyle
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.ui.unit.dp
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * Cross-block selection 의 UI 측 헬퍼들.
@@ -63,6 +77,271 @@ import androidx.compose.ui.unit.dp
  */
 
 // ── 1. 시각화 ──
+
+/** Desktop drag hit targets. The registry is editor-local and never owns document state. */
+internal class DocumentSelectionPointerRegistry {
+    private data class Target(
+        val bounds: Rect,
+        val containerPath: List<String>,
+        val blockId: String,
+        val atomic: Boolean,
+        val offsetAtWindowPosition: ((Offset) -> Int?)?,
+        val collapseNativeSelection: ((Int) -> Unit)?,
+    )
+
+    private val targets = mutableMapOf<String, Target>()
+    var rootCoordinates: LayoutCoordinates? = null
+    private var pendingRevealSkip: SelectionEndpoint? = null
+
+    fun recordPointerFocus(endpoint: SelectionEndpoint) {
+        pendingRevealSkip = endpoint
+    }
+
+    fun consumeRevealSkip(containerPath: List<String>, blockId: String): Boolean {
+        val pending = pendingRevealSkip
+        val matches = pending?.containerPath == containerPath && pending.blockId == blockId
+        if (matches) pendingRevealSkip = null
+        return matches
+    }
+
+    fun clearPointerFocus() {
+        pendingRevealSkip = null
+    }
+
+    fun registerText(
+        key: String,
+        coordinates: LayoutCoordinates,
+        containerPath: List<String>,
+        blockId: String,
+        offsetAtLocalPosition: (Offset) -> Int?,
+        collapseNativeSelection: (Int) -> Unit,
+    ) {
+        targets[key] = Target(
+            bounds = coordinates.boundsInWindow(),
+            containerPath = containerPath,
+            blockId = blockId,
+            atomic = false,
+            offsetAtWindowPosition = { windowPosition ->
+                offsetAtLocalPosition(coordinates.windowToLocal(windowPosition))
+            },
+            collapseNativeSelection = collapseNativeSelection,
+        )
+    }
+
+    fun registerAtomic(
+        key: String,
+        coordinates: LayoutCoordinates,
+        containerPath: List<String>,
+        blockId: String,
+    ) {
+        targets[key] = Target(
+            bounds = coordinates.boundsInWindow(),
+            containerPath = containerPath,
+            blockId = blockId,
+            atomic = true,
+            offsetAtWindowPosition = null,
+            collapseNativeSelection = null,
+        )
+    }
+
+    fun collapseNativeSelection(endpoint: SelectionEndpoint) {
+        targets.values.firstOrNull {
+            !it.atomic && it.containerPath == endpoint.containerPath && it.blockId == endpoint.blockId
+        }?.collapseNativeSelection?.invoke(endpoint.offset)
+    }
+
+    fun unregister(key: String) {
+        targets.remove(key)
+    }
+
+    fun endpointAt(windowPosition: Offset, preferEnd: Boolean): SelectionEndpoint? {
+        val containing = targets.values.filter { it.bounds.contains(windowPosition) }
+        val target = containing.maxWithOrNull(
+            compareBy<Target> { it.containerPath.size }
+                .thenBy { if (it.atomic) 0 else 1 }
+                .thenBy { -(it.bounds.width * it.bounds.height) },
+        ) ?: targets.values.minByOrNull { candidate ->
+            val verticalDistance = when {
+                windowPosition.y < candidate.bounds.top -> candidate.bounds.top - windowPosition.y
+                windowPosition.y > candidate.bounds.bottom -> windowPosition.y - candidate.bounds.bottom
+                else -> 0f
+            }
+            val horizontalDistance = when {
+                windowPosition.x < candidate.bounds.left -> candidate.bounds.left - windowPosition.x
+                windowPosition.x > candidate.bounds.right -> windowPosition.x - candidate.bounds.right
+                else -> 0f
+            }
+            verticalDistance * 4f + horizontalDistance
+        } ?: return null
+
+        val offset = if (target.atomic) {
+            if (preferEnd) SelectionEndpoint.ATOMIC_END else SelectionEndpoint.ATOMIC_START
+        } else {
+            target.offsetAtWindowPosition?.invoke(windowPosition) ?: return null
+        }
+        return SelectionEndpoint(target.containerPath, target.blockId, offset)
+    }
+}
+
+internal val LocalDocumentSelectionPointerRegistry =
+    compositionLocalOf<DocumentSelectionPointerRegistry?> { null }
+
+internal val LocalDocumentSelectionPointerActive =
+    compositionLocalOf<MutableState<Boolean>?> { null }
+
+internal fun selectionPointerTargetKey(
+    containerPath: List<String>,
+    blockId: String,
+    kind: String,
+): String = (containerPath + blockId + kind).joinToString("/")
+
+/** Observes desktop primary-button drag without replacing native single-field selection. */
+@Composable
+internal fun Modifier.documentSelectionMouseDrag(
+    documentSelection: MutableState<DocumentSelection>,
+    registry: DocumentSelectionPointerRegistry,
+    lazyListState: LazyListState,
+    enabled: Boolean,
+    onPointerPress: () -> Unit = {},
+    onPointerGestureChanged: (Boolean) -> Unit = {},
+    onPointerDragChanged: (Boolean) -> Unit = {},
+    onSelectionFocusRequested: (SelectionEndpoint) -> Unit = {},
+): Modifier {
+    val scope = rememberCoroutineScope()
+    val latestOnPointerPress = rememberUpdatedState(onPointerPress)
+    val latestOnPointerGestureChanged = rememberUpdatedState(onPointerGestureChanged)
+    val latestOnPointerDragChanged = rememberUpdatedState(onPointerDragChanged)
+    return this
+    .onGloballyPositioned { registry.rootCoordinates = it }
+    .pointerInput(documentSelection, registry, lazyListState, enabled) {
+        val edgePx = 24.dp.toPx()
+        val maxScrollStepPx = 6.dp.toPx()
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            val handlesDocumentDrag = enabled &&
+                down.type == PointerType.Mouse &&
+                currentEvent.buttons.isPrimaryPressed
+            if (handlesDocumentDrag) latestOnPointerGestureChanged.value(true)
+            latestOnPointerPress.value()
+            registry.clearPointerFocus()
+            (documentSelection.value as? DocumentSelection.Multi)?.let { existing ->
+                registry.collapseNativeSelection(existing.anchor)
+                documentSelection.value = DocumentSelection.None
+            }
+            if (!handlesDocumentDrag) {
+                return@awaitEachGesture
+            }
+            var autoScrollJob: kotlinx.coroutines.Job? = null
+            try {
+                val root = registry.rootCoordinates ?: return@awaitEachGesture
+                val downWindow = root.localToWindow(down.position)
+                val anchor = registry.endpointAt(downWindow, preferEnd = false)
+                    ?: return@awaitEachGesture
+                var dragStarted = false
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    if (!change.pressed) break
+                    if (!dragStarted) {
+                        dragStarted = selectionDragStarted(
+                            start = down.position,
+                            current = change.position,
+                            touchSlop = viewConfiguration.touchSlop,
+                        )
+                        if (!dragStarted) continue
+                        latestOnPointerDragChanged.value(true)
+                    }
+                    val preferEnd = change.position.y >= down.position.y
+                    val windowPosition = root.localToWindow(change.position)
+                    val focus = registry.endpointAt(windowPosition, preferEnd) ?: continue
+                    val crossedBlock = focus.blockId != anchor.blockId ||
+                        focus.containerPath != anchor.containerPath
+                    val useDocumentSelection = shouldUseDocumentAutoScroll(
+                        crossedBlock = crossedBlock,
+                        hasDocumentSelection = documentSelection.value is DocumentSelection.Multi,
+                    )
+                    if (useDocumentSelection) {
+                        if (documentSelection.value !is DocumentSelection.Multi) {
+                            registry.collapseNativeSelection(anchor)
+                        }
+                        registry.recordPointerFocus(focus)
+                        documentSelection.value = DocumentSelection.Multi(anchor, focus)
+                        change.consume()
+                    }
+
+                    val scrollDelta = selectionAutoScrollStep(
+                        pointerY = change.position.y,
+                        viewportHeight = size.height.toFloat(),
+                        edgeSize = edgePx,
+                        maxStep = maxScrollStepPx,
+                    )
+                    autoScrollJob?.cancel()
+                    if (scrollDelta != 0f && useDocumentSelection) {
+                        val pointerPosition = change.position
+                        autoScrollJob = scope.launch {
+                            while (true) {
+                                lazyListState.scrollBy(scrollDelta)
+                                val scrollingFocus = registry.endpointAt(
+                                    root.localToWindow(pointerPosition),
+                                    preferEnd,
+                                )
+                                if (
+                                    scrollingFocus != null &&
+                                    ((scrollingFocus.blockId != anchor.blockId ||
+                                        scrollingFocus.containerPath != anchor.containerPath) ||
+                                        documentSelection.value is DocumentSelection.Multi)
+                                ) {
+                                    registry.recordPointerFocus(scrollingFocus)
+                                    documentSelection.value = DocumentSelection.Multi(anchor, scrollingFocus)
+                                }
+                                kotlinx.coroutines.delay(16.milliseconds)
+                            }
+                        }
+                    }
+                }
+                val completed = documentSelection.value as? DocumentSelection.Multi
+                if (
+                    completed != null &&
+                    completed.anchor.containerPath == completed.focus.containerPath &&
+                    completed.anchor.blockId == completed.focus.blockId &&
+                    completed.anchor.offset == completed.focus.offset
+                ) {
+                    registry.clearPointerFocus()
+                    documentSelection.value = DocumentSelection.None
+                    onSelectionFocusRequested(completed.focus)
+                }
+            } finally {
+                autoScrollJob?.cancel()
+                latestOnPointerDragChanged.value(false)
+                latestOnPointerGestureChanged.value(false)
+            }
+        }
+    }
+}
+
+internal fun selectionDragStarted(start: Offset, current: Offset, touchSlop: Float): Boolean {
+    if (touchSlop <= 0f) return true
+    val delta = current - start
+    return delta.x * delta.x + delta.y * delta.y >= touchSlop * touchSlop
+}
+
+internal fun shouldUseDocumentAutoScroll(
+    crossedBlock: Boolean,
+    hasDocumentSelection: Boolean,
+): Boolean = crossedBlock || hasDocumentSelection
+
+internal fun selectionAutoScrollStep(
+    pointerY: Float,
+    viewportHeight: Float,
+    edgeSize: Float,
+    maxStep: Float,
+): Float = when {
+    edgeSize <= 0f || viewportHeight <= 0f || maxStep <= 0f -> 0f
+    pointerY < edgeSize -> -(((edgeSize - pointerY) / edgeSize).coerceIn(0f, 1f) * maxStep)
+    pointerY > viewportHeight - edgeSize ->
+        (((pointerY - (viewportHeight - edgeSize)) / edgeSize).coerceIn(0f, 1f) * maxStep)
+    else -> 0f
+}
 
 /**
  * 주어진 블록 인덱스가 정규화된 selection 범위에 포함되는지 검사.
@@ -114,7 +393,9 @@ fun Modifier.documentSelectionShortcuts(
     rootBlocks: List<EditorBlock>,
     documentSelection: MutableState<DocumentSelection>,
     onBlocksChanged: (List<EditorBlock>) -> Unit,
+    enabled: Boolean = true,
     onSelectionFocusRequested: (SelectionEndpoint) -> Unit = {},
+    onFallbackFocusRequested: () -> Unit = {},
     onUndo: () -> Boolean = { false },
     onRedo: () -> Boolean = { false },
 ): Modifier {
@@ -122,22 +403,47 @@ fun Modifier.documentSelectionShortcuts(
     val scope = rememberCoroutineScope()
     val latestBlocks = rememberUpdatedState(rootBlocks)
     val latestOnBlocksChanged = rememberUpdatedState(onBlocksChanged)
+    val latestOnSelectionFocusRequested = rememberUpdatedState(onSelectionFocusRequested)
+    val latestOnFallbackFocusRequested = rememberUpdatedState(onFallbackFocusRequested)
 
     fun replaceSelection(selection: DocumentSelection.Multi, replacement: String): Boolean {
         if (documentSelection.value != selection) return false
         val updated = replaceSelectedMarkdown(latestBlocks.value, selection, replacement) ?: return false
         documentSelection.value = DocumentSelection.None
         latestOnBlocksChanged.value(updated)
+        latestOnFallbackFocusRequested.value()
+        return true
+    }
+
+    fun deleteSelection(selection: DocumentSelection.Multi): Boolean {
+        if (documentSelection.value != selection) return false
+        val result = replaceSelectedText(latestBlocks.value, selection, "") ?: return false
+        documentSelection.value = DocumentSelection.None
+        latestOnBlocksChanged.value(result.blocks)
+        latestOnSelectionFocusRequested.value(result.focus)
         return true
     }
 
     return this.onPreviewKeyEvent { event ->
+        if (!enabled) return@onPreviewKeyEvent false
         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
         val ctrlOrCmd = event.isCtrlPressed || event.isMetaPressed
         when {
-            ctrlOrCmd && event.key == Key.Z && event.isShiftPressed -> onRedo()
-            ctrlOrCmd && event.key == Key.Y -> onRedo()
-            ctrlOrCmd && event.key == Key.Z -> onUndo()
+            // The editor owns document history. Always consume its Undo/Redo shortcuts while active,
+            // even when the custom stack is empty, so a child BasicTextField cannot revive its own
+            // native undo stack after this document was deactivated and its history was discarded.
+            ctrlOrCmd && event.key == Key.Z && event.isShiftPressed -> {
+                onRedo()
+                true
+            }
+            ctrlOrCmd && event.key == Key.Y -> {
+                onRedo()
+                true
+            }
+            ctrlOrCmd && event.key == Key.Z -> {
+                onUndo()
+                true
+            }
             ctrlOrCmd && event.key == Key.A -> {
                 val selection = EditorSelectionCoordinator.selectAll(rootBlocks)
                     ?: return@onPreviewKeyEvent false
@@ -154,7 +460,7 @@ fun Modifier.documentSelectionShortcuts(
                     true
                 } else false
             }
-            ctrlOrCmd && event.key == Key.X -> {
+            ctrlOrCmd && event.key == Key.X && !event.isShiftPressed -> {
                 val selection = documentSelection.value as? DocumentSelection.Multi
                     ?: return@onPreviewKeyEvent false
                 val markdown = extractMarkdown(rootBlocks, selection)
@@ -165,7 +471,7 @@ fun Modifier.documentSelectionShortcuts(
                     } catch (_: Exception) {
                         false
                     }
-                    if (copied) replaceSelection(selection, "")
+                    if (copied) deleteSelection(selection)
                 }
                 true
             }
@@ -185,7 +491,7 @@ fun Modifier.documentSelectionShortcuts(
             event.key == Key.Delete || event.key == Key.Backspace -> {
                 val selection = documentSelection.value as? DocumentSelection.Multi
                     ?: return@onPreviewKeyEvent false
-                replaceSelection(selection, "")
+                deleteSelection(selection)
             }
             event.key == Key.Escape -> {
                 val selection = documentSelection.value as? DocumentSelection.Multi
@@ -249,6 +555,8 @@ fun Modifier.documentSelectionShortcuts(
 internal data class DocumentInputFocusRequest(
     val id: Long,
     val endpoint: SelectionEndpoint,
+    /** null keeps the selection restored in the target TextFieldState. */
+    val cursorHint: CursorHint? = CursorHint.AtOffset(endpoint.offset),
     /** selection 치환 직후 실제 TextField로 focus가 넘어갈 때까지 capture가 연속 입력을 소유한다. */
     val isTextReplacementHandoff: Boolean = false,
     /** focus coordinator가 이 요청의 실행(재시도 포함)을 마쳤을 때 handoff 수명을 닫는다. */
@@ -280,8 +588,9 @@ internal fun DocumentSelectionInputCapture(
     val latestHandoffRequest by rememberUpdatedState(handoffRequest)
     val latestOnTextCommitted by rememberUpdatedState(onTextCommitted)
     val latestOnHandoffTextCommitted by rememberUpdatedState(onHandoffTextCommitted)
+    val selectionPointerActive = LocalDocumentSelectionPointerActive.current?.value == true
 
-    LaunchedEffect(activeSelection, handoffRequest?.id) {
+    LaunchedEffect(activeSelection, handoffRequest?.id, selectionPointerActive) {
         when {
             activeSelection != null -> {
                 inputState.edit {
@@ -301,7 +610,11 @@ internal fun DocumentSelectionInputCapture(
             }
             else -> {
                 armedSelection = null
-                if (isCaptureFocused) focusManager.clearFocus(force = true)
+                // A pointer down transfers focus to the clicked TextField. Clearing focus from this
+                // delayed effect would race that transfer and cancel the next native drag.
+                if (shouldClearDocumentSelectionInputFocus(isCaptureFocused, selectionPointerActive)) {
+                    focusManager.clearFocus(force = true)
+                }
             }
         }
     }
@@ -341,12 +654,18 @@ internal fun DocumentSelectionInputCapture(
         modifier = Modifier
             .size(1.dp)
             .focusRequester(focusRequester)
+            .then(if (activeSelection != null) Modifier.editorQuickBarTarget(inputState) else Modifier)
             .onFocusChanged { isCaptureFocused = it.isFocused },
         textStyle = TextStyle(color = Color.Transparent),
         cursorBrush = SolidColor(Color.Transparent),
         lineLimits = TextFieldLineLimits.SingleLine,
     )
 }
+
+internal fun shouldClearDocumentSelectionInputFocus(
+    isCaptureFocused: Boolean,
+    selectionPointerActive: Boolean,
+): Boolean = isCaptureFocused && !selectionPointerActive
 
 private data class InputCaptureObservation(
     val text: String,
@@ -466,35 +785,6 @@ val LocalDocumentSelection = compositionLocalOf<MutableState<DocumentSelection>?
  *
  * @param blockId 이 BasicTextField 가 속한 블록의 id
  */
-/**
- * 최상위 wrapper 에 부착. 사용자가 에디터 안 어디든 마우스로 누르는 순간 Multi selection 을 None 으로 해제.
- *
- * `onFocusChanged` 기반 [resetDocumentSelectionOnFocus] 의 사각지대를 메운다:
- * - **Ctrl+A 는 포커스를 옮기지 않음** → 이미 포커스를 가진 블록을 다시 클릭하면 onFocusChanged 가 안 떠서
- *   해제되지 않는다.
- * - **endpoint 블록 클릭**은 resetDocumentSelectionOnFocus 가 보존 예외로 두므로 해제되지 않는다.
- *
- * 마우스 press 는 언제나 "여기에 커서를 두겠다" 는 사용자 의도이므로 무조건 해제. Initial pass 에서
- * 관찰만 하고 consume 하지 않아 BasicTextField 의 커서 배치 동작은 그대로 진행한다. 키보드 Shift 확장은
- * FocusRequester 경로라 이 핸들러와 무관 (press 이벤트가 발생하지 않으므로 selection 보존).
- *
- * @param documentSelection 호이스팅된 selection state
- */
-fun Modifier.resetDocumentSelectionOnPointerPress(
-    documentSelection: MutableState<DocumentSelection>,
-): Modifier = this.pointerInput(documentSelection) {
-    awaitPointerEventScope {
-        while (true) {
-            val event = awaitPointerEvent(PointerEventPass.Initial)
-            if (event.type == PointerEventType.Press &&
-                documentSelection.value is DocumentSelection.Multi
-            ) {
-                documentSelection.value = DocumentSelection.None
-            }
-        }
-    }
-}
-
 @Composable
 fun Modifier.resetDocumentSelectionOnFocus(blockId: String): Modifier {
     val selection = LocalDocumentSelection.current ?: return this

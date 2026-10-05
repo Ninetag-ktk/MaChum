@@ -1,6 +1,9 @@
 package com.ninetag.machum.markdown.ui.block
 
+import com.ninetag.machum.markdown.ui.editorQuickBarTarget
+
 import com.ninetag.machum.markdown.service.MarkdownStyleConfig
+import com.ninetag.machum.markdown.service.CalloutLayout
 import com.ninetag.machum.markdown.state.CalloutBodyAction
 import com.ninetag.machum.markdown.state.CalloutBodyBoundary
 import com.ninetag.machum.markdown.state.CalloutBodyLayout
@@ -8,18 +11,20 @@ import com.ninetag.machum.markdown.state.CalloutBodyPolicy
 import com.ninetag.machum.markdown.state.CalloutBottomEntryTarget
 import com.ninetag.machum.markdown.state.DocumentSelection
 import com.ninetag.machum.markdown.state.EditorBlock
+import com.ninetag.machum.markdown.state.CursorHint
 import com.ninetag.machum.markdown.ui.BlockNavigation
 import com.ninetag.machum.markdown.ui.MarkdownBlockEditor
 import com.ninetag.machum.markdown.ui.selection.resetDocumentSelectionOnFocus
 
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isShiftPressed
@@ -27,19 +32,10 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.wrapContentWidth
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -49,15 +45,14 @@ import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.Warning
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -83,19 +78,22 @@ internal fun CalloutBlockEditor(
     cursorBrush: Brush = SolidColor(MaterialTheme.colorScheme.primary),
     focusRequester: FocusRequester = remember { FocusRequester() },
     navigation: BlockNavigation = BlockNavigation(),
+    cursorHint: CursorHint? = null,
+    cursorHintRequestId: Long? = null,
+    onCursorHintApplied: (Long) -> Unit = {},
     onRegisterBottomEntryFR: (FocusRequester?) -> Unit = {},
     onBlocksChanged: (List<EditorBlock>) -> Unit = {},
     /** body 안의 cross-selection 활성용 — body MarkdownBlockEditor 에 전달 (Step B-2c). */
     documentSelection: androidx.compose.runtime.MutableState<DocumentSelection>? = null,
     /** 이 Callout 이 속한 외부 컨테이너의 path. body 호출 시 `containerPath + block.id` 로 누적. */
     containerPath: List<String> = emptyList(),
+    /** 상위 문서의 Undo/Redo가 대기 중인 재귀 body focus 요청도 함께 폐기하도록 공유하는 수명. */
+    focusEpoch: Any = Unit,
 ) {
     val decoStyle = styleConfig.calloutDecorationStyle(block.calloutType)
-    val shape = RoundedCornerShape(8.dp)
-    val layout = if (block.calloutType.equals("DL", ignoreCase = true)) {
-        CalloutBodyLayout.Dialogue
-    } else {
-        CalloutBodyLayout.Standard
+    val layout = when (decoStyle.layout) {
+        CalloutLayout.Vertical -> CalloutBodyLayout.Standard
+        CalloutLayout.Horizontal -> CalloutBodyLayout.Dialogue
     }
     val bodyRuntime = rememberCalloutBodyRuntime(
         block = block,
@@ -103,37 +101,77 @@ internal fun CalloutBlockEditor(
         navigation = navigation,
         onRegisterBottomEntryFR = onRegisterBottomEntryFR,
         onBlocksChanged = onBlocksChanged,
+        focusEpoch = focusEpoch,
     )
-    if (layout == CalloutBodyLayout.Dialogue) {
-        DialogueCallout(
-            block = block,
-            decoStyle = decoStyle,
-            styleConfig = styleConfig,
-            textStyle = textStyle,
-            cursorBrush = cursorBrush,
-            shape = shape,
-            modifier = modifier,
-            navigation = navigation,
-            titleFocusRequester = focusRequester,
-            bodyRuntime = bodyRuntime,
-            documentSelection = documentSelection,
-            containerPath = containerPath,
-        )
-    } else {
-        StandardCallout(
-            block = block,
-            decoStyle = decoStyle,
-            styleConfig = styleConfig,
-            textStyle = textStyle,
-            cursorBrush = cursorBrush,
-            shape = shape,
-            modifier = modifier,
-            navigation = navigation,
-            titleFocusRequester = focusRequester,
-            bodyRuntime = bodyRuntime,
-            documentSelection = documentSelection,
-            containerPath = containerPath,
-        )
+    val bodyText = block.bodyBlocks.singleOrNull() as? EditorBlock.Text
+    val latestBodyFocusRequest by rememberUpdatedState(cursorHintRequestId to cursorHint)
+    val latestFocusEpoch by rememberUpdatedState(focusEpoch)
+    val latestBodyState by rememberUpdatedState(bodyText?.textFieldState)
+    LaunchedEffect(focusEpoch, cursorHintRequestId, bodyText?.textFieldState) {
+        val requestId = cursorHintRequestId ?: return@LaunchedEffect
+        if (cursorHint !is CursorHint.CalloutBodyEnd || bodyText == null) return@LaunchedEffect
+        // Capture the epoch's callback: request IDs restart when history replaces the coordinator.
+        val acknowledge = onCursorHintApplied
+        fun isCurrent() = latestFocusEpoch == focusEpoch &&
+            latestBodyState === bodyText.textFieldState &&
+            latestBodyFocusRequest == (requestId to CursorHint.CalloutBodyEnd)
+        try {
+            withFrameNanos { }
+            repeat(2) {
+                if (!isCurrent()) return@LaunchedEffect
+                val focused = runCatching { bodyRuntime.firstFocusRequester.requestFocus() }.getOrDefault(false)
+                if (focused) {
+                    bodyText.textFieldState.edit { selection = androidx.compose.ui.text.TextRange(length) }
+                    return@LaunchedEffect
+                }
+                kotlinx.coroutines.delay(50.milliseconds)
+            }
+        } finally {
+            // Clear failed attachments too; the captured coordinator rejects stale IDs.
+            acknowledge(requestId)
+        }
+    }
+    var calloutFocused by remember(block.id) { mutableStateOf(false) }
+    RawEditableBlock(
+        focused = calloutFocused,
+        onRawEdit = navigation.mutation.onDissolveSelf,
+        modifier = modifier,
+        buttonEndPadding = if (layout == CalloutBodyLayout.Dialogue) 8.dp else 0.dp,
+    ) {
+        val contentModifier = Modifier
+            .fillMaxWidth()
+            .onFocusChanged { calloutFocused = it.hasFocus }
+        if (layout == CalloutBodyLayout.Dialogue) {
+            DialogueCallout(
+                block = block,
+                decoStyle = decoStyle,
+                styleConfig = styleConfig,
+                textStyle = textStyle,
+                cursorBrush = cursorBrush,
+                modifier = contentModifier,
+                navigation = navigation,
+                titleFocusRequester = focusRequester,
+                bodyRuntime = bodyRuntime,
+                documentSelection = documentSelection,
+                containerPath = containerPath,
+                focusEpoch = focusEpoch,
+            )
+        } else {
+            StandardCallout(
+                block = block,
+                decoStyle = decoStyle,
+                styleConfig = styleConfig,
+                textStyle = textStyle,
+                cursorBrush = cursorBrush,
+                modifier = contentModifier,
+                navigation = navigation,
+                titleFocusRequester = focusRequester,
+                bodyRuntime = bodyRuntime,
+                documentSelection = documentSelection,
+                containerPath = containerPath,
+                focusEpoch = focusEpoch,
+            )
+        }
     }
 }
 
@@ -152,6 +190,7 @@ private fun rememberCalloutBodyRuntime(
     navigation: BlockNavigation,
     onRegisterBottomEntryFR: (FocusRequester?) -> Unit,
     onBlocksChanged: (List<EditorBlock>) -> Unit,
+    focusEpoch: Any,
 ): CalloutBodyRuntime {
     val firstFocusRequester = remember { FocusRequester() }
     val lastFocusRequester = remember { FocusRequester() }
@@ -171,8 +210,8 @@ private fun rememberCalloutBodyRuntime(
         onRegisterBottomEntryFR(bottomEntryFocusRequester)
     }
 
-    var pendingBodyFocus by remember { mutableStateOf(0) }
-    LaunchedEffect(pendingBodyFocus) {
+    var pendingBodyFocus by remember(focusEpoch) { mutableStateOf(0) }
+    LaunchedEffect(focusEpoch, pendingBodyFocus) {
         if (pendingBodyFocus > 0) {
             kotlinx.coroutines.delay(50.milliseconds)
             try {
@@ -240,13 +279,13 @@ private fun StandardCallout(
     styleConfig: MarkdownStyleConfig,
     textStyle: TextStyle,
     cursorBrush: Brush,
-    shape: RoundedCornerShape,
     modifier: Modifier,
     navigation: BlockNavigation,
     titleFocusRequester: FocusRequester,
     bodyRuntime: CalloutBodyRuntime,
     documentSelection: androidx.compose.runtime.MutableState<DocumentSelection>?,
     containerPath: List<String>,
+    focusEpoch: Any,
 ) {
     // Title 키 핸들러
     val titleKeyHandler = Modifier.onPreviewKeyEvent { event ->
@@ -293,48 +332,39 @@ private fun StandardCallout(
         }
     }
 
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(decoStyle.containerColor, shape)
-            .border(1.dp, decoStyle.accentColor, shape)
-            .padding(horizontal = 8.dp, vertical = 4.dp)
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Icon(
-                imageVector = calloutIcon(block.calloutType),
-                contentDescription = block.calloutType,
-                tint = decoStyle.accentColor,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(Modifier.width(4.dp))
+    CalloutVisualLayout(
+        type = block.calloutType,
+        decoration = decoStyle,
+        textStyle = textStyle,
+        modifier = modifier,
+        title = { titleStyle, titleModifier ->
             BasicTextField(
                 state = block.titleState,
-                textStyle = textStyle.merge(TextStyle(fontWeight = FontWeight.Bold)),
-                modifier = Modifier.weight(1f)
-                    .focusRequester(titleFocusRequester)
-                    .resetDocumentSelectionOnFocus(block.id)
-                    .then(titleKeyHandler),
+                textStyle = titleStyle,
+                decorator = { innerTextField ->
+                    Box {
+                        if (block.titleState.text.isEmpty()) {
+                            BasicText(calloutDisplayTitle(block.calloutType, ""), style = titleStyle)
+                        }
+                        innerTextField()
+                    }
+                },
+                modifier = titleModifier.focusRequester(titleFocusRequester)
+                    .editorQuickBarTarget(block.titleState)
+                    .resetDocumentSelectionOnFocus(block.id).then(titleKeyHandler),
                 lineLimits = TextFieldLineLimits.SingleLine,
                 cursorBrush = cursorBrush,
             )
-        }
-
-        CalloutBodyEditor(
-            block = block,
-            layout = CalloutBodyLayout.Standard,
-            bodyRuntime = bodyRuntime,
-            styleConfig = styleConfig,
-            textStyle = textStyle.merge(TextStyle(fontSize = textStyle.fontSize * 0.9f)),
-            cursorBrush = cursorBrush,
-            navigation = navigation,
-            documentSelection = documentSelection,
-            containerPath = containerPath,
-        )
-    }
+        },
+        body = { bodyStyle, bodyModifier ->
+            CalloutBodyEditor(
+                block = block, layout = CalloutBodyLayout.Standard, bodyRuntime = bodyRuntime,
+                modifier = bodyModifier, styleConfig = styleConfig, textStyle = bodyStyle,
+                cursorBrush = cursorBrush, navigation = navigation,
+                documentSelection = documentSelection, containerPath = containerPath, focusEpoch = focusEpoch,
+            )
+        },
+    )
 }
 
 @Composable
@@ -344,13 +374,13 @@ private fun DialogueCallout(
     styleConfig: MarkdownStyleConfig,
     textStyle: TextStyle,
     cursorBrush: Brush,
-    shape: RoundedCornerShape,
     modifier: Modifier,
     navigation: BlockNavigation,
     titleFocusRequester: FocusRequester,
     bodyRuntime: CalloutBodyRuntime,
     documentSelection: androidx.compose.runtime.MutableState<DocumentSelection>?,
     containerPath: List<String>,
+    focusEpoch: Any,
 ) {
     val titleKeyHandler = Modifier.onPreviewKeyEvent { event ->
         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
@@ -412,40 +442,31 @@ private fun DialogueCallout(
         }
     }
 
-    Row(
-        verticalAlignment = Alignment.Top,
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp)
-            .background(decoStyle.containerColor, shape)
-            .padding(horizontal = 8.dp, vertical = 4.dp)
-    ) {
-        BasicTextField(
-            state = block.titleState,
-            textStyle = textStyle.merge(TextStyle(fontWeight = FontWeight.Bold)),
-            modifier = Modifier
-                .wrapContentWidth()
-                .widthIn(max = textStyle.fontSize.value.dp * 5)
-                .padding(end = 4.dp)
-                .focusRequester(titleFocusRequester)
-                .resetDocumentSelectionOnFocus(block.id)
-                .then(titleKeyHandler),
-            lineLimits = TextFieldLineLimits.MultiLine(maxHeightInLines = 2),
-            cursorBrush = cursorBrush,
-        )
-        CalloutBodyEditor(
-            block = block,
-            layout = CalloutBodyLayout.Dialogue,
-            bodyRuntime = bodyRuntime,
-            modifier = Modifier.weight(1f),
-            styleConfig = styleConfig,
-            textStyle = textStyle,
-            cursorBrush = cursorBrush,
-            navigation = navigation,
-            documentSelection = documentSelection,
-            containerPath = containerPath,
-        )
-    }
+    CalloutVisualLayout(
+        type = block.calloutType,
+        decoration = decoStyle,
+        textStyle = textStyle,
+        modifier = modifier,
+        title = { titleStyle, titleModifier ->
+            BasicTextField(
+                state = block.titleState,
+                textStyle = titleStyle,
+                modifier = titleModifier.focusRequester(titleFocusRequester)
+                    .editorQuickBarTarget(block.titleState)
+                    .resetDocumentSelectionOnFocus(block.id).then(titleKeyHandler),
+                lineLimits = TextFieldLineLimits.MultiLine(maxHeightInLines = 2),
+                cursorBrush = cursorBrush,
+            )
+        },
+        body = { bodyStyle, bodyModifier ->
+            CalloutBodyEditor(
+                block = block, layout = CalloutBodyLayout.Dialogue, bodyRuntime = bodyRuntime,
+                modifier = bodyModifier, styleConfig = styleConfig, textStyle = bodyStyle,
+                cursorBrush = cursorBrush, navigation = navigation,
+                documentSelection = documentSelection, containerPath = containerPath, focusEpoch = focusEpoch,
+            )
+        },
+    )
 }
 
 @Composable
@@ -459,6 +480,7 @@ private fun CalloutBodyEditor(
     navigation: BlockNavigation,
     documentSelection: androidx.compose.runtime.MutableState<DocumentSelection>?,
     containerPath: List<String>,
+    focusEpoch: Any,
     modifier: Modifier = Modifier,
 ) {
     if (block.bodyBlocks.isEmpty()) return
@@ -489,10 +511,14 @@ private fun CalloutBodyEditor(
         containerPath = containerPath + block.id,
         onEscapeSelectionToPrevious = { navigation.selection.onSelectSelfAsAtomic() },
         onEscapeSelectionToNext = { navigation.selection.onSelectSelfAsAtomic() },
+        focusEpoch = focusEpoch,
     )
 }
 
-private fun calloutIcon(type: String) = when (type.uppercase()) {
+internal fun calloutDisplayTitle(type: String, title: String): String =
+    title.ifEmpty { if (type.equals("DL", ignoreCase = true)) "" else type.uppercase() }
+
+internal fun calloutIcon(type: String) = when (type.uppercase()) {
     "NOTE"      -> Icons.Outlined.Edit
     "TIP"       -> Icons.Outlined.CheckCircle
     "IMPORTANT" -> Icons.Outlined.Star

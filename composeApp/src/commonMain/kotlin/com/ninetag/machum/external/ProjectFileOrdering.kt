@@ -11,6 +11,18 @@ private val hierarchicalNumberPrefixRegex = Regex("""^(\d+(?:-\d+)*)\.\s*""")
 fun ProjectFile.numberedPrefix(): Int? =
     numberedPrefixRegex.find(key.fileName)?.groupValues?.get(1)?.toIntOrNull()
 
+/** Default folders also accept existing hierarchical names such as `1-1. 제목.md`. */
+fun ProjectFile.defaultOrderPrefix(): List<Int>? =
+    hierarchicalNumberPrefixRegex.find(key.fileName)
+        ?.groupValues
+        ?.get(1)
+        ?.split('-')
+        ?.map { it.toIntOrNull() ?: return null }
+
+fun ProjectFile.defaultOrderTitle(): String = key.fileName
+    .let { name -> if (name.endsWith(".md", ignoreCase = true)) name.dropLast(3) else name }
+    .replace(hierarchicalNumberPrefixRegex, "")
+
 data class PlotFilePrefix(
     val stageCode: Int,
     val order: Int,
@@ -84,19 +96,11 @@ private fun compareHierarchicalFileNames(left: ProjectFile, right: ProjectFile):
 }
 
 private fun ProjectFile.hierarchicalNumberPrefix(): List<Int>? {
-    val prefix = hierarchicalNumberPrefixRegex.find(key.fileName)
-        ?.groupValues
-        ?.get(1)
-        ?: return null
-    return prefix.split('-').map { segment -> segment.toIntOrNull() ?: return null }
+    return defaultOrderPrefix()
 }
 
 fun List<ProjectFile>.sortedFor(folderConfig: FolderConfig): List<ProjectFile> = when (folderConfig.type) {
-    FolderType.DEFAULT -> sortedWith(
-        compareBy<ProjectFile> { it.numberedPrefix() == null }
-            .thenBy { it.numberedPrefix() ?: Int.MAX_VALUE }
-            .thenBy { it.key.fileName.lowercase() }
-    )
+    FolderType.DEFAULT -> sortedWith(::compareHierarchicalFileNames)
     FolderType.GENERAL -> sortedBy { it.key.fileName.lowercase() }
 }
 

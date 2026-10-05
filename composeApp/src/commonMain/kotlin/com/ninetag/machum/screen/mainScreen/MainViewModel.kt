@@ -11,7 +11,6 @@ import com.ninetag.machum.commit.CommitFileSide
 import com.ninetag.machum.commit.FileRestoreResult
 import com.ninetag.machum.commit.FileLineDiff
 import com.ninetag.machum.commit.ProjectCommitService
-import com.ninetag.machum.commit.RestoreSessionStaleException
 import com.ninetag.machum.entity.DEFAULT_BASE_FOLDER_CONFIG
 import com.ninetag.machum.entity.DocumentPropertyDefinitionChange
 import com.ninetag.machum.entity.FolderConfig
@@ -23,6 +22,9 @@ import com.ninetag.machum.external.Bookmarks
 import com.ninetag.machum.external.WorkspaceKind
 import com.ninetag.machum.external.FileManager
 import com.ninetag.machum.external.FileKey
+import com.ninetag.machum.external.WorkspaceLinkRewriteReceipt
+import com.ninetag.machum.external.FileOrderRollbackException
+import com.ninetag.machum.external.FileRenameRollbackException
 import com.ninetag.machum.external.FolderKey
 import com.ninetag.machum.external.FileCreationIncompleteException
 import com.ninetag.machum.external.NoteFile
@@ -32,6 +34,24 @@ import com.ninetag.machum.external.GeneralSourcePlan
 import com.ninetag.machum.external.GeneralSourceProperty
 import com.ninetag.machum.external.DocumentPropertyProtectionPolicy
 import com.ninetag.machum.external.ProjectFile
+import com.ninetag.machum.external.WorkspaceLinkIndexState
+import com.ninetag.machum.external.WorkspaceLinkIndex
+import com.ninetag.machum.external.WorkspaceLinkPath
+import com.ninetag.machum.external.WorkspaceLinkDocument
+import com.ninetag.machum.external.WorkspaceLinkResolution
+import com.ninetag.machum.external.WorkspaceLinkTarget
+import com.ninetag.machum.external.WorkspaceLinkResourceKind
+import com.ninetag.machum.markdown.state.MarkdownLinkCompletionCandidate
+import com.ninetag.machum.markdown.state.MarkdownBlockReferenceCreation
+import com.ninetag.machum.external.WorkspaceLinkSourceRange
+import com.ninetag.machum.external.insertWorkspaceBlockId
+import com.ninetag.machum.external.newWorkspaceBlockId
+import com.ninetag.machum.markdown.state.MarkdownLinkCompletionKind
+import com.ninetag.machum.markdown.state.MarkdownLinkCompletionRequest
+import com.ninetag.machum.markdown.state.MarkdownLinkCompletionSyntax
+import com.ninetag.machum.markdown.state.MarkdownNavigationTarget
+import com.ninetag.machum.markdown.state.MarkdownEmbedPreview
+import com.ninetag.machum.markdown.state.extractMarkdownEmbed
 import com.ninetag.machum.external.ProjectFileMoveAssignment
 import com.ninetag.machum.external.ProjectFileMoveRollbackException
 import com.ninetag.machum.external.ProjectFolder
@@ -46,7 +66,8 @@ import com.ninetag.machum.external.WorkspaceLoadDiagnostics
 import com.ninetag.machum.external.isValidProjectFileTitle
 import com.ninetag.machum.external.nextDefaultFileName
 import com.ninetag.machum.external.nextPlotFileName
-import com.ninetag.machum.external.numberedPrefix
+import com.ninetag.machum.external.defaultOrderPrefix
+import com.ninetag.machum.external.defaultOrderTitle
 import com.ninetag.machum.external.plotOrder
 import com.ninetag.machum.external.plotTitle
 import com.ninetag.machum.external.sortedForPlot
@@ -56,12 +77,14 @@ import io.github.vinceglb.filekit.name
 import io.github.vinceglb.filekit.exists
 import io.github.vinceglb.filekit.nameWithoutExtension
 import io.github.vinceglb.filekit.PlatformFile
+import io.github.vinceglb.filekit.readBytes
+import androidx.compose.ui.graphics.decodeToImageBitmap
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
@@ -70,6 +93,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.job
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
@@ -78,21 +102,34 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlin.time.Duration.Companion.milliseconds
 
 private const val GENERAL_PROPERTY_DEFINITION_SCOPE = "<general-workspace>"
 private const val PROJECT_PLOT_SCAN_PARALLELISM = 4
+private const val MAX_EMBED_IMAGE_BYTES = 20 * 1024 * 1024
+private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "gif", "webp", "bmp")
+
+data class PendingMarkdownNavigation(
+    val fileKey: FileKey,
+    val target: MarkdownNavigationTarget,
+)
+
+data class AmbiguousInternalLink(
+    val sourceFile: ProjectFile,
+    val candidates: List<WorkspaceLinkPath>,
+)
 
 class MainViewModel internal constructor(
     private val fileManager: FileManager,
     private val workspaceSaveCoordinator: WorkspaceSaveCoordinator,
+    private val readWorkspaceName: (PlatformFile) -> String = { it.name },
     private val writeNote: suspend (PlatformFile, NoteFile) -> Unit,
 ) : ViewModel() {
     constructor(fileManager: FileManager, workspaceSaveCoordinator: WorkspaceSaveCoordinator) :
-        this(fileManager, workspaceSaveCoordinator, fileManager::writeMarkdown)
+        this(fileManager, workspaceSaveCoordinator, writeNote = fileManager::writeMarkdown)
 
     val bookmarks: StateFlow<Bookmarks> = fileManager.bookmarks
     val projectConfig: StateFlow<ProjectConfig?> = fileManager.projectConfig
+    val workspaceLinkIndexState: StateFlow<WorkspaceLinkIndexState> = fileManager.workspaceLinkIndexState
 
     private val _projectList = MutableStateFlow<List<PlatformFile>>(emptyList())
     val projectList: StateFlow<List<PlatformFile>> = _projectList.asStateFlow()
@@ -125,6 +162,15 @@ class MainViewModel internal constructor(
     // 캐시 부재를 로딩/실패와 혼동하지 않도록 파일별 상태를 한 곳에서 관리한다.
     private val _fileLoadStates = MutableStateFlow<Map<FileKey, FileLoadUiState>>(emptyMap())
     val fileLoadStates: StateFlow<Map<FileKey, FileLoadUiState>> = _fileLoadStates.asStateFlow()
+    private val _markdownNavigation = MutableStateFlow<PendingMarkdownNavigation?>(null)
+    val markdownNavigation: StateFlow<PendingMarkdownNavigation?> = _markdownNavigation.asStateFlow()
+    private var nextMarkdownNavigationId = 0L
+    private val _ambiguousInternalLink = MutableStateFlow<AmbiguousInternalLink?>(null)
+    val ambiguousInternalLink: StateFlow<AmbiguousInternalLink?> = _ambiguousInternalLink.asStateFlow()
+    private val _generalLinkReturnTarget = MutableStateFlow<WorkspaceLinkPath?>(null)
+    val generalLinkReturnTarget: StateFlow<WorkspaceLinkPath?> = _generalLinkReturnTarget.asStateFlow()
+    private val _projectLinkReturnTarget = MutableStateFlow<WorkspaceLinkPath?>(null)
+    val projectLinkReturnTarget: StateFlow<WorkspaceLinkPath?> = _projectLinkReturnTarget.asStateFlow()
 
     // 외부(옵시디언 등) 변경 감지용 — 파일별로 마지막으로 "인지한" 수정 시각.
     // 앱 자신의 쓰기 직후에도 갱신하여, 폴링이 자기 쓰기를 외부 변경으로 오인하지 않게 한다.
@@ -135,23 +181,22 @@ class MainViewModel internal constructor(
     private val editorSessionKeys = mutableMapOf<FileKey, String>()
     private var nextEditorSessionId = 0L
     private val fileReconciliationMutex = Mutex()
+    private val blockReferenceCreations = mutableSetOf<WorkspaceLinkPath>()
     private val folderFileSelectionMemory = FolderFileSelectionMemory()
     private val navigationGate = LatestNavigationGate()
     private val pageLoadJobs = mutableMapOf<FileKey, Job>()
     private var generalSourceRefreshJob: Job? = null
+    private var workspaceListRefreshJob: Job? = null
+    private var workspaceListRefreshVault: String? = null
+    private var workspaceListRefreshPendingVault: String? = null
+    private var workspaceLinkIndexRefreshJob: Job? = null
+    private var workspaceLinkIndexRefreshVault: String? = null
+    private var workspaceLinkIndexRefreshPendingVault: String? = null
+    private var workspaceLinkIndexRefreshGeneration = 0L
     private var pendingGeneralSourceRefresh: PendingGeneralSourceRefresh? = null
 
-    private var activeProjectLocation: String? = null
-    private var activeWorkspaceKind: WorkspaceKind? = null
-    private var activeVaultLocation: String? = null
     private var initialHierarchySnapshotAttempt: WorkspaceReadContext? = null
-    private var skipInitialActiveHierarchyRefresh: WorkspaceReadContext? = null
     private var appliedHierarchyConfig: ProjectConfig? = null
-    private var focusSignalRevision = 0L
-    private var workspaceActivationFocusRevision = 0L
-
-    // 앱/창 활성 상태 — 활성일 때만 폴링 (Phase 2) + 활성 전환 시 즉시 1회 검사 (Phase 1)
-    private val _active = MutableStateFlow(WindowFocusSignal(focused = false, revision = 0L))
 
     private val saveCoordinator = DebouncedSaveCoordinator<FileKey, PendingWrite>(
         scope = viewModelScope,
@@ -161,6 +206,7 @@ class MainViewModel internal constructor(
         },
     ) { fileKey, pendingWrite ->
         val saveOwner = currentCoroutineContext().job
+        WorkspaceLoadDiagnostics.measure("document-save", "autosave") {
         check(fileKey !in _documentConflicts.value) { _documentConflicts.value[fileKey].orEmpty() }
         check(isCurrentProjectFile(pendingWrite.projectFile, pendingWrite.context)) { "문서 위치가 변경되었습니다." }
         val file = pendingWrite.projectFile.platformFile
@@ -177,7 +223,7 @@ class MainViewModel internal constructor(
                     cancelPending = false,
                 )
             }
-            return@DebouncedSaveCoordinator
+            return@measure
         }
         withContext(NonCancellable) {
             writeNote(file, pendingWrite.noteFile)
@@ -185,7 +231,7 @@ class MainViewModel internal constructor(
                 // 자기 쓰기 mtime 기록 → 폴링이 외부 변경으로 오인하지 않도록
                 val modifiedAt = fileManager.lastModified(file)
                 if (isCurrentWorkspace(pendingWrite.context)) {
-                    modifiedAt?.let { knownModified[fileKey] = it }
+                    knownModified[fileKey] = modifiedAt ?: 0L
                 }
                 updateWorkspaceMetadataIndex(
                     pendingWrite.projectFile,
@@ -197,6 +243,7 @@ class MainViewModel internal constructor(
                 // write 뒤의 mtime/index 대기 중 들어온 후속 입력도 방금 쓴 문서를 기준으로 삼는다.
                 rebasePendingWriteAfterSave(fileKey, pendingWrite, saveOwner)
             }
+        }
         }
     }
 
@@ -211,112 +258,94 @@ class MainViewModel internal constructor(
     }
 
     private val folderSettingsService = FolderSettingsService(fileManager)
-    private val projectCommitService = ProjectCommitService(fileManager)
+    private val commitSessionCoordinator = CommitSessionCoordinator(
+        scope = viewModelScope,
+        service = ProjectCommitService(fileManager),
+        reconciliationMutex = fileReconciliationMutex,
+        saveCoordinator = saveCoordinator,
+        workspace = {
+            CommitWorkspaceContext(
+                project = bookmarks.value.projectData,
+                kind = bookmarks.value.workspaceKind,
+                context = currentWorkspaceReadContext(),
+                inputBlocked = workspaceInputBlocked,
+                pendingPropertyDefinitionSync = hasPendingPropertyDefinitionSync(),
+            )
+        },
+        isCurrentWorkspace = ::isCurrentWorkspace,
+        restoreSelection = {
+            CommitRestoreSelection(
+                fileKey = _hierarchyState.value.currentFile?.key,
+                folderKey = _hierarchyState.value.currentFolderKey,
+            )
+        },
+        applyProjectRestore = { project, selection ->
+            invalidateAllEditorRuntimeForRestore()
+            fileManager.reconcileWorkspaceAfterRestore(project)
+            refreshFoldersAndFiles(
+                project = project,
+                preferredKey = selection.fileKey,
+                preferredFolderKey = selection.folderKey,
+                cancelRemoved = false,
+            )
+        },
+        applyFileRestore = { project, result, selection ->
+            reconcileSingleFileRestore(
+                project = project,
+                result = result,
+                selectedFileKey = selection.fileKey,
+                selectedFolderKey = selection.folderKey,
+            )
+        },
+        reloadSelectedFile = ::reloadSelectedFileAfterRestore,
+    )
 
-    private val _commitCreateUiState = MutableStateFlow(CommitCreateUiState())
-    val commitCreateUiState: StateFlow<CommitCreateUiState> = _commitCreateUiState.asStateFlow()
-
-    private val _commitHistoryUiState = MutableStateFlow(CommitHistoryUiState())
-    val commitHistoryUiState: StateFlow<CommitHistoryUiState> = _commitHistoryUiState.asStateFlow()
-    private var commitReadJob: Job? = null
-    private var commitRequestGeneration = 0L
-
-    private val _projectBaselineUiState =
-        MutableStateFlow<ProjectBaselineUiState>(ProjectBaselineUiState.Idle)
-    val projectBaselineUiState: StateFlow<ProjectBaselineUiState> =
-        _projectBaselineUiState.asStateFlow()
-    private var projectBaselineJob: Job? = null
+    val commitCreateUiState: StateFlow<CommitCreateUiState> = commitSessionCoordinator.createUiState
+    val commitHistoryUiState: StateFlow<CommitHistoryUiState> = commitSessionCoordinator.historyUiState
+    val projectBaselineUiState: StateFlow<ProjectBaselineUiState> = commitSessionCoordinator.baselineUiState
 
     val workspaceSaveError: StateFlow<String?> = workspaceSaveCoordinator.lastErrorMessage
-    private val _workspaceTransitionError = MutableStateFlow<String?>(null)
-    val workspaceTransitionError: StateFlow<String?> = _workspaceTransitionError.asStateFlow()
+    private val workspaceSessionCoordinator = WorkspaceSessionCoordinator(
+        scope = viewModelScope,
+        fileManager = fileManager,
+        reconciliationMutex = fileReconciliationMutex,
+        saveCoordinator = workspaceSaveCoordinator,
+        operationBusy = ::workspaceOperationBusy,
+        invalidateNavigation = { navigationGate.newRequest() },
+        clearProjectState = { clearProjectState() },
+        checkExternalChanges = { refreshHierarchy ->
+            checkExternalChanges(refreshHierarchy = refreshHierarchy)
+        },
+    )
+    val workspaceTransitionError: StateFlow<String?> = workspaceSessionCoordinator.transitionError
+    val workspaceSelectionVisible: StateFlow<Boolean> = workspaceSessionCoordinator.workspaceSelectionVisible
+    val vaultSelectionVisible: StateFlow<Boolean> = workspaceSessionCoordinator.vaultSelectionVisible
+    val workspaceSelectionPending: StateFlow<Boolean> = workspaceSessionCoordinator.workspaceSelectionPending
 
-    private val _workspaceSelectionVisible = MutableStateFlow(false)
-    val workspaceSelectionVisible: StateFlow<Boolean> = _workspaceSelectionVisible.asStateFlow()
-    private val _vaultSelectionVisible = MutableStateFlow(false)
-    val vaultSelectionVisible: StateFlow<Boolean> = _vaultSelectionVisible.asStateFlow()
-    private val _workspaceSelectionPending = MutableStateFlow(false)
-    val workspaceSelectionPending: StateFlow<Boolean> = _workspaceSelectionPending.asStateFlow()
-    private var openingWorkspaceSelection: Boolean
-        get() = _workspaceSelectionPending.value
-        set(value) { _workspaceSelectionPending.value = value }
-    private var workspaceUiGeneration = 0L
     private val workspaceInputBlocked: Boolean
-        get() = openingWorkspaceSelection || _workspaceSelectionVisible.value
+        get() = workspaceSessionCoordinator.inputBlocked
 
     private fun workspaceOperationBusy(): Boolean =
-        _projectBaselineUiState.value is ProjectBaselineUiState.Preparing ||
-            _commitCreateUiState.value.isCommitting ||
-            _commitHistoryUiState.value.restore?.isRestoring == true ||
-            hasPendingPropertyDefinitionSync()
+        commitSessionCoordinator.isBusy() || hasPendingPropertyDefinitionSync()
 
     private fun hasPendingPropertyDefinitionSync(): Boolean =
         pendingPropertyDefinitionSyncs.isNotEmpty()
 
     /** Leave editing only after writes settle; bookmarks remain ordinary reopening data. */
-    fun openWorkspaceSelection() {
-        if (workspaceInputBlocked || workspaceOperationBusy()) return
-        val vault = bookmarks.value.vaultData?.toString() ?: return
-        openingWorkspaceSelection = true
-        val generation = workspaceUiGeneration
-        navigationGate.newRequest()
-        viewModelScope.launch {
-            try {
-                fileReconciliationMutex.withLock {
-                    workspaceSaveCoordinator.runAfterFlush {
-                        check(generation == workspaceUiGeneration && bookmarks.value.vaultData?.toString() == vault) {
-                            "작업 공간이 변경되었습니다."
-                        }
-                        check(!workspaceOperationBusy()) { "진행 중인 작업이 끝난 뒤 다시 시도해 주세요." }
-                        showWorkspaceSelection()
-                    }.onFailure { error ->
-                        if (workspaceSaveCoordinator.lastErrorMessage.value == null) {
-                            _workspaceTransitionError.value = error.message
-                        }
-                    }
-                }
-            } finally {
-                openingWorkspaceSelection = false
-            }
-        }
-    }
-
-    /** Called under the save fence: no pending editor write is discarded. */
-    private fun showWorkspaceSelection() {
-        workspaceUiGeneration++
-        clearProjectState()
-        activeProjectLocation = null
-        activeWorkspaceKind = null
-        _vaultSelectionVisible.value = false
-        _workspaceSelectionVisible.value = true
-    }
+    fun openWorkspaceSelection() = workspaceSessionCoordinator.openWorkspaceSelection()
 
     /** Workspace selection always goes up to Vault selection, never to the old editor. */
-    fun openVaultSelection() {
-        if (openingWorkspaceSelection || workspaceOperationBusy() ||
-            fileManager.workspaceOpenRequest.value != null ||
-            (!_workspaceSelectionVisible.value && bookmarks.value.projectData != null)) return
-        workspaceUiGeneration++
-        navigationGate.newRequest()
-        _workspaceSelectionVisible.value = true
-        _vaultSelectionVisible.value = true
-    }
+    fun openVaultSelection() = workspaceSessionCoordinator.openVaultSelection()
 
     /** Called only by a successful native selection or new-Vault creation. */
-    fun completeVaultSelection() {
-        if (bookmarks.value.vaultData == null) return
-        workspaceUiGeneration++
-        _vaultSelectionVisible.value = false
-        _workspaceSelectionVisible.value = true
-    }
+    fun completeVaultSelection() = workspaceSessionCoordinator.completeVaultSelection()
 
     /** Call only after the selected directory has opened successfully, including setup confirmation. */
     suspend fun completeWorkspaceSelection() {
         val snapshot = bookmarks.value
         val project = snapshot.projectData ?: return
         if (fileManager.workspaceOpenRequest.value != null) return
-        activeProjectLocation = project.toString()
-        activeWorkspaceKind = snapshot.workspaceKind
+        workspaceSessionCoordinator.beginWorkspaceCompletion(project.toString(), snapshot.workspaceKind)
         val preferred = snapshot.fileRelativePath?.let { runCatching { FileKey.of(it) }.getOrNull() }
         refreshFoldersAndFiles(
             project,
@@ -324,59 +353,17 @@ class MainViewModel internal constructor(
             cancelRemoved = false,
             useInitialProjectIndexSnapshot = true,
         )
-        navigationGate.newRequest()
-        _vaultSelectionVisible.value = false
-        _workspaceSelectionVisible.value = false
+        workspaceSessionCoordinator.finishWorkspaceCompletion()
+        _generalLinkReturnTarget.value = null
     }
 
     /** Selection commands share the save/rename fence; captured actions cannot run in a different Vault. */
-    suspend fun <T> runWorkspaceSelectionAction(action: suspend () -> T): Result<T> {
-        val vault = bookmarks.value.vaultData?.toString()
-        val generation = workspaceUiGeneration
-        return fileReconciliationMutex.withLock {
-            workspaceSaveCoordinator.runAfterFlush {
-                check(!openingWorkspaceSelection && !workspaceOperationBusy()) {
-                    "진행 중인 작업이 끝난 뒤 다시 시도해 주세요."
-                }
-                check(generation == workspaceUiGeneration && vault == bookmarks.value.vaultData?.toString()) {
-                    "작업 공간이 변경되었습니다."
-                }
-                check(!_vaultSelectionVisible.value && (_workspaceSelectionVisible.value || bookmarks.value.projectData == null)) {
-                    "작업 공간 선택 화면을 다시 열어 주세요."
-                }
-                action()
-            }
-        }
-    }
+    suspend fun <T> runWorkspaceSelectionAction(action: suspend () -> T): Result<T> =
+        workspaceSessionCoordinator.runSelectionAction(action)
 
     /** Classification is owned by workspace selection, including sidebar requests. */
-    suspend fun confirmWorkspaceOpen(kind: WorkspaceKind): Result<Unit> {
-        val request = fileManager.workspaceOpenRequest.value
-            ?: return Result.failure(IllegalStateException("폴더 사용 방식 선택을 다시 열어 주세요."))
-        if (openingWorkspaceSelection || workspaceOperationBusy() || request.busy || _vaultSelectionVisible.value) {
-            return Result.failure(IllegalStateException("진행 중인 작업이 끝난 뒤 다시 시도해 주세요."))
-        }
-        val vault = bookmarks.value.vaultData?.toString()
-        val generation = workspaceUiGeneration
-        openingWorkspaceSelection = true
-        navigationGate.newRequest()
-        try {
-            return fileReconciliationMutex.withLock {
-                workspaceSaveCoordinator.runAfterFlush {
-                    check(!workspaceOperationBusy()) { "진행 중인 작업이 끝난 뒤 다시 시도해 주세요." }
-                    check(generation == workspaceUiGeneration && vault == bookmarks.value.vaultData?.toString() &&
-                        fileManager.workspaceOpenRequest.value === request) {
-                        "작업 공간이 변경되었습니다. 폴더를 다시 선택해 주세요."
-                    }
-                    fileManager.confirmWorkspaceOpen(kind)
-                    if (fileManager.workspaceOpenRequest.value == null) completeWorkspaceSelection()
-                }
-            }
-        } finally {
-            openingWorkspaceSelection = false
-        }
-    }
-
+    suspend fun confirmWorkspaceOpen(kind: WorkspaceKind): Result<Unit> =
+        workspaceSessionCoordinator.confirmWorkspaceOpen(kind, ::completeWorkspaceSelection)
     private data class CommittedFolderSettings(
         val context: WorkspaceReadContext,
         val originalKey: FolderKey,
@@ -401,50 +388,62 @@ class MainViewModel internal constructor(
             fileManager.bookmarks.collectLatest { bookmarks ->
                 try {
                     fileReconciliationMutex.withLock {
-                        var workspaceListsRefreshed = false
+                        var workspaceListsNeedRefresh = false
                         val vault = bookmarks.vaultData
                         if (vault == null) {
+                            workspaceListRefreshJob?.cancel()
+                            workspaceListRefreshJob = null
+                            workspaceListRefreshVault = null
+                            workspaceListRefreshPendingVault = null
+                            workspaceLinkIndexRefreshGeneration += 1
+                            workspaceLinkIndexRefreshJob?.cancel()
+                            workspaceLinkIndexRefreshJob = null
+                            workspaceLinkIndexRefreshVault = null
+                            workspaceLinkIndexRefreshPendingVault = null
                             _projectList.value = emptyList()
                             _generalFolderList.value = emptyList()
-                            activeVaultLocation = null
+                            workspaceSessionCoordinator.updateActiveVault(null)
                         } else {
                             val vaultLocation = vault.toString()
-                            if (activeVaultLocation != vaultLocation) {
-                                activeVaultLocation = vaultLocation
-                                refreshWorkspaceLists(vault)
-                                workspaceListsRefreshed = true
+                            if (workspaceSessionCoordinator.updateActiveVault(vaultLocation)) {
+                                _projectList.value = emptyList()
+                                _generalFolderList.value = emptyList()
+                                workspaceListsNeedRefresh = true
+                                scheduleWorkspaceLinkIndexRefresh(vault)
                             }
                         }
 
-                        if (_workspaceSelectionVisible.value) return@withLock
+                        if (workspaceSelectionVisible.value) {
+                            if (workspaceListsNeedRefresh) vault?.let(::scheduleWorkspaceListRefresh)
+                            return@withLock
+                        }
                         val project = bookmarks.projectData
                         if (project == null) {
-                            if (activeProjectLocation != null) {
+                            if (workspaceSessionCoordinator.hasActiveProject()) {
                                 clearProjectState()
-                                activeProjectLocation = null
-                                activeWorkspaceKind = null
+                                workspaceSessionCoordinator.clearActiveWorkspace()
                             }
+                            if (workspaceListsNeedRefresh) vault?.let(::scheduleWorkspaceListRefresh)
                             return@withLock
                         }
                         val projectLocation = project.toString()
-                        val projectChanged = activeProjectLocation != projectLocation ||
-                            activeWorkspaceKind != bookmarks.workspaceKind
+                        val projectChanged = workspaceSessionCoordinator.isWorkspaceChanged(
+                            projectLocation,
+                            bookmarks.workspaceKind,
+                        )
                         if (projectChanged) {
                             WorkspaceLoadDiagnostics.event(
                                 "workspace-selected",
-                                "kind=${bookmarks.workspaceKind}|generation=$workspaceUiGeneration",
+                                "kind=${bookmarks.workspaceKind}|generation=${currentWorkspaceReadContext().generation}",
                             )
                             // The screen can request this project's baseline before this collector
                             // finishes its initial IO. Keep that request: cancelling it back to Idle
                             // can be conflated by Compose and leave the loading gate without a job.
                             val preserveBaseline = bookmarks.workspaceKind == WorkspaceKind.PROJECT &&
-                                _projectBaselineUiState.value.projectLocation == projectLocation
+                                projectBaselineUiState.value.projectLocation == projectLocation
                             clearProjectState(preserveBaseline = preserveBaseline)
-                            activeProjectLocation = projectLocation
-                            activeWorkspaceKind = bookmarks.workspaceKind
-                            if (!workspaceListsRefreshed) {
-                                bookmarks.vaultData?.let { refreshWorkspaceLists(it) }
-                            }
+                            workspaceSessionCoordinator.activateWorkspace(projectLocation, bookmarks.workspaceKind)
+                            workspaceListsNeedRefresh = true
                         }
                         if (projectChanged || _hierarchyState.value.folderList.isEmpty()) {
                             val preferredKey = bookmarks.fileRelativePath
@@ -466,16 +465,18 @@ class MainViewModel internal constructor(
                                 _hierarchyState.value = current.copy(selectedFileKey = current.fileList[index].key)
                             }
                         }
+                        if (workspaceListsNeedRefresh) vault?.let(::scheduleWorkspaceListRefresh)
                     }
                 } catch (cancellation: CancellationException) {
                     throw cancellation
                 } catch (error: Exception) {
                     WorkspaceLoadDiagnostics.event(
                         "workspace-collector.failed",
-                        "error=${error::class.simpleName}:${error.message.orEmpty()}",
+                        "error=${error::class.simpleName}",
                     )
-                    _workspaceTransitionError.value =
-                        error.message ?: "파일 목록을 불러오지 못했습니다. 다시 시도해 주세요."
+                    workspaceSessionCoordinator.reportError(
+                        error.message ?: "파일 목록을 불러오지 못했습니다. 다시 시도해 주세요.",
+                    )
                 }
             }
         }
@@ -501,592 +502,68 @@ class MainViewModel internal constructor(
             }
         }
 
-        // 외부 변경 감지: 활성(포커스) 상태에서만 동작.
-        // 활성 전환 즉시 1회 검사(Phase 1) → 이후 주기 폴링(Phase 2). 비활성 시 collectLatest 가 루프를 취소.
-        viewModelScope.launch {
-            _active.collectLatest { signal ->
-                if (!signal.focused) return@collectLatest
-                var hierarchyPollTick = 0
-                var skipFirstHierarchyRefresh = consumeInitialActiveHierarchyRefreshSkip()
-                while (true) {
-                    try {
-                        val refreshHierarchy = hierarchyPollTick == 0 && !skipFirstHierarchyRefresh
-                        skipFirstHierarchyRefresh = false
-                        checkExternalChanges(
-                            refreshHierarchy = refreshHierarchy,
-                        )
-                    } catch (cancellation: CancellationException) {
-                        throw cancellation
-                    } catch (error: Exception) {
-                        _workspaceTransitionError.value =
-                            error.message ?: "외부 파일 변경을 확인하지 못했습니다."
-                    }
-                    hierarchyPollTick = (hierarchyPollTick + 1) % HIERARCHY_POLL_TICKS
-                    delay(POLL_INTERVAL_MS.milliseconds)
-                }
-            }
-        }
     }
 
     /** 앱/창 포커스 상태 전달 (MainScreen 의 LocalWindowInfo.isWindowFocused) */
-    fun setActive(active: Boolean) {
-        focusSignalRevision += 1
-        if (!active) skipInitialActiveHierarchyRefresh = null
-        _active.value = WindowFocusSignal(active, focusSignalRevision)
-    }
+    fun setActive(active: Boolean) = workspaceSessionCoordinator.setActive(active)
 
     /** 커밋 이력이 없는 관리 Project를 편집하기 전에 복원 가능한 최초 기준점을 만든다. */
-    fun ensureInitialProjectBaseline() {
-        if (workspaceInputBlocked) return
-        val snapshot = bookmarks.value
-        val project = snapshot.projectData ?: return
-        if (snapshot.workspaceKind != WorkspaceKind.PROJECT) return
-        val location = project.toString()
-        when (val state = _projectBaselineUiState.value) {
-            is ProjectBaselineUiState.Preparing -> if (state.projectLocation == location) return
-            is ProjectBaselineUiState.Ready -> if (state.projectLocation == location) return
-            else -> Unit
-        }
-
-        projectBaselineJob?.cancel()
-        _projectBaselineUiState.value = ProjectBaselineUiState.Preparing(location)
-        val context = currentWorkspaceReadContext()
-        projectBaselineJob = viewModelScope.launch {
-            try {
-                fileReconciliationMutex.withLock {
-                    if (currentWorkspaceReadContext() != context) return@withLock
-                    saveCoordinator.flushAll()
-                    if (currentWorkspaceReadContext() != context) return@withLock
-                    projectCommitService.ensureInitialBaseline(project)
-                }
-                if (currentWorkspaceReadContext() == context) {
-                    _projectBaselineUiState.value = ProjectBaselineUiState.Ready(location)
-                }
-            } catch (cancellation: CancellationException) {
-                throw cancellation
-            } catch (error: Exception) {
-                if (currentWorkspaceReadContext() == context) {
-                    _projectBaselineUiState.value = ProjectBaselineUiState.Error(
-                        projectLocation = location,
-                        message = error.message ?: "초기 기준점을 만들지 못했습니다.",
-                    )
-                }
-            }
-        }
-    }
+    fun ensureInitialProjectBaseline() = commitSessionCoordinator.ensureInitialBaseline()
 
     /** 저장소 제약이 있는 경우 사용자가 위험을 인지하고 기준점 없이 편집을 계속한다. */
-    fun skipInitialProjectBaseline() {
-        val project = bookmarks.value.projectData ?: return
-        if (bookmarks.value.workspaceKind != WorkspaceKind.PROJECT) return
-        projectBaselineJob?.cancel()
-        projectBaselineJob = null
-        _projectBaselineUiState.value = ProjectBaselineUiState.Ready(
-            projectLocation = project.toString(),
-            skipped = true,
-        )
-    }
+    fun skipInitialProjectBaseline() = commitSessionCoordinator.skipInitialBaseline()
 
     fun dismissWorkspaceTransitionError() {
         workspaceSaveCoordinator.clearError()
-        _workspaceTransitionError.value = null
+        workspaceSessionCoordinator.clearError()
     }
 
-    fun openCommitDialog() {
-        if (workspaceInputBlocked) return
-        if (hasPendingPropertyDefinitionSync()) return
-        if (bookmarks.value.workspaceKind != WorkspaceKind.PROJECT) return
-        val currentCreate = _commitCreateUiState.value
-        if (currentCreate.isOpen && currentCreate.errorMessage == null) return
-        if (_commitHistoryUiState.value.restore?.isRestoring == true) return
-        val project = bookmarks.value.projectData ?: return
-        val context = currentWorkspaceReadContext()
-        val request = beginCommitRequest()
-        _commitHistoryUiState.value = _commitHistoryUiState.value.copy(
-            isOpen = false,
-            isLoading = false,
-            diff = null,
-            restore = null,
-            errorMessage = null,
-        )
-        _commitCreateUiState.value = _commitCreateUiState.value.copy(
-            isOpen = true,
-            isLoading = true,
-            isCommitting = false,
-            preview = null,
-            diff = null,
-            errorMessage = null,
-        )
-        commitReadJob = viewModelScope.launch {
-            try {
-                val preview = fileReconciliationMutex.withLock {
-                    saveCoordinator.flushAll()
-                    if (!isCurrentCommitRequest(request, context)) return@withLock null
-                    projectCommitService.preview(project)
-                } ?: return@launch
-                if (!isCurrentCommitRequest(request, context)) return@launch
-                _commitCreateUiState.value = _commitCreateUiState.value.copy(
-                    isLoading = false,
-                    preview = preview,
-                )
-            } catch (cancellation: CancellationException) {
-                throw cancellation
-            } catch (error: Exception) {
-                if (!isCurrentCommitRequest(request, context)) return@launch
-                _commitCreateUiState.value = _commitCreateUiState.value.copy(
-                    isLoading = false,
-                    errorMessage = error.message ?: "변경 사항을 확인하지 못했습니다.",
-                )
-            }
-        }
-    }
+    fun openCommitDialog() = commitSessionCoordinator.openChanges()
 
-    fun dismissCommitDialog() {
-        dismissCommitWorkspace()
-    }
+    fun dismissCommitDialog() = commitSessionCoordinator.dismissWorkspace()
 
-    fun dismissCommitWorkspace() {
-        val create = _commitCreateUiState.value
-        val history = _commitHistoryUiState.value
-        if (create.isCommitting || history.restore?.isRestoring == true) return
-        cancelCommitRequests()
-        _commitCreateUiState.value = CommitCreateUiState()
-        _commitHistoryUiState.value = CommitHistoryUiState()
-    }
+    fun dismissCommitWorkspace() = commitSessionCoordinator.dismissWorkspace()
 
-    fun updateCommitMessage(message: String) {
-        val state = _commitCreateUiState.value
-        if (!state.isOpen || state.isCommitting) return
-        _commitCreateUiState.value = state.copy(message = message)
-    }
+    fun updateCommitMessage(message: String) = commitSessionCoordinator.updateMessage(message)
 
-    fun openCommitDiff(change: CommitChange) {
-        val state = _commitCreateUiState.value
-        if (!state.isOpen || state.isLoading || state.isCommitting) return
-        val project = bookmarks.value.projectData ?: return
-        val context = currentWorkspaceReadContext()
-        val request = beginCommitRequest()
-        val target = CommitDiffUiState(
-            commitId = null,
-            fileId = change.fileId,
-            displayPath = change.displayPath,
-            isLoading = true,
-        )
-        _commitCreateUiState.value = state.copy(diff = target, errorMessage = null)
-        commitReadJob = viewModelScope.launch {
-            try {
-                val result = fileReconciliationMutex.withLock {
-                    saveCoordinator.flushAll()
-                    if (!isCurrentCommitRequest(request, context)) return@withLock null
-                    projectCommitService.diff(project, null, change.fileId)
-                } ?: return@launch
-                if (!isCurrentCommitRequest(request, context)) return@launch
-                val current = _commitCreateUiState.value
-                if (current.diff?.matches(target) == true) {
-                    _commitCreateUiState.value = current.copy(
-                        diff = target.copy(isLoading = false, result = result),
-                    )
-                }
-            } catch (cancellation: CancellationException) {
-                throw cancellation
-            } catch (error: Exception) {
-                if (!isCurrentCommitRequest(request, context)) return@launch
-                val current = _commitCreateUiState.value
-                if (current.diff?.matches(target) == true) {
-                    _commitCreateUiState.value = current.copy(
-                        diff = target.copy(
-                            isLoading = false,
-                            errorMessage = error.message ?: "파일 diff를 읽지 못했습니다.",
-                        ),
-                    )
-                }
-            }
-        }
-    }
+    fun openCommitDiff(change: CommitChange) = commitSessionCoordinator.openChangesDiff(change)
 
-    fun closeCommitDiff() {
-        if (_commitCreateUiState.value.isCommitting) return
-        cancelCommitRequests()
-        _commitCreateUiState.value = _commitCreateUiState.value.copy(diff = null)
-    }
+    fun closeCommitDiff() = commitSessionCoordinator.closeChangesDiff()
 
-    fun openCommitHistory() {
-        if (workspaceInputBlocked) return
-        if (hasPendingPropertyDefinitionSync()) return
-        if (bookmarks.value.workspaceKind != WorkspaceKind.PROJECT) return
-        if (_commitHistoryUiState.value.isOpen || _commitCreateUiState.value.isCommitting) return
-        _commitCreateUiState.value = _commitCreateUiState.value.copy(
-            isOpen = false,
-            isLoading = false,
-            diff = null,
-            errorMessage = null,
-        )
-        loadCommitHistory(selectedCommitId = _commitHistoryUiState.value.selectedCommitId)
-    }
+    fun openCommitHistory() = commitSessionCoordinator.openHistory()
 
-    fun retryCommitHistory() {
-        if (!_commitHistoryUiState.value.isOpen) return
-        loadCommitHistory(selectedCommitId = _commitHistoryUiState.value.selectedCommitId)
-    }
+    fun retryCommitHistory() = commitSessionCoordinator.retryHistory()
 
-    private fun loadCommitHistory(selectedCommitId: String?) {
-        if (hasPendingPropertyDefinitionSync()) return
-        val project = bookmarks.value.projectData ?: return
-        val context = currentWorkspaceReadContext()
-        val request = beginCommitRequest()
-        val previous = _commitHistoryUiState.value
-        _commitHistoryUiState.value = previous.copy(
-            isOpen = true,
-            isLoading = true,
-            selectedCommitId = selectedCommitId,
-            diff = null,
-            restore = null,
-            errorMessage = null,
-        )
-        commitReadJob = viewModelScope.launch {
-            try {
-                val loaded = fileReconciliationMutex.withLock {
-                    saveCoordinator.flushAll()
-                    if (!isCurrentCommitRequest(request, context)) return@withLock null
-                    projectCommitService.preview(project) to projectCommitService.history(project)
-                } ?: return@launch
-                val (preview, history) = loaded
-                if (!isCurrentCommitRequest(request, context)) return@launch
-                _commitHistoryUiState.value = CommitHistoryUiState(
-                    isOpen = true,
-                    history = history,
-                    workingPreview = preview,
-                    selectedCommitId = selectedCommitId?.takeIf { selected ->
-                        history.any { it.commit.id == selected }
-                    },
-                )
-            } catch (cancellation: CancellationException) {
-                throw cancellation
-            } catch (error: Exception) {
-                if (!isCurrentCommitRequest(request, context)) return@launch
-                _commitHistoryUiState.value = _commitHistoryUiState.value.copy(
-                    isLoading = false,
-                    errorMessage = error.message ?: "커밋 이력을 읽지 못했습니다.",
-                )
-            }
-        }
-    }
+    fun selectCommitHistoryEntry(commitId: String) = commitSessionCoordinator.selectHistoryEntry(commitId)
 
-    fun selectCommitHistoryEntry(commitId: String) {
-        val state = _commitHistoryUiState.value
-        if (!state.isOpen || state.isLoading || state.restore?.isRestoring == true) return
-        _commitHistoryUiState.value = state.copy(
-            selectedCommitId = commitId,
-            diff = null,
-            errorMessage = null,
-        )
-    }
+    fun editCommitHistoryMessage(commitId: String) = commitSessionCoordinator.openMessageEdit(commitId)
 
-    fun openCommitHistoryDiff(commitId: String, change: CommitChange) {
-        val state = _commitHistoryUiState.value
-        if (!state.isOpen || state.isLoading || state.restore?.isRestoring == true) return
-        val project = bookmarks.value.projectData ?: return
-        val context = currentWorkspaceReadContext()
-        val request = beginCommitRequest()
-        val target = CommitDiffUiState(
-            commitId = commitId,
-            fileId = change.fileId,
-            displayPath = change.displayPath,
-            isLoading = true,
-        )
-        _commitHistoryUiState.value = state.copy(
-            selectedCommitId = commitId,
-            diff = target,
-            errorMessage = null,
-        )
-        commitReadJob = viewModelScope.launch {
-            try {
-                val result = projectCommitService.diff(project, commitId, change.fileId)
-                if (!isCurrentCommitRequest(request, context)) return@launch
-                val current = _commitHistoryUiState.value
-                if (current.diff?.matches(target) == true) {
-                    _commitHistoryUiState.value = current.copy(
-                        diff = target.copy(isLoading = false, result = result),
-                    )
-                }
-            } catch (cancellation: CancellationException) {
-                throw cancellation
-            } catch (error: Exception) {
-                if (!isCurrentCommitRequest(request, context)) return@launch
-                val current = _commitHistoryUiState.value
-                if (current.diff?.matches(target) == true) {
-                    _commitHistoryUiState.value = current.copy(
-                        diff = target.copy(
-                            isLoading = false,
-                            errorMessage = error.message ?: "파일 diff를 읽지 못했습니다.",
-                        ),
-                    )
-                }
-            }
-        }
-    }
+    fun updateEditedCommitMessage(message: String) = commitSessionCoordinator.updateEditedMessage(message)
 
-    fun navigateBackFromCommitHistory() {
-        val state = _commitHistoryUiState.value
-        if (state.restore?.isRestoring == true) return
-        when {
-            state.restore != null -> _commitHistoryUiState.value = state.copy(restore = null)
-            state.diff != null -> {
-                cancelCommitRequests()
-                _commitHistoryUiState.value = state.copy(diff = null)
-            }
-            state.selectedCommitId != null ->
-                _commitHistoryUiState.value = state.copy(selectedCommitId = null)
-            else -> {
-                dismissCommitWorkspace()
-            }
-        }
-    }
+    fun saveEditedCommitMessage() = commitSessionCoordinator.saveEditedMessage()
 
-    fun requestProjectRestore(entry: CommitHistoryEntry) {
-        if (hasPendingPropertyDefinitionSync()) return
-        val state = _commitHistoryUiState.value
-        if (!state.isOpen || state.isLoading || state.restore?.isRestoring == true) return
-        val target = if (state.workingPreview?.parentCommitId == entry.commit.id) {
-            CommitRestoreTarget.HeadSnapshot(entry)
-        } else {
-            CommitRestoreTarget.Project(entry)
-        }
-        _commitHistoryUiState.value = state.copy(
-            restore = CommitRestoreUiState(target, state.workingPreview?.workingTreeHash ?: return),
-            errorMessage = null,
-        )
-    }
+    fun dismissCommitMessageEdit() = commitSessionCoordinator.dismissMessageEdit()
 
-    fun requestHeadRevert(entry: CommitHistoryEntry) {
-        if (hasPendingPropertyDefinitionSync()) return
-        val state = _commitHistoryUiState.value
-        if (!state.isOpen || state.isLoading || state.restore?.isRestoring == true) return
-        if (entry.commit.parentId == null || state.history.firstOrNull()?.commit?.id != entry.commit.id) return
-        _commitHistoryUiState.value = state.copy(
-            restore = CommitRestoreUiState(CommitRestoreTarget.HeadChanges(entry), state.workingPreview?.workingTreeHash ?: return),
-            errorMessage = null,
-        )
-    }
+    fun openCommitHistoryDiff(commitId: String, change: CommitChange) =
+        commitSessionCoordinator.openHistoryDiff(commitId, change)
 
-    fun requestFileContentRestore(change: CommitChange, side: CommitFileSide) {
-        requestFileRestore(change, side, contentOnly = true)
-    }
+    fun navigateBackFromCommitHistory() = commitSessionCoordinator.navigateBackFromHistory()
 
-    fun requestFileRestore(change: CommitChange, side: CommitFileSide) {
-        requestFileRestore(change, side, contentOnly = false)
-    }
+    fun requestProjectRestore(entry: CommitHistoryEntry) = commitSessionCoordinator.requestProjectRestore(entry)
 
-    private fun requestFileRestore(
-        change: CommitChange,
-        side: CommitFileSide,
-        contentOnly: Boolean,
-    ) {
-        if (hasPendingPropertyDefinitionSync()) return
-        val state = _commitHistoryUiState.value
-        val commitId = state.selectedCommitId ?: return
-        if (!state.isOpen || state.isLoading || state.restore?.isRestoring == true) return
-        val target = if (contentOnly) {
-            CommitRestoreTarget.FileContent(commitId, change, side)
-        } else {
-            CommitRestoreTarget.File(commitId, change, side)
-        }
-        _commitHistoryUiState.value = state.copy(
-            restore = CommitRestoreUiState(target, state.workingPreview?.workingTreeHash ?: return),
-            errorMessage = null,
-        )
-    }
+    fun requestHeadRevert(entry: CommitHistoryEntry) = commitSessionCoordinator.requestHeadRevert(entry)
 
-    fun dismissCommitRestore() {
-        val state = _commitHistoryUiState.value
-        if (state.restore?.isRestoring == true) return
-        _commitHistoryUiState.value = state.copy(restore = null)
-    }
+    fun requestFileContentRestore(change: CommitChange, side: CommitFileSide) =
+        commitSessionCoordinator.requestFileRestore(change, side, contentOnly = true)
 
-    fun confirmCommitRestore() {
-        if (workspaceInputBlocked) return
-        if (hasPendingPropertyDefinitionSync()) return
-        if (bookmarks.value.workspaceKind != WorkspaceKind.PROJECT) return
-        val state = _commitHistoryUiState.value
-        val restore = state.restore ?: return
-        if (restore.isRestoring) return
-        val project = bookmarks.value.projectData ?: return
-        val context = currentWorkspaceReadContext()
-        val request = beginCommitRequest()
-        _commitHistoryUiState.value = state.copy(
-            restore = restore.copy(isRestoring = true, errorMessage = null),
-        )
-        viewModelScope.launch {
-            var restoreApplied = false
-            try {
-                val refreshed = fileReconciliationMutex.withLock {
-                    if (!isCurrentCommitRequest(request, context)) return@withLock null
-                    check(!hasPendingPropertyDefinitionSync()) {
-                        "기본 속성 설정 저장을 완료한 뒤 복원해 주세요."
-                    }
-                    saveCoordinator.flushAll()
-                    if (!isCurrentCommitRequest(request, context)) return@withLock null
+    fun requestFileRestore(change: CommitChange, side: CommitFileSide) =
+        commitSessionCoordinator.requestFileRestore(change, side, contentOnly = false)
 
-                    saveCoordinator.withWritesPaused {
-                        val selectedFileKey = _hierarchyState.value.currentFile?.key
-                        val selectedFolderKey = _hierarchyState.value.currentFolderKey
-                        suspend fun applyProjectResult() {
-                            restoreApplied = true
-                            invalidateAllEditorRuntimeForRestore()
-                            refreshFoldersAndFiles(
-                                project = project,
-                                preferredKey = selectedFileKey,
-                                preferredFolderKey = selectedFolderKey,
-                                cancelRemoved = false,
-                            )
-                        }
-                        suspend fun applyFileResult(result: FileRestoreResult) {
-                            restoreApplied = true
-                            reconcileSingleFileRestore(
-                                project = project,
-                                result = result,
-                                selectedFileKey = selectedFileKey,
-                                selectedFolderKey = selectedFolderKey,
-                            )
-                        }
-                        when (val target = restore.target) {
-                            is CommitRestoreTarget.Project -> {
-                                projectCommitService.restore(
-                                    project = project,
-                                    commitId = target.entry.commit.id,
-                                    expectedWorkingTreeHash = restore.expectedWorkingTreeHash,
-                                )
-                                applyProjectResult()
-                            }
-                            is CommitRestoreTarget.HeadSnapshot -> {
-                                projectCommitService.restoreHeadSnapshot(
-                                    project = project,
-                                    commitId = target.entry.commit.id,
-                                    expectedWorkingTreeHash = restore.expectedWorkingTreeHash,
-                                )
-                                applyProjectResult()
-                            }
-                            is CommitRestoreTarget.HeadChanges -> {
-                                projectCommitService.revertHead(
-                                    project = project,
-                                    commitId = target.entry.commit.id,
-                                    expectedWorkingTreeHash = restore.expectedWorkingTreeHash,
-                                )
-                                applyProjectResult()
-                            }
-                            is CommitRestoreTarget.FileContent -> {
-                                val result = projectCommitService.restoreFileContent(
-                                    project = project,
-                                    commitId = target.commitId,
-                                    fileId = target.change.fileId,
-                                    side = target.side,
-                                    expectedWorkingTreeHash = restore.expectedWorkingTreeHash,
-                                )
-                                applyFileResult(result)
-                            }
-                            is CommitRestoreTarget.File -> {
-                                val result = projectCommitService.restoreFile(
-                                    project = project,
-                                    commitId = target.commitId,
-                                    fileId = target.change.fileId,
-                                    side = target.side,
-                                    expectedWorkingTreeHash = restore.expectedWorkingTreeHash,
-                                )
-                                applyFileResult(result)
-                            }
-                        }
-                        if (!isCurrentCommitRequest(request, context)) return@withWritesPaused null
-                        reloadSelectedFileAfterRestore(context)
-                        projectCommitService.preview(project) to projectCommitService.history(project)
-                    }
-                } ?: return@launch
+    fun dismissCommitRestore() = commitSessionCoordinator.dismissRestore()
 
-                if (!isCurrentCommitRequest(request, context)) return@launch
-                _commitHistoryUiState.value = _commitHistoryUiState.value.copy(
-                    isLoading = false,
-                    history = refreshed.second,
-                    workingPreview = refreshed.first,
-                    restore = null,
-                    errorMessage = null,
-                )
-            } catch (cancellation: CancellationException) {
-                throw cancellation
-            } catch (error: Exception) {
-                if (!isCurrentCommitRequest(request, context)) return@launch
-                if (error is RestoreSessionStaleException) {
-                    val refreshed = runCatching {
-                        fileReconciliationMutex.withLock {
-                            if (!isCurrentCommitRequest(request, context)) return@withLock null
-                            projectCommitService.preview(project) to projectCommitService.history(project)
-                        }
-                    }.getOrNull()
-                    if (!isCurrentCommitRequest(request, context)) return@launch
-                    val current = _commitHistoryUiState.value
-                    _commitHistoryUiState.value = current.copy(
-                        isLoading = false,
-                        history = refreshed?.second ?: current.history,
-                        workingPreview = refreshed?.first ?: current.workingPreview,
-                        restore = null,
-                        errorMessage = error.message ?: "Project가 변경되어 복원을 취소했습니다.",
-                    )
-                    return@launch
-                }
-                val current = _commitHistoryUiState.value
-                _commitHistoryUiState.value = if (restoreApplied) {
-                    current.copy(
-                        restore = null,
-                        errorMessage = "복원은 완료했지만 화면을 새로고침하지 못했습니다. ${error.message.orEmpty()}",
-                    )
-                } else {
-                    current.copy(
-                        restore = current.restore?.copy(
-                            isRestoring = false,
-                            errorMessage = error.message ?: "선택한 상태로 복원하지 못했습니다.",
-                        ),
-                    )
-                }
-            }
-        }
-    }
+    fun confirmCommitRestore() = commitSessionCoordinator.confirmRestore()
 
-    fun createCommit(message: String) {
-        if (workspaceInputBlocked) return
-        if (hasPendingPropertyDefinitionSync()) return
-        if (bookmarks.value.workspaceKind != WorkspaceKind.PROJECT) return
-        val state = _commitCreateUiState.value
-        val preview = state.preview ?: return
-        if (state.isCommitting || !preview.hasChanges || message.isBlank()) return
-        val project = bookmarks.value.projectData ?: return
-        val context = currentWorkspaceReadContext()
-        val request = beginCommitRequest()
-        _commitCreateUiState.value = state.copy(isCommitting = true, errorMessage = null)
-        viewModelScope.launch {
-            try {
-                fileReconciliationMutex.withLock {
-                    if (!isCurrentCommitRequest(request, context)) return@withLock
-                    check(!hasPendingPropertyDefinitionSync()) {
-                        "기본 속성 설정 저장을 완료한 뒤 커밋해 주세요."
-                    }
-                    // 미리보기 이후 발생한 마지막 입력도 포함하고 service에서 tree를 다시 계산한다.
-                    saveCoordinator.flushAll()
-                    if (!isCurrentCommitRequest(request, context)) return@withLock
-                    projectCommitService.commit(project, message)
-                }
-                if (!isCurrentCommitRequest(request, context)) return@launch
-                _commitCreateUiState.value = CommitCreateUiState()
-                _commitHistoryUiState.value = CommitHistoryUiState()
-            } catch (cancellation: CancellationException) {
-                throw cancellation
-            } catch (error: Exception) {
-                if (!isCurrentCommitRequest(request, context)) return@launch
-                _commitCreateUiState.value = _commitCreateUiState.value.copy(
-                    isCommitting = false,
-                    errorMessage = error.message ?: "커밋을 만들지 못했습니다.",
-                )
-            }
-        }
-    }
-
+    fun createCommit(message: String) = commitSessionCoordinator.createCommit(message)
     private suspend fun reconcileSingleFileRestore(
         project: PlatformFile,
         result: FileRestoreResult,
@@ -1100,6 +577,7 @@ class MainViewModel internal constructor(
             folderFileSelectionMemory.renameFile(previousKey, restoredKey)
         }
         invalidateRestoredFileRuntime(result)
+        fileManager.reconcileWorkspaceAfterRestore(project)
 
         val selectedWasRestored = selectedFileKey != null &&
             (selectedFileKey == previousKey || selectedFileKey == restoredKey)
@@ -1160,33 +638,11 @@ class MainViewModel internal constructor(
         val noteFile = fileManager.readMarkdown(selected.platformFile)
         if (!isCurrentWorkspace(context)) return
         putLoadedNote(selected.key, noteFile)
-        fileManager.lastModified(selected.platformFile)?.let { modified ->
-            knownModified[selected.key] = modified
-        }
+        knownModified[selected.key] = fileManager.lastModified(selected.platformFile) ?: 0L
     }
-
-    private fun beginCommitRequest(): Long {
-        commitReadJob?.cancel()
-        commitReadJob = null
-        return ++commitRequestGeneration
-    }
-
-    private fun cancelCommitRequests() {
-        commitRequestGeneration++
-        commitReadJob?.cancel()
-        commitReadJob = null
-    }
-
-    private fun isCurrentCommitRequest(
-        request: Long,
-        context: WorkspaceReadContext,
-    ): Boolean = request == commitRequestGeneration && isCurrentWorkspace(context)
 
     fun refreshProjectList() {
-        viewModelScope.launch {
-            val vault = bookmarks.value.vaultData ?: return@launch
-            refreshWorkspaceLists(vault)
-        }
+        bookmarks.value.vaultData?.let(::scheduleWorkspaceListRefresh)
     }
 
     private suspend fun refreshWorkspaceLists(vault: PlatformFile) {
@@ -1208,19 +664,68 @@ class MainViewModel internal constructor(
         }
     }
 
+    private fun scheduleWorkspaceListRefresh(vault: PlatformFile) {
+        val identity = vault.toString()
+        if (workspaceListRefreshJob?.isActive == true && workspaceListRefreshVault == identity) {
+            workspaceListRefreshPendingVault = identity
+            return
+        }
+        workspaceListRefreshJob?.cancel()
+        workspaceListRefreshVault = identity
+        workspaceListRefreshPendingVault = null
+        val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            try {
+                refreshWorkspaceLists(vault)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                if (bookmarks.value.vaultData?.toString() == identity) {
+                    workspaceSessionCoordinator.reportError(
+                        error.message ?: "작업 공간 목록을 불러오지 못했습니다.",
+                    )
+                }
+            } finally {
+                val running = currentCoroutineContext().job
+                if (workspaceListRefreshJob === running) {
+                    val rerun = workspaceListRefreshPendingVault == identity &&
+                        bookmarks.value.vaultData?.toString() == identity
+                    workspaceListRefreshPendingVault = null
+                    workspaceListRefreshJob = null
+                    workspaceListRefreshVault = null
+                    if (rerun) scheduleWorkspaceListRefresh(vault)
+                }
+            }
+        }
+        workspaceListRefreshJob = job
+        job.start()
+    }
+
     fun selectProject(project: PlatformFile) {
-        launchWorkspaceTransition {
+        workspaceSessionCoordinator.launchTransition {
             fileManager.requestOpenWorkspace(project)
             if (fileManager.workspaceOpenRequest.value != null) {
-                showWorkspaceSelection()
+                workspaceSessionCoordinator.ensureWorkspaceSelectionVisible()
+            } else {
+                _generalLinkReturnTarget.value = null
             }
         }
     }
 
     fun returnToLastProject() {
-        launchWorkspaceTransition {
-            fileManager.returnToLastProject()
-            if (bookmarks.value.projectData == null) showWorkspaceSelection()
+        workspaceSessionCoordinator.launchTransition {
+            val trace = WorkspaceLoadDiagnostics.begin("return-to-project")
+            try {
+                fileManager.returnToLastProject()
+                if (bookmarks.value.projectData == null) {
+                    workspaceSessionCoordinator.ensureWorkspaceSelectionVisible()
+                } else {
+                    _generalLinkReturnTarget.value = null
+                }
+                trace.complete()
+            } catch (error: Throwable) {
+                trace.fail(error)
+                throw error
+            }
         }
     }
 
@@ -1229,10 +734,10 @@ class MainViewModel internal constructor(
     }
 
     fun selectFolder(folderKey: FolderKey) {
+        _projectLinkReturnTarget.value = null
         launchNavigation { isLatest ->
             val folder = _hierarchyState.value.folderList.find { it.key == folderKey } ?: return@launchNavigation
-            // Apply the last good snapshot before provider IO. The selected folder responds
-            // immediately, while the following read still reconciles external create/delete.
+            // Focus refresh owns external inventory discovery; navigation reuses its snapshot.
             val cached = _hierarchyState.value.folderContents[folder.key]
             cached?.let { content ->
                 if (!isLatest()) return@launchNavigation
@@ -1246,18 +751,22 @@ class MainViewModel internal constructor(
                 )
             }
 
+            if (cached != null) {
+                cached.files.getOrNull(_hierarchyState.value.currentIndex)?.let { fileManager.pickFile(it) }
+                return@launchNavigation
+            }
             val content = try {
                 loadFolderContent(folder)
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Exception) {
                 if (isLatest()) {
-                    _workspaceTransitionError.value = error.message ?: "파일 목록을 새로 고치지 못했습니다."
+                    workspaceSessionCoordinator.reportError(error.message ?: "파일 목록을 새로 고치지 못했습니다.")
                 }
                 return@launchNavigation
             }
             if (!isLatest()) return@launchNavigation
-            if (content != cached) {
+            run {
                 applyFolderContent(
                     folder,
                     content,
@@ -1274,6 +783,13 @@ class MainViewModel internal constructor(
     }
 
     fun selectFile(fileKey: FileKey) {
+        if (_hierarchyState.value.selectedFileKey != fileKey) {
+            _projectLinkReturnTarget.value = null
+        }
+        selectFileInternal(fileKey)
+    }
+
+    private fun selectFileInternal(fileKey: FileKey, onSelected: () -> Unit = {}) {
         launchNavigation { isLatest ->
             val folder = _hierarchyState.value.folderList.find { it.key == fileKey.folder }
                 ?: return@launchNavigation
@@ -1281,13 +797,14 @@ class MainViewModel internal constructor(
                 ?.takeIf { cached -> cached.files.any { it.key == fileKey } }
                 ?: loadFolderContent(folder)
             val file = content.files.find { it.key == fileKey } ?: return@launchNavigation
+            if (!fileManager.workspaceExists(file.platformFile)) return@launchNavigation
+            if (!isLatest()) return@launchNavigation
             fileManager.pickFile(file)
             if (!isLatest()) return@launchNavigation
             applyFolderContent(folder, content, preferredKey = fileKey)
             folderFileSelectionMemory.remember(file.key)
-            val revalidateGeneral = bookmarks.value.workspaceKind == WorkspaceKind.GENERAL &&
-                !saveCoordinator.hasPending(file.key) && file.key !in _documentConflicts.value
-            loadPage(file, force = revalidateGeneral)
+            loadPage(file)
+            if (isLatest()) onSelected()
         }
     }
 
@@ -1313,7 +830,7 @@ class MainViewModel internal constructor(
                 }
                 incompleteCreation = null
                 _canRetryCreation.value = false
-                _workspaceTransitionError.value = null
+                workspaceSessionCoordinator.clearError()
                 finishCreatedFile(folder, created, context)
             }
         }
@@ -1332,11 +849,11 @@ class MainViewModel internal constructor(
                     ?.takeIf { it.toString() == context.projectLocation }
                     ?: return
                 val modifiedAt = fileManager.lastModified(created.platformFile)
-                modifiedAt?.let { knownModified[created.key] = it }
+                knownModified[created.key] = modifiedAt ?: 0L
                 updateWorkspaceMetadataIndex(created, noteFile, modifiedAt, context)
                 updateGeneralSourceEntry(created, noteFile, context)
                 if (isCurrentWorkspace(context)) {
-                    scheduleGeneralSourceRefresh(workspace, context, currentHierarchyFiles())
+                    scheduleGeneralSourceRefresh(workspace, context, currentHierarchyFiles(), refreshMetadata = false)
                 }
             }
         } catch (error: Exception) {
@@ -1378,7 +895,9 @@ class MainViewModel internal constructor(
         if (hasPendingPropertyDefinitionSync()) return
         if (_creationInProgress.value) return
         if (incompleteCreation != null) {
-            _workspaceTransitionError.value = "이전 파일의 설정 기록이 완료되지 않았습니다. 남은 기록 재시도를 사용해 주세요. 파일을 직접 확인한 뒤 작업 공간 선택으로 나갔다 다시 열면 새 파일을 생성할 수 있습니다."
+            workspaceSessionCoordinator.reportError(
+                "이전 파일의 설정 기록이 완료되지 않았습니다. 남은 기록 재시도를 사용해 주세요. 파일을 직접 확인한 뒤 작업 공간 선택으로 나갔다 다시 열면 새 파일을 생성할 수 있습니다.",
+            )
             return
         }
         _creationInProgress.value = true
@@ -1424,7 +943,7 @@ class MainViewModel internal constructor(
     ): Boolean {
         if (workspaceInputBlocked || hasPendingPropertyDefinitionSync()) return false
         val context = currentWorkspaceReadContext()
-        return fileReconciliationMutex.withLock {
+        return withMutationIndexGate(context, false) withLock@ {
             if (workspaceInputBlocked || !isCurrentWorkspace(context) || hasPendingPropertyDefinitionSync()) {
                 return@withLock false
             }
@@ -1433,24 +952,31 @@ class MainViewModel internal constructor(
             if (config.type != FolderType.DEFAULT || config.isPlot) return@withLock false
 
             try {
-                saveCoordinator.flush(orderedFileKeys.toSet())
+                if (_documentConflicts.value.isNotEmpty()) return@withLock false
+                saveCoordinator.flushAll()
                 if (workspaceInputBlocked || !isCurrentWorkspace(context)) return@withLock false
                 val selectedOldKey = selectedKeyFor(folderKey)
-                val updates = fileManager.applyDefaultOrder(folder, orderedFileKeys)
-                    ?: return@withLock false
-                reconcileOrderUpdates(
-                    folder = folder,
-                    updates = updates.map { update ->
-                        OrderStateUpdate(
-                            oldKey = update.oldKey,
-                            projectFile = update.projectFile,
+                saveCoordinator.withWritesPaused {
+                    if (!isCurrentWorkspace(context)) return@withWritesPaused false
+                    withContext(NonCancellable) {
+                        val result = fileManager.applyDefaultOrderWithReferences(folder, orderedFileKeys)
+                            ?: return@withContext restoreOrderHandles(orderedFileKeys)
+                        reconcileOrderUpdates(
+                            folder = folder,
+                            updates = result.updates.map { update ->
+                                OrderStateUpdate(oldKey = update.oldKey, projectFile = update.projectFile)
+                            },
+                            selectedOldKey = selectedOldKey,
+                            references = result.references,
                         )
-                    },
-                    selectedOldKey = selectedOldKey,
-                )
-                true
+                        true
+                    }
+                }
             } catch (error: CancellationException) {
                 throw error
+            } catch (error: FileOrderRollbackException) {
+                quarantinePathChanges(error.affectedPaths, error)
+                false
             } catch (error: Exception) {
                 false
             }
@@ -1463,7 +989,7 @@ class MainViewModel internal constructor(
     ): Boolean {
         if (workspaceInputBlocked || hasPendingPropertyDefinitionSync()) return false
         val context = currentWorkspaceReadContext()
-        return fileReconciliationMutex.withLock {
+        return withMutationIndexGate(context, false) withLock@ {
             if (workspaceInputBlocked || !isCurrentWorkspace(context) || hasPendingPropertyDefinitionSync()) {
                 return@withLock false
             }
@@ -1472,25 +998,35 @@ class MainViewModel internal constructor(
 
             try {
                 val assignmentKeys = assignments.mapTo(mutableSetOf()) { it.fileKey }
-                saveCoordinator.flush(assignmentKeys)
+                if (_documentConflicts.value.isNotEmpty()) return@withLock false
+                saveCoordinator.flushAll()
                 if (workspaceInputBlocked || !isCurrentWorkspace(context)) return@withLock false
                 val selectedOldKey = selectedKeyFor(folderKey)
-                val updates = fileManager.applyPlotOrder(folder, assignments)
-                    ?: return@withLock false
-                reconcileOrderUpdates(
-                    folder = folder,
-                    updates = updates.map { update ->
-                        OrderStateUpdate(
-                            oldKey = update.oldKey,
-                            projectFile = update.projectFile,
-                            noteFile = update.noteFile,
+                saveCoordinator.withWritesPaused {
+                    if (!isCurrentWorkspace(context)) return@withWritesPaused false
+                    withContext(NonCancellable) {
+                        val result = fileManager.applyPlotOrderWithReferences(folder, assignments)
+                            ?: return@withContext restoreOrderHandles(assignmentKeys.toList())
+                        reconcileOrderUpdates(
+                            folder = folder,
+                            updates = result.updates.map { update ->
+                                OrderStateUpdate(
+                                    oldKey = update.oldKey,
+                                    projectFile = update.projectFile,
+                                    noteFile = update.noteFile,
+                                )
+                            },
+                            selectedOldKey = selectedOldKey,
+                            references = result.references,
                         )
-                    },
-                    selectedOldKey = selectedOldKey,
-                )
-                true
+                        true
+                    }
+                }
             } catch (error: CancellationException) {
                 throw error
+            } catch (error: FileOrderRollbackException) {
+                quarantinePathChanges(error.affectedPaths, error)
+                false
             } catch (error: Exception) {
                 false
             }
@@ -1568,9 +1104,457 @@ class MainViewModel internal constructor(
                     "폴더는 휴지통으로 이동했지만 목록을 새로 고치지 못했습니다. ${it.message.orEmpty()}"
                 },
             )
-            if (messages.isNotEmpty()) _workspaceTransitionError.value = messages.joinToString("\n")
+            if (messages.isNotEmpty()) workspaceSessionCoordinator.reportError(messages.joinToString("\n"))
         }
     }
+
+    /** Opens an existing Markdown document referenced by a wiki/Markdown link. */
+    fun openInternalDocumentLink(sourceFile: ProjectFile, target: String) {
+        val source = workspaceLinkPath(sourceFile)
+        val index = currentWorkspaceLinkIndex()
+        val reference = source?.let { parseWorkspaceLinkReference(it, target) }
+        val resolution = if (source != null && index != null && reference != null) {
+            index.resolve(source, reference)
+        } else null
+        if (resolution is WorkspaceLinkResolution.Ambiguous) {
+            _ambiguousInternalLink.value = AmbiguousInternalLink(
+                sourceFile = sourceFile,
+                candidates = resolution.candidates.map { it.path },
+            )
+            return
+        }
+        val resolved = resolution as? WorkspaceLinkResolution.Resolved
+        if (resolved?.document?.resourceKind == WorkspaceLinkResourceKind.ATTACHMENT) {
+            viewModelScope.launch {
+                if (!fileManager.openWorkspaceAttachment(resolved.document.path)) {
+                    workspaceSessionCoordinator.reportError("연결된 파일을 열 수 없습니다.")
+                }
+            }
+            return
+        }
+        if (resolved != null && resolved.document.resourceKind == WorkspaceLinkResourceKind.MARKDOWN) {
+            if (resolved.document.path.workspaceName != source?.workspaceName ||
+                resolved.document.path.workspaceKind != source.workspaceKind
+            ) {
+                openCrossWorkspaceDocument(
+                    resolved,
+                    generalReturnTarget = source?.takeIf {
+                        it.workspaceKind == WorkspaceKind.PROJECT &&
+                            resolved.document.path.workspaceKind == WorkspaceKind.GENERAL
+                    },
+                )
+                return
+            }
+            val key = runCatching { FileKey.of(resolved.document.path.relativePath) }.getOrNull()
+            val file = key?.let { wanted ->
+                _hierarchyState.value.folderContents.values
+                    .asSequence()
+                    .flatMap { it.files.asSequence() }
+                    .firstOrNull { it.key == wanted }
+            }
+            if (file != null) {
+                resolved.heading?.let { heading ->
+                    _markdownNavigation.value = PendingMarkdownNavigation(
+                        fileKey = file.key,
+                        target = MarkdownNavigationTarget(++nextMarkdownNavigationId, headingPath = heading.path),
+                    )
+                } ?: resolved.block?.let { block ->
+                    _markdownNavigation.value = PendingMarkdownNavigation(
+                        fileKey = file.key,
+                        target = MarkdownNavigationTarget(++nextMarkdownNavigationId, blockId = block.id),
+                    )
+                }
+                if (file.key != sourceFile.key) {
+                    selectInternalLinkFile(sourceFile, file.key)
+                }
+            }
+            return
+        }
+        if (index != null) return
+        // Keep the pre-index local resolver available while an index is still being built.
+        resolveInternalDocumentLink(_hierarchyState.value, target)?.let { key ->
+            selectInternalLinkFile(sourceFile, key)
+        }
+    }
+
+    fun consumeMarkdownNavigation(id: Long) {
+        if (_markdownNavigation.value?.target?.id == id) _markdownNavigation.value = null
+    }
+
+    fun dismissAmbiguousInternalLink() {
+        _ambiguousInternalLink.value = null
+    }
+
+    fun chooseAmbiguousInternalLink(path: WorkspaceLinkPath) {
+        val ambiguous = _ambiguousInternalLink.value
+        _ambiguousInternalLink.value = null
+        val current = bookmarks.value
+        if (path.workspaceName == current.projectData?.name && path.workspaceKind == current.workspaceKind) {
+            runCatching { FileKey.of(path.relativePath) }.getOrNull()?.let { key ->
+                ambiguous?.sourceFile?.let { selectInternalLinkFile(it, key) }
+            }
+        } else {
+            currentWorkspaceLinkIndex()?.documents
+                ?.firstOrNull { it.path == path && it.resourceKind == WorkspaceLinkResourceKind.MARKDOWN }
+                ?.let { document ->
+                    val source = ambiguous?.sourceFile?.let(::workspaceLinkPath)
+                    openCrossWorkspaceDocument(
+                        WorkspaceLinkResolution.Resolved(document),
+                        generalReturnTarget = source.takeIf {
+                            it?.workspaceKind == WorkspaceKind.PROJECT && path.workspaceKind == WorkspaceKind.GENERAL
+                        },
+                    )
+                }
+        }
+    }
+
+    fun returnFromGeneralLink() {
+        val path = _generalLinkReturnTarget.value ?: return
+        val document = currentWorkspaceLinkIndex()?.documents?.firstOrNull {
+            it.path == path && it.resourceKind == WorkspaceLinkResourceKind.MARKDOWN
+        }
+        if (document == null) {
+            workspaceSessionCoordinator.reportError("돌아갈 원본 문서를 찾을 수 없습니다.")
+            return
+        }
+        openCrossWorkspaceDocument(
+            WorkspaceLinkResolution.Resolved(document),
+            clearGeneralReturnOnSuccess = true,
+        )
+    }
+
+    fun returnFromProjectLink() {
+        val path = _projectLinkReturnTarget.value ?: return
+        if (path.workspaceKind != WorkspaceKind.PROJECT || path.workspaceName != bookmarks.value.projectData?.name) {
+            _projectLinkReturnTarget.value = null
+            workspaceSessionCoordinator.reportError("돌아갈 원본 문서를 찾을 수 없습니다.")
+            return
+        }
+        val key = runCatching { FileKey.of(path.relativePath) }.getOrNull()
+        if (key == null) {
+            _projectLinkReturnTarget.value = null
+            workspaceSessionCoordinator.reportError("돌아갈 원본 문서를 찾을 수 없습니다.")
+            return
+        }
+        selectFileInternal(key) {
+            if (_projectLinkReturnTarget.value == path) _projectLinkReturnTarget.value = null
+        }
+    }
+
+    private fun selectInternalLinkFile(sourceFile: ProjectFile, targetKey: FileKey) {
+        if (targetKey == sourceFile.key) return
+        val returnTarget = workspaceLinkPath(sourceFile)?.takeIf {
+            it.workspaceKind == WorkspaceKind.PROJECT && targetKey.folder != FolderKey.Base
+        }
+        selectFileInternal(targetKey) {
+            _projectLinkReturnTarget.value = returnTarget
+        }
+    }
+
+    private fun openCrossWorkspaceDocument(
+        resolved: WorkspaceLinkResolution.Resolved,
+        generalReturnTarget: WorkspaceLinkPath? = null,
+        clearGeneralReturnOnSuccess: Boolean = false,
+    ) {
+        val path = resolved.document.path
+        val trace = WorkspaceLoadDiagnostics.begin(
+            if (clearGeneralReturnOnSuccess) "cross-workspace-return" else "cross-workspace-open",
+            "kind=${path.workspaceKind}",
+        )
+        workspaceSessionCoordinator.launchTransition {
+            try {
+                val vault = bookmarks.value.vaultData ?: error("Vault를 확인할 수 없습니다.")
+                val workspace = (_projectList.value + _generalFolderList.value)
+                    .firstOrNull { it.name == path.workspaceName }
+                    ?: fileManager.listProject(vault).firstOrNull { it.name == path.workspaceName }
+                    ?: error("연결된 작업 공간을 찾을 수 없습니다: ${path.workspaceName}")
+                val targetFile = fileManager.workspaceLinkIndex.platformFile(path)
+                    ?: error("연결된 문서를 찾을 수 없습니다: ${path.vaultRelativePath}")
+                check(fileManager.workspaceExists(targetFile)) {
+                    "연결된 문서를 찾을 수 없습니다: ${path.vaultRelativePath}"
+                }
+                fileManager.requestOpenWorkspace(workspace)
+                if (fileManager.workspaceOpenRequest.value != null) {
+                    fileManager.confirmWorkspaceOpen(path.workspaceKind)
+                }
+                check(fileManager.workspaceOpenRequest.value == null) { "연결된 작업 공간을 열지 못했습니다." }
+                val key = FileKey.of(path.relativePath)
+                fileManager.pickFile(ProjectFile(key, targetFile))
+                _generalLinkReturnTarget.value = if (clearGeneralReturnOnSuccess) null else generalReturnTarget
+                resolved.heading?.let { heading ->
+                    _markdownNavigation.value = PendingMarkdownNavigation(
+                        fileKey = key,
+                        target = MarkdownNavigationTarget(++nextMarkdownNavigationId, headingPath = heading.path),
+                    )
+                } ?: resolved.block?.let { block ->
+                    _markdownNavigation.value = PendingMarkdownNavigation(
+                        fileKey = key,
+                        target = MarkdownNavigationTarget(++nextMarkdownNavigationId, blockId = block.id),
+                    )
+                }
+                trace.complete()
+            } catch (error: Throwable) {
+                trace.fail(error)
+                throw error
+            }
+        }
+    }
+
+    fun isInternalDocumentLinkResolved(sourceFile: ProjectFile, target: String): Boolean {
+        val index = currentWorkspaceLinkIndex() ?: return true
+        val source = workspaceLinkPath(sourceFile) ?: return true
+        val reference = parseWorkspaceLinkReference(source, target) ?: return false
+        return index.resolve(source, reference) is WorkspaceLinkResolution.Resolved
+    }
+
+    suspend fun resolveInternalEmbed(sourceFile: ProjectFile, target: String): MarkdownEmbedPreview = runCatching {
+        val source = workspaceLinkPath(sourceFile)
+            ?: return@runCatching MarkdownEmbedPreview.Unavailable("현재 작업 공간을 확인할 수 없습니다.")
+        val index = currentWorkspaceLinkIndex()
+            ?: return@runCatching MarkdownEmbedPreview.Unavailable("링크 인덱스를 준비하는 중입니다.")
+        val reference = WorkspaceLinkDocument.markdown(source, "![[$target]]").outgoing.singleOrNull()
+            ?: return@runCatching MarkdownEmbedPreview.Unavailable("임베드 문법을 해석하지 못했습니다.")
+        val resolved = index.resolve(source, reference) as? WorkspaceLinkResolution.Resolved
+            ?: return@runCatching MarkdownEmbedPreview.Unavailable("임베드 대상을 찾을 수 없습니다.")
+        resolved.document.issue?.let { issue ->
+            return@runCatching MarkdownEmbedPreview.Unavailable(issue)
+        }
+        val file = fileManager.workspaceLinkIndex.platformFile(resolved.document.path)
+            ?: return@runCatching MarkdownEmbedPreview.Unavailable("임베드 파일에 접근할 수 없습니다.")
+        if (!fileManager.workspaceExists(file)) {
+            return@runCatching MarkdownEmbedPreview.Unavailable("임베드 파일에 접근할 수 없습니다.")
+        }
+        when (resolved.document.resourceKind) {
+            WorkspaceLinkResourceKind.MARKDOWN -> MarkdownEmbedPreview.Document(
+                extractMarkdownEmbed(
+                    raw = fileManager.workspaceLinkMarkdownReader(file),
+                    heading = resolved.heading,
+                    block = resolved.block,
+                ),
+            )
+            WorkspaceLinkResourceKind.ATTACHMENT -> {
+                if (resolved.document.path.fileName.substringAfterLast('.', "").lowercase() !in IMAGE_EXTENSIONS) {
+                    MarkdownEmbedPreview.Attachment(resolved.document.path.fileName)
+                } else {
+                    val bytes = file.readBytes()
+                    if (bytes.size > MAX_EMBED_IMAGE_BYTES) {
+                        MarkdownEmbedPreview.Unavailable("이미지가 너무 커서 미리볼 수 없습니다.")
+                    } else {
+                        MarkdownEmbedPreview.Image(bytes.decodeToImageBitmap(), resolved.document.path.fileName)
+                    }
+                }
+            }
+        }
+    }.getOrElse { error ->
+        MarkdownEmbedPreview.Unavailable(error.message ?: "임베드를 불러오지 못했습니다.")
+    }
+
+    fun completeInternalDocumentLink(
+        sourceFile: ProjectFile,
+        request: MarkdownLinkCompletionRequest,
+    ): List<MarkdownLinkCompletionCandidate> {
+        val source = workspaceLinkPath(sourceFile) ?: return emptyList()
+        val index = currentWorkspaceLinkIndex() ?: return emptyList()
+        val candidates = when (request.kind) {
+            MarkdownLinkCompletionKind.FILE -> index.completeFiles(source, request.query)
+            MarkdownLinkCompletionKind.HEADING -> index.completeHeadings(source, request.file, request.query)
+            MarkdownLinkCompletionKind.BLOCK -> {
+                if (request.file == null && request.query.startsWith('^')) return emptyList()
+                val target = (index.resolve(source, WorkspaceLinkTarget(request.file)) as? WorkspaceLinkResolution.Resolved)
+                    ?.document
+                val loaded = target?.takeIf {
+                    it.path.workspaceKind == source.workspaceKind && it.path.workspaceName == source.workspaceName
+                }?.let { loadedNote(FileKey.of(it.path.relativePath)) }
+                index.completeBlocks(source, request.file, request.query,
+                    documentOverride = loaded?.let { WorkspaceLinkDocument.markdown(checkNotNull(target).path, it.inject()) })
+            }
+        }
+        return candidates.map { candidate ->
+            val target = when {
+                request.syntax == MarkdownLinkCompletionSyntax.WIKI &&
+                    !request.hasExistingAlias && candidate.alias != null ->
+                    "${candidate.target}|${candidate.alias}"
+                request.syntax == MarkdownLinkCompletionSyntax.MARKDOWN -> candidate.target.replace(" ", "%20")
+                else -> candidate.target
+            }
+            val replacement = request.displayText?.let { display ->
+                "${target.substringBefore('|')}|$display"
+            } ?: target
+            MarkdownLinkCompletionCandidate(
+                title = candidate.title,
+                detail = candidate.detail,
+                replacement = replacement,
+                blockCreation = candidate.blockDraft?.let { draft ->
+                    val current = candidate.path == source
+                    val raw = if (current) loadedNote(sourceFile.key)?.inject() else null
+                    val bodyOffset = raw?.let { it.length - NoteFile.parse(it).body.length } ?: 0
+                    MarkdownBlockReferenceCreation(
+                        path = candidate.path,
+                        draft = if (current) draft.copy(
+                            sourceRange = WorkspaceLinkSourceRange(
+                                draft.sourceRange.start - bodyOffset, draft.sourceRange.endExclusive - bodyOffset),
+                            insertionOffset = draft.insertionOffset - bodyOffset,
+                        ) else draft,
+                        isCurrentDocument = current,
+                    )
+                },
+            )
+        }
+    }
+
+    fun reportBlockReferenceError(message: String) = workspaceSessionCoordinator.reportError(message)
+
+    /** Commit the target before completing a link. The source editor owns the final, guarded edit. */
+    suspend fun createInternalBlockReference(
+        sourceFile: ProjectFile,
+        creation: MarkdownBlockReferenceCreation,
+        isCurrent: () -> Boolean,
+    ): String? {
+        if (creation.isCurrentDocument || workspaceInputBlocked || !isCurrent() ||
+            !blockReferenceCreations.add(creation.path)
+        ) return null
+        val context = currentWorkspaceReadContext()
+        val sourceSession = editorSessionKeys[sourceFile.key]
+        try {
+            return fileReconciliationMutex.withLock {
+                if (!isCurrentProjectFile(sourceFile, context) || !isCurrent()) return@withLock null
+                saveCoordinator.withWritesPaused {
+                    val file = fileManager.workspaceLinkIndex.platformFile(creation.path)
+                        ?: error("블록 대상 파일을 다시 확인해 주세요.")
+                    val activeTarget = creation.path.workspaceKind == context.workspaceKind &&
+                        creation.path.workspaceName == bookmarks.value.projectData?.name
+                    val key = FileKey.of(creation.path.relativePath)
+                    val targetFile = if (activeTarget) knownProjectFiles[key] else null
+                    val targetSession = if (activeTarget) editorSessionKeys[key] else null
+                    val before = withContext(Dispatchers.IO) { fileManager.workspaceLinkMarkdownReader(file) }
+                    val disk = NoteFile.parse(before)
+                    val pending = if (activeTarget) saveCoordinator.pendingValue(key) else null
+                    if (pending != null && pending.expectedDisk.inject() != disk.inject()) {
+                        targetFile?.let { acceptExternalDocument(key, it, disk, context) }
+                        error("블록 대상이 외부에서 변경되었습니다. 후보를 다시 선택해 주세요.")
+                    }
+                    val loadedBefore = if (activeTarget) loadedNote(key) else null
+                    val working = pending?.noteFile ?: loadedBefore?.takeIf { it.inject() == disk.inject() } ?: disk
+                    val raw = if (working.inject() == disk.inject() && pending == null) before else working.inject()
+                    val id = newWorkspaceBlockId(raw)
+                    val direct = insertWorkspaceBlockId(raw, creation.draft, id)
+                    val canonical = working.inject()
+                    // Loaded-note candidates use the serializer's frontmatter separator; retain the disk's EOLs.
+                    val draft = if (direct == null && raw != canonical && loadedBefore != null &&
+                        insertWorkspaceBlockId(canonical, creation.draft, id) != null
+                    ) {
+                        val shift = raw.length - canonical.length
+                        creation.draft.copy(
+                            sourceRange = WorkspaceLinkSourceRange(creation.draft.sourceRange.start + shift,
+                                creation.draft.sourceRange.endExclusive + shift),
+                            insertionOffset = creation.draft.insertionOffset + shift,
+                        )
+                    } else creation.draft
+                    val after = direct ?: insertWorkspaceBlockId(raw, draft, id)
+                        ?: error("블록 내용이 변경되었습니다. 후보를 다시 선택해 주세요.")
+                    val updated = NoteFile.parse(after)
+                    fun stillCurrent(): Boolean = isCurrentWorkspace(context) && !workspaceInputBlocked && isCurrent() &&
+                        isCurrentProjectFile(sourceFile, context) && editorSessionKeys[sourceFile.key] == sourceSession &&
+                        (!activeTarget || editorSessionKeys[key] == targetSession &&
+                            loadedNote(key)?.inject() == loadedBefore?.inject())
+                    check(stillCurrent()) { "편집 내용이나 작업 공간이 변경되었습니다." }
+                    check(withContext(Dispatchers.IO) { fileManager.workspaceLinkMarkdownReader(file) } == before) {
+                        "블록 대상이 외부에서 변경되었습니다."
+                    }
+                    withContext(NonCancellable) {
+                        try {
+                            withContext(Dispatchers.IO) { fileManager.workspaceLinkMarkdownWriter(file, after) }
+                            val modified = fileManager.lastModified(file)
+                            if (activeTarget && targetFile != null) {
+                                updateWorkspaceMetadataIndex(targetFile, updated, modified, context)
+                            }
+                            fileManager.workspaceLinkIndex.upsertByLocation(file.toString(), after, modified)
+                            check(withContext(Dispatchers.IO) { fileManager.workspaceLinkMarkdownReader(file) } == after) {
+                                "블록 ID 저장 결과를 확인하지 못했습니다."
+                            }
+                            check(stillCurrent()) { "편집 내용이나 작업 공간이 변경되었습니다." }
+                            if (activeTarget && targetFile != null) {
+                                pageLoadJobs.remove(key)?.cancel()
+                                saveCoordinator.cancel(key)
+                                putLoadedNote(key, updated)
+                                modified?.let { knownModified[key] = it }
+                                updateGeneralSourceEntry(targetFile, updated, context)
+                            }
+                            id
+                        } catch (failure: Exception) {
+                            restoreBlockReferenceTarget(file, creation.path, before, after, failure, context)
+                            throw failure
+                        }
+                    }
+                }
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            if (isCurrentWorkspace(context)) reportBlockReferenceError(failure.message ?: "블록 ID를 저장하지 못했습니다.")
+            return null
+        } finally {
+            blockReferenceCreations.remove(creation.path)
+        }
+    }
+
+    private suspend fun restoreBlockReferenceTarget(
+        file: PlatformFile,
+        path: WorkspaceLinkPath,
+        before: String,
+        after: String,
+        cause: Exception,
+        context: WorkspaceReadContext,
+    ) {
+        try {
+            val observed = withContext(Dispatchers.IO) { fileManager.workspaceLinkMarkdownReader(file) }
+            if (observed != before) {
+                // A prefix can also be another writer's edit; only restore our exact receipt.
+                check(observed == after) { "블록 대상이 외부에서 변경되어 원복하지 않았습니다." }
+                withContext(Dispatchers.IO) { fileManager.workspaceLinkMarkdownWriter(file, before) }
+                check(withContext(Dispatchers.IO) { fileManager.workspaceLinkMarkdownReader(file) } == before) {
+                    "블록 ID 기록을 복구하지 못했습니다."
+                }
+            }
+            val modified = fileManager.lastModified(file)
+            fileManager.workspaceLinkIndex.upsertByLocation(file.toString(), before, modified)
+            val key = FileKey.of(path.relativePath)
+            val activeTarget = path.workspaceKind == context.workspaceKind &&
+                path.workspaceName == bookmarks.value.projectData?.name
+            val target = knownProjectFiles[key]?.takeIf { activeTarget && it.platformFile.toString() == file.toString() }
+            target?.let { updateWorkspaceMetadataIndex(it, NoteFile.parse(before), modified, context) }
+            check(withContext(Dispatchers.IO) { fileManager.workspaceLinkMarkdownReader(file) } == before) {
+                "블록 대상이 복구 중 외부에서 변경되었습니다."
+            }
+            if (isCurrentWorkspace(context) && target != null && knownProjectFiles[key] == target) {
+                modified?.let { knownModified[key] = it }
+            }
+        } catch (rollback: Exception) {
+            cause.addSuppressed(rollback)
+            if (isCurrentWorkspace(context)) quarantinePathChanges(setOf(path),
+                IllegalStateException("블록 ID 기록의 복구 상태를 확인해 주세요. ${rollback.message.orEmpty()}", cause))
+        }
+    }
+
+    private fun currentWorkspaceLinkIndex(): WorkspaceLinkIndex? = when (
+        val state = fileManager.workspaceLinkIndexState.value
+    ) {
+        is WorkspaceLinkIndexState.Ready -> state.index
+        is WorkspaceLinkIndexState.Building -> state.index
+        is WorkspaceLinkIndexState.Error -> state.previousIndex
+        WorkspaceLinkIndexState.Inactive -> null
+    }
+
+    private fun workspaceLinkPath(file: ProjectFile): WorkspaceLinkPath? {
+        val bookmark = bookmarks.value
+        val workspaceName = bookmark.projectData?.let(readWorkspaceName) ?: return null
+        return runCatching {
+            WorkspaceLinkPath(bookmark.workspaceKind, workspaceName, file.key.relativePath)
+        }.getOrNull()
+    }
+
+    private fun parseWorkspaceLinkReference(source: WorkspaceLinkPath, target: String) =
+        WorkspaceLinkDocument.markdown(source, "[[$target]]").outgoing.singleOrNull()
 
     /** Flush the captured file before presenting a destructive confirmation for that exact identity. */
     fun requestMoveFileToTrash(file: ProjectFile) {
@@ -1590,7 +1574,7 @@ class MainViewModel internal constructor(
                         _pendingFileTrash.value = FileTrashUiState(file = file)
                     }.onFailure { error ->
                         if (isCurrentWorkspace(context) && workspaceSaveCoordinator.lastErrorMessage.value == null) {
-                            _workspaceTransitionError.value = error.message ?: "파일 삭제를 준비하지 못했습니다."
+                            workspaceSessionCoordinator.reportError(error.message ?: "파일 삭제를 준비하지 못했습니다.")
                         }
                     }
                 }
@@ -1611,8 +1595,8 @@ class MainViewModel internal constructor(
         val context = currentWorkspaceReadContext()
         _pendingFileTrash.value = requested.copy(busy = true, errorMessage = null)
         viewModelScope.launch {
-            fileReconciliationMutex.withLock {
-                if (!isCurrentWorkspace(context)) return@withLock
+            val entered = withMutationIndexGate(context, false) withLock@ {
+                if (!isCurrentWorkspace(context)) return@withLock false
                 workspaceSaveCoordinator.runAfterFlush {
                     saveCoordinator.flushAll()
                     check(!hasPendingPropertyDefinitionSync()) {
@@ -1645,7 +1629,7 @@ class MainViewModel internal constructor(
                         result.cleanupWarning,
                         refreshFailure?.let { "파일은 휴지통으로 이동했지만 목록을 새로 고치지 못했습니다. ${it.message.orEmpty()}" },
                     )
-                    if (messages.isNotEmpty()) _workspaceTransitionError.value = messages.joinToString("\n")
+                    if (messages.isNotEmpty()) workspaceSessionCoordinator.reportError(messages.joinToString("\n"))
                 }.onFailure { error ->
                     if (isCurrentWorkspace(context) && _pendingFileTrash.value?.file?.sameIdentityAs(requested.file) == true) {
                         _pendingFileTrash.value = requested.copy(
@@ -1654,18 +1638,19 @@ class MainViewModel internal constructor(
                         )
                     }
                 }
+                true
+            }
+            if (!entered && isCurrentWorkspace(context) &&
+                _pendingFileTrash.value?.file?.sameIdentityAs(requested.file) == true) {
+                _pendingFileTrash.value = requested.copy(busy = false,
+                    errorMessage = workspaceTransitionError.value ?: "링크 색인 준비에 실패해 삭제하지 않았습니다.")
             }
         }
     }
 
-    /**
-     * 열려있는(캐시된) 파일들의 외부 변경을 감지하여 자동 리로드한다.
-     * - 파일 목록도 함께 갱신 (외부에서 파일 추가/삭제)
-     * - mtime 이 마지막 인지 시각과 같으면 skip (자기 쓰기 포함)
-     * - 내용이 실제로 다르면 캐시 교체 → EditorPage 의 value 가 바뀌어 에디터가 재파싱 (외부 우선)
-     */
+    /** Focus return reconciles inventory; the short poll checks only the selected clean document. */
     internal suspend fun checkExternalChanges(refreshHierarchy: Boolean) {
-        fileReconciliationMutex.withLock {
+        WorkspaceLoadDiagnostics.withLock(fileReconciliationMutex, "reconciliation-lock-wait") {
             if (workspaceInputBlocked) return@withLock
             val workspace = bookmarks.value
             val project = workspace.projectData ?: return@withLock
@@ -1673,41 +1658,53 @@ class MainViewModel internal constructor(
             if (!isCurrentWorkspace(context)) return@withLock
             if (!reconcileSelectedWorkspaceAvailability()) return@withLock
 
-            // Folder/file enumeration is expensive on Android SAF. Keep the short poll for opened
-            // documents, but enumerate the whole workspace only on focus return and every ~15s.
+            // External inventory changes are reconciled on focus return, never on the short timer.
             if (refreshHierarchy) {
                 refreshFoldersAndFiles(
                     project,
                     preferredKey = null,
                     cancelRemoved = true,
-                    refreshGeneralSources = false,
+                    refreshGeneralSources = true,
                     refreshProjectPlotMetadata = true,
                 )
+                workspace.vaultData?.let { scheduleWorkspaceLinkIndexRefresh(it, "focus-return") }
             }
             if (!isCurrentWorkspace(context)) return@withLock
 
-            // 2. 캐시된 파일들의 내용 변경 감지
-            for (projectFile in _hierarchyState.value.fileList) {
-                if (!isCurrentWorkspace(context)) return@withLock
-                val key = projectFile.key
-                if (key in _documentConflicts.value) continue
-                val file = projectFile.platformFile
-                val cached = loadedNote(key) ?: continue // 아직 안 연 파일은 skip
-                val diskModified = fileManager.lastModified(file) ?: continue
-                if (knownModified[key] == diskModified) continue // 변화 없음 (자기 쓰기 포함)
+            _hierarchyState.value.currentFile?.let { refreshSelectedDocument(it, context) }
+        }
+    }
 
-                val fresh = fileManager.readMarkdown(file)
-                if (!isCurrentWorkspace(context)) return@withLock
-                val refreshedModified = fileManager.lastModified(file) ?: diskModified
-                // mtime 은 달라졌지만 내용은 동일할 수 있음(자기 쓰기 레이스 등) → 실제 diff 일 때만 교체
-                if (fresh.inject() != cached.inject()) {
-                    acceptExternalDocument(key, projectFile, fresh, context, refreshedModified)
-                } else {
-                    knownModified[key] = refreshedModified
-                    updateWorkspaceMetadataIndex(projectFile, fresh, refreshedModified, context)
-                    updateGeneralSourceEntry(projectFile, fresh, context)
-                }
-            }
+    private suspend fun refreshSelectedDocument(file: ProjectFile, context: WorkspaceReadContext) {
+        val key = file.key
+        val cached = loadedNote(key) ?: return
+        val knownAtStart = knownModified[key]
+        fun canPublish(): Boolean = isCurrentProjectFile(file, context) &&
+            _hierarchyState.value.selectedFileKey == key &&
+            loadedNote(key) === cached && knownModified[key] == knownAtStart &&
+            !saveCoordinator.hasPending(key) && key !in _documentConflicts.value
+        val metadata = bookmarks.value.projectData?.let {
+            fileManager.workspaceMetadataIndex.snapshot(it, context.workspaceKind)?.entries?.get(key)
+        }
+        val unverifiedPositive = metadata?.modifiedAtVerified == false && metadata.modifiedAt?.let { it > 0L } == true
+        if (!canPublish() || knownAtStart != null && knownAtStart <= 0L && !unverifiedPositive) return
+        val diskModified = fileManager.lastModified(file.platformFile)?.takeIf { it > 0L } ?: return
+        if (!canPublish() || knownAtStart == diskModified && !unverifiedPositive) return
+        val read = fileManager.readMarkdownForDisplay(file.platformFile)
+        val fresh = read.noteFile
+        val refreshedModified = fileManager.lastModified(file.platformFile)?.takeIf { it > 0L } ?: return
+        currentCoroutineContext().ensureActive()
+        if (!canPublish() || refreshedModified != diskModified) return
+        if (fresh.inject() != cached.inject()) {
+            acceptExternalDocument(key, file, fresh, context, refreshedModified, expectedMetadataIdentity = read.metadataIdentity)
+        } else {
+            knownModified[key] = refreshedModified
+            updateWorkspaceMetadataIndex(file, fresh, refreshedModified, context, read.metadataIdentity)
+            updateGeneralSourceEntry(file, fresh, context)
+        }
+        val acceptedSnapshot = if (fresh.inject() != cached.inject()) fresh else cached
+        if (isCurrentProjectFile(file, context) && loadedNote(key) === acceptedSnapshot && !saveCoordinator.hasPending(key)) {
+            fileManager.acceptWorkspaceDocumentRead(file.platformFile, read)
         }
     }
 
@@ -1728,9 +1725,7 @@ class MainViewModel internal constructor(
             if (!isLatest()) return@launchNavigation
             _hierarchyState.value = _hierarchyState.value.copy(selectedFileKey = file.key)
             folderFileSelectionMemory.remember(file.key)
-            val revalidateGeneral = bookmarks.value.workspaceKind == WorkspaceKind.GENERAL &&
-                !saveCoordinator.hasPending(file.key) && file.key !in _documentConflicts.value
-            loadPage(file, force = revalidateGeneral)
+            loadPage(file)
         }
     }
 
@@ -1754,7 +1749,9 @@ class MainViewModel internal constructor(
                 val exists = try { file?.platformFile?.exists() == true }
                 catch (cancelled: CancellationException) { throw cancelled }
                 catch (failure: Exception) {
-                    _workspaceTransitionError.value = failure.message ?: "문서 위치를 확인하지 못했습니다. 초안을 유지했습니다."
+                    workspaceSessionCoordinator.reportError(
+                        failure.message ?: "문서 위치를 확인하지 못했습니다. 초안을 유지했습니다.",
+                    )
                     return@withLock
                 }
                 saveCoordinator.cancel(fileKey)
@@ -1780,15 +1777,18 @@ class MainViewModel internal constructor(
         context: WorkspaceReadContext,
         observedModifiedAt: Long? = null,
         cancelPending: Boolean = true,
+        expectedMetadataIdentity: com.ninetag.machum.external.WorkspaceMetadataIdentity? = null,
     ) {
         if (!isCurrentWorkspace(context)) return
         if (cancelPending) saveCoordinator.cancel(fileKey)
-        pageLoadJobs.remove(fileKey)?.cancel()
+        if (pageLoadJobs[fileKey] !== currentCoroutineContext().job) {
+            pageLoadJobs.remove(fileKey)?.cancel()
+        }
         editorSessionKeys.remove(fileKey)
         putLoadedNote(fileKey, fresh)
         val modifiedAt = observedModifiedAt ?: fileManager.lastModified(file.platformFile)
-        modifiedAt?.let { knownModified[fileKey] = it }
-        updateWorkspaceMetadataIndex(file, fresh, modifiedAt, context)
+        knownModified[fileKey] = modifiedAt ?: 0L
+        updateWorkspaceMetadataIndex(file, fresh, modifiedAt, context, expectedMetadataIdentity)
         updateGeneralSourceEntry(file, fresh, context)
     }
 
@@ -1800,17 +1800,21 @@ class MainViewModel internal constructor(
         if (!isCurrentWorkspace(context)) return
         knownProjectFiles[key] = projectFile
         val currentState = _fileLoadStates.value[key]
+        val requestTrace = WorkspaceLoadDiagnostics.begin("document-open-request", "reason=document-open|generation=${context.generation}")
         if (!force) {
-            if (currentState is FileLoadUiState.Loading) return
-            if (
-                currentState is FileLoadUiState.Loaded &&
-                (knownModified[key]?.let { it > 0L } == true || saveCoordinator.hasPending(key))
-            ) {
+            if (currentState is FileLoadUiState.Loading) {
+                requestTrace.complete("mode=skipped|reason=already-loading")
+                return
+            }
+            if (currentState is FileLoadUiState.Loaded &&
+                (_hierarchyState.value.selectedFileKey != key || saveCoordinator.hasPending(key) ||
+                    key in _documentConflicts.value)) {
+                requestTrace.complete("mode=skipped|reason=already-loaded")
                 return
             }
         }
         pageLoadJobs.remove(key)?.cancel()
-        // Revalidating a selected General document must not blank an already rendered editor.
+        // Both workspace kinds render their cached editor while checking its modification time.
         if (currentState !is FileLoadUiState.Loaded) {
             setFileLoadState(key, FileLoadUiState.Loading)
         }
@@ -1818,26 +1822,59 @@ class MainViewModel internal constructor(
         val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
             val trace = WorkspaceLoadDiagnostics.begin(
                 "document-load",
-                "generation=${context.generation}",
+                "generation=${context.generation}|reason=document-open|triggerOp=${requestTrace.operation?.id}",
             )
             try {
-                val markdown = fileManager.readMarkdown(file)
-                if (!isCurrentProjectFile(projectFile, context)) {
+                if (!force && currentState is FileLoadUiState.Loaded) {
+                    fileReconciliationMutex.withLock { refreshSelectedDocument(projectFile, context) }
+                    trace.complete("mode=mtime-check")
+                    return@launch
+                }
+                if (!force) {
+                    val workspace = bookmarks.value.projectData
+                    val remembered = workspace?.let {
+                        fileManager.workspaceMetadataIndex.snapshot(it, context.workspaceKind)?.entries?.get(key)
+                    }?.takeIf { it.file.platformFile.toString() == file.toString() && it.noteFile != null }
+                    if (remembered != null) {
+                        if (!isCurrentProjectFile(projectFile, context) ||
+                            pageLoadJobs[key] !== currentCoroutineContext().job) return@launch
+                        putLoadedNote(key, checkNotNull(remembered.noteFile))
+                        knownModified[key] = remembered.modifiedAt ?: 0L
+                        fileReconciliationMutex.withLock { refreshSelectedDocument(projectFile, context) }
+                        trace.complete("mode=process-cache|published=true")
+                        return@launch
+                    }
+                }
+                val read = WorkspaceLoadDiagnostics.within(trace, "document-open") { fileManager.readMarkdownForDisplay(file) }
+                val markdown = read.noteFile
+                val modifiedAt = WorkspaceLoadDiagnostics.within(trace, "document-open") { fileManager.lastModified(file) }
+                currentCoroutineContext().ensureActive()
+                if (!isCurrentProjectFile(projectFile, context) ||
+                    pageLoadJobs[key] !== currentCoroutineContext().job ||
+                    (currentState is FileLoadUiState.Loaded && loadedNote(key) !== currentState.noteFile) ||
+                    saveCoordinator.hasPending(key)) {
                     trace.complete("published=false|reason=file-changed")
                     return@launch
                 }
                 putLoadedNote(key, markdown)
-                val modifiedAt = fileManager.lastModified(file)
-                modifiedAt?.let { knownModified[key] = it }
-                updateWorkspaceMetadataIndex(projectFile, markdown, modifiedAt, context)
+                knownModified[key] = modifiedAt ?: 0L
+                updateWorkspaceMetadataIndex(projectFile, markdown, modifiedAt, context, read.metadataIdentity)
                 updateGeneralSourceEntry(projectFile, markdown, context)
+                if (isCurrentProjectFile(projectFile, context) && loadedNote(key) === markdown && !saveCoordinator.hasPending(key)) {
+                    fileManager.acceptWorkspaceDocumentRead(file, read)
+                }
                 trace.complete("published=true")
             } catch (cancellation: CancellationException) {
                 trace.fail(cancellation)
                 throw cancellation
             } catch (error: Exception) {
                 trace.fail(error)
-                if (!isCurrentProjectFile(projectFile, context)) return@launch
+                if (!isCurrentProjectFile(projectFile, context) ||
+                    pageLoadJobs[key] !== currentCoroutineContext().job || saveCoordinator.hasPending(key)) return@launch
+                if (loadedNote(key) != null) {
+                    workspaceSessionCoordinator.reportError(error.message ?: "문서를 새로 확인하지 못했습니다.")
+                    return@launch
+                }
                 setFileLoadState(
                     key,
                     FileLoadUiState.Error(error.message ?: "파일을 읽지 못했습니다."),
@@ -1849,10 +1886,11 @@ class MainViewModel internal constructor(
         }
         pageLoadJobs[key] = job
         job.start()
+        requestTrace.complete("mode=queued")
     }
 
     fun updateBody(fileKey: FileKey, newBody: String) {
-        if (_commitHistoryUiState.value.restore?.isRestoring == true) return
+        if (commitHistoryUiState.value.restore?.isRestoring == true) return
         if (workspaceInputBlocked) return
         val current = loadedNote(fileKey) ?: return
         if (current.body == newBody) return
@@ -1960,7 +1998,7 @@ class MainViewModel internal constructor(
                             writeNote(file.platformFile, merged)
                         }
                         committedModifiedAt = fileManager.lastModified(file.platformFile)
-                        committedModifiedAt?.let { knownModified[fileKey] = it }
+                        knownModified[fileKey] = committedModifiedAt ?: 0L
                         // provider I/O 중 들어온 입력은 커밋된 속성 위로 올리고 다음 auto-save에 맡긴다.
                         val after = loadedNote(fileKey)
                         val rebased = merged.withBody(
@@ -2213,8 +2251,9 @@ class MainViewModel internal constructor(
         transform: ((FolderConfig) -> FolderConfig)? = null,
     ): Boolean {
         if (hasPendingPropertyDefinitionSync()) {
-            if (reportErrors) _workspaceTransitionError.value =
-                "기본 속성 설정을 저장한 뒤 디렉터리 설정을 변경해 주세요."
+            if (reportErrors) workspaceSessionCoordinator.reportError(
+                "기본 속성 설정을 저장한 뒤 디렉터리 설정을 변경해 주세요.",
+            )
             return false
         }
         var updated = false
@@ -2227,15 +2266,16 @@ class MainViewModel internal constructor(
         var conflictMessage: String? = null
         runWorkspaceMutation(context = requestedContext, reportErrors = reportErrors) { project, context ->
             if (hasPendingPropertyDefinitionSync()) {
-                if (reportErrors) _workspaceTransitionError.value =
-                    "기본 속성 설정을 저장한 뒤 디렉터리 설정을 변경해 주세요."
+                if (reportErrors) workspaceSessionCoordinator.reportError(
+                    "기본 속성 설정을 저장한 뒤 디렉터리 설정을 변경해 주세요.",
+                )
                 return@runWorkspaceMutation
             }
             // runAfterFlush has completed the pending writes from the committed rename/config.
             // Do not re-read/re-tag an item at the new path on a retry of that same request.
             if (previousCommit != null && committedFolderSettings === previousCommit) {
                 committedFolderSettings = null
-                _workspaceTransitionError.value = null
+                workspaceSessionCoordinator.clearError()
                 updated = true
                 return@runWorkspaceMutation
             }
@@ -2266,8 +2306,9 @@ class MainViewModel internal constructor(
             }
             currentCoroutineContext().ensureActive()
             if (pendingKeys == null) {
-                if (reportErrors) _workspaceTransitionError.value =
-                    conflictMessage ?: "디렉터리 설정을 변경하지 못했습니다. 이름과 폴더 접근 권한을 확인해 주세요."
+                if (reportErrors) workspaceSessionCoordinator.reportError(
+                    conflictMessage ?: "디렉터리 설정을 변경하지 못했습니다. 이름과 폴더 접근 권한을 확인해 주세요.",
+                )
                 return@runWorkspaceMutation
             }
             try {
@@ -2278,8 +2319,10 @@ class MainViewModel internal constructor(
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Exception) {
-                if (reportErrors) _workspaceTransitionError.value = "디렉터리 설정은 변경했지만 일부 문서 저장에 실패했습니다. " +
-                    "내용은 메모리에 보관 중이며 다음 편집이나 작업 전환 시 다시 저장합니다. ${error.message.orEmpty()}"
+                if (reportErrors) workspaceSessionCoordinator.reportError(
+                    "디렉터리 설정은 변경했지만 일부 문서 저장에 실패했습니다. " +
+                        "내용은 메모리에 보관 중이며 다음 편집이나 작업 전환 시 다시 저장합니다. ${error.message.orEmpty()}",
+                )
             }
         }
         return updated
@@ -2369,24 +2412,51 @@ class MainViewModel internal constructor(
             return "기본 속성 설정을 저장한 뒤 파일 이름을 변경해 주세요."
         }
         val context = currentWorkspaceReadContext()
-        val result = fileReconciliationMutex.withLock {
-            _documentConflicts.value[projectFile.key]?.let { return@withLock it }
-            if (hasPendingPropertyDefinitionSync()) {
-                return@withLock "기본 속성 설정을 저장한 뒤 파일 이름을 변경해 주세요."
-            }
-            if (!isCurrentProjectFile(projectFile, context)) return@withLock "파일 선택이 변경되었습니다."
-            // 대기는 취소 가능하며, 이미 시작된 쓰기가 끝나기 전에는 pending을 꺼내거나 rename하지 않는다.
-            saveCoordinator.withWritesPaused {
-                currentCoroutineContext().ensureActive()
-                if (!isCurrentProjectFile(projectFile, context)) {
-                    return@withWritesPaused "파일 선택이 변경되었습니다."
+        val trace = WorkspaceLoadDiagnostics.begin("file-rename", "kind=${context.workspaceKind}")
+        return WorkspaceLoadDiagnostics.within(trace, "rename") {
+        val lockTrace = WorkspaceLoadDiagnostics.start("file-rename-lock")
+        try {
+            val result = withMutationIndexGate<String?>(context, "링크 인덱스를 준비하지 못해 이름 변경을 중단했습니다.") withLock@ {
+                lockTrace.complete()
+                _documentConflicts.value[projectFile.key]?.let { return@withLock it }
+                if (hasPendingPropertyDefinitionSync()) {
+                    return@withLock "기본 속성 설정을 저장한 뒤 파일 이름을 변경해 주세요."
                 }
-                // 물리 rename 이후 UI coroutine이 취소돼도 경로·pending·bookmark 반영을 끝낸다.
-                withContext(NonCancellable) { renameFileWithWritesPaused(projectFile, newName) }
+                if (!isCurrentProjectFile(projectFile, context)) return@withLock "파일 선택이 변경되었습니다."
+                // The link index must see unsaved references before planning a path change.
+                run {
+                    _documentConflicts.value.values.firstOrNull()?.let { return@withLock it }
+                    val flushTrace = WorkspaceLoadDiagnostics.begin("file-rename-flush")
+                    try {
+                        saveCoordinator.flushAll()
+                        flushTrace.complete()
+                    } catch (cancellation: CancellationException) {
+                        flushTrace.fail(cancellation)
+                        throw cancellation
+                    } catch (error: Exception) {
+                        flushTrace.fail(error)
+                        return@withLock "문서를 저장하지 못해 이름 변경을 중단했습니다. ${error.message.orEmpty()}"
+                    }
+                }
+                // 대기는 취소 가능하며, 이미 시작된 쓰기가 끝나기 전에는 pending을 꺼내거나 rename하지 않는다.
+                saveCoordinator.withWritesPaused {
+                    currentCoroutineContext().ensureActive()
+                    if (!isCurrentProjectFile(projectFile, context)) {
+                        return@withWritesPaused "파일 선택이 변경되었습니다."
+                    }
+                    // 물리 rename 이후 UI coroutine이 취소돼도 경로·pending·bookmark 반영을 끝낸다.
+                    withContext(NonCancellable) { renameFileWithWritesPaused(projectFile, newName) }
+                }
             }
+            currentCoroutineContext().ensureActive()
+            trace.complete("success=${result == null}")
+            result
+        } catch (error: Throwable) {
+            lockTrace.fail(error)
+            trace.fail(error)
+            throw error
         }
-        currentCoroutineContext().ensureActive()
-        return result
+        }
     }
 
     /**
@@ -2428,7 +2498,7 @@ class MainViewModel internal constructor(
         if (context.workspaceKind != WorkspaceKind.PROJECT) {
             return "Project 작업 공간의 파일만 이동할 수 있습니다."
         }
-        return fileReconciliationMutex.withLock {
+        return withMutationIndexGate<String?>(context, "링크 인덱스를 준비하지 못해 파일 이동을 중단했습니다.") withLock@ {
             if (!isCurrentWorkspace(context) || context.workspaceKind != WorkspaceKind.PROJECT) {
                 return@withLock "작업 공간이 변경되었습니다."
             }
@@ -2487,7 +2557,15 @@ class MainViewModel internal constructor(
             ) {
                 return@withLock "이동할 디렉터리에 같은 이름의 파일이 있습니다."
             }
-            saveCoordinator.flush(affectedKeys - source.key)
+            // Save the source and its peers before any path mutation. Input arriving afterward
+            // is still buffered/rebased by the existing move transaction.
+            try {
+                saveCoordinator.flushAll()
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                return@withLock "문서를 저장하지 못해 파일 이동을 중단했습니다. ${error.message.orEmpty()}"
+            }
 
             saveCoordinator.withWritesPaused {
                 currentCoroutineContext().ensureActive()
@@ -2759,16 +2837,22 @@ class MainViewModel internal constructor(
                 updatedTags = updatedManagedTags,
             )
             .withPlotStage(targetPlotStage)
-        val externalWonDuringMove = externalWonAtMoveStart ||
-            movedDiskNote.inject() != sourceDiskBeforeMove.inject()
+        val sourcePath = workspaceLinkPath(source)
+        fun rewrittenSource(note: NoteFile): NoteFile {
+            val raw = note.inject()
+            val rewritten = sourcePath?.let { moveBatch.references.rewriteSource(it, raw) } ?: raw
+            return if (rewritten == raw) note else NoteFile.parse(rewritten)
+        }
+        var externalWonDuringMove = externalWonAtMoveStart ||
+            movedDiskNote.inject() != rewrittenSource(sourceDiskBeforeMove).inject()
 
         // A move is not reported as fully successful until its managed tags/Plot value have been
         // written once. Input that arrives during this provider write remains in inputBuffer and is
         // rebased onto the committed metadata below.
         val beforeWritePending = saveCoordinator.cancel(oldKey) ?: initialPending
-        val intendedNote = withTargetMetadata(
+        var intendedNote = withTargetMetadata(
             if (externalWonDuringMove) movedDiskNote
-            else inputBuffer.noteFile ?: beforeWritePending?.noteFile ?: movedDiskNote,
+            else (inputBuffer.noteFile ?: beforeWritePending?.noteFile)?.let(::rewrittenSource) ?: movedDiskNote,
         )
         var committedNote = movedDiskNote
         val semanticWriteError = if (intendedNote.inject() != movedDiskNote.inject()) {
@@ -2780,13 +2864,32 @@ class MainViewModel internal constructor(
                 error
             }
         } else null
-        val movedModified = fileManager.lastModified(moved.platformFile)
+        var movedModified = fileManager.lastModified(moved.platformFile)
+        if (semanticWriteError == null) {
+            val fresh = try {
+                fileManager.readMarkdown(moved.platformFile)
+            } catch (_: Exception) {
+                movedModified = null
+                null
+            }
+            if (fresh != null && fresh.inject() != committedNote.inject()) {
+                externalWonDuringMove = true
+                committedNote = fresh
+                intendedNote = fresh
+            }
+        }
         if (workspace != null && semanticWriteError == null) {
             updateWorkspaceMetadataIndex(moved, committedNote, movedModified, context)
         }
 
-        val modifiedByOldKey = moveBatch.filesByPreviousKey.mapValues { (_, file) ->
-            fileManager.lastModified(file.platformFile)
+        val modifiedByOldKey = moveBatch.filesByPreviousKey.mapValues { (previousKey, _) ->
+            if (previousKey == oldKey) movedModified else knownModified[previousKey]
+        }.toMutableMap()
+        synchronizeRenamedReferences(moveBatch.references, excludedKeys = setOf(oldKey))
+        moveBatch.filesByPreviousKey.forEach { (previousKey, file) ->
+            if (previousKey != oldKey && moveBatch.references.sourceUpdates.any {
+                    it.path == workspaceLinkPath(ProjectFile(previousKey, file.platformFile))
+                }) modifiedByOldKey[previousKey] = knownModified[previousKey]
         }
 
         // No suspending work is allowed after this final drain. updateBody writes to inputBuffer
@@ -2799,10 +2902,8 @@ class MainViewModel internal constructor(
             .toMap()
         val effectivePeerPending = latePeerPendingByOldKey
         val movedNote = if (externalWonDuringMove) intendedNote else withTargetMetadata(
-            inputBuffer.noteFile
-                ?: latePending?.noteFile
-                ?: beforeWritePending?.noteFile
-                ?: movedDiskNote,
+            (inputBuffer.noteFile ?: latePending?.noteFile ?: beforeWritePending?.noteFile)
+                ?.let(::rewrittenSource) ?: movedDiskNote,
         )
         val newKey = moved.key
         onFinalKey(newKey)
@@ -2887,7 +2988,7 @@ class MainViewModel internal constructor(
                 "Plot 구분 저장을 완료하지 못했습니다. 자동 저장을 다시 시도합니다."
             }
             workspaceSaveCoordinator.reportAutoSaveFailure(newKey.relativePath, error)
-            _workspaceTransitionError.value = message
+            workspaceSessionCoordinator.reportError(message)
             message
         }
     }
@@ -2987,18 +3088,26 @@ class MainViewModel internal constructor(
         inputBuffer: FileMoveInputBuffer,
         error: ProjectFileMoveRollbackException,
     ): String {
+        val referenceKeys = error.affectedPaths.filter {
+            it.workspaceName == bookmarks.value.projectData?.name && it.workspaceKind == context.workspaceKind
+        }.mapTo(mutableSetOf()) { FileKey.of(it.relativePath) }
+        val conflictKeys = error.affectedKeys + referenceKeys
         bookmarks.value.projectData?.let { workspace ->
             fileManager.workspaceMetadataIndex.invalidate(
                 workspace,
                 WorkspaceKind.PROJECT,
-                error.affectedKeys.toList(),
+                conflictKeys.toList(),
             )
         }
         val message = buildString {
             append(error.message ?: "파일 이동 복구 상태를 확인해야 합니다.")
             append(if (error.restoredToSource) " 원래 위치의 설정 상태를 확인해 주세요." else " 대상 위치의 파일 상태를 확인해 주세요.")
         }
-        val conflictKeys = error.affectedKeys
+        conflictKeys.forEach { key ->
+            if (key != source.key) saveCoordinator.cancel(key)
+            pageLoadJobs.remove(key)?.cancel()
+            knownModified.remove(key)
+        }
         _documentConflicts.value = _documentConflicts.value + conflictKeys.associateWith { message }
         val unresolved = pendingForFailedMove(source, context, initialPending, inputBuffer)
         if (unresolved != null) {
@@ -3009,7 +3118,7 @@ class MainViewModel internal constructor(
         conflictKeys.forEach { key ->
             workspaceSaveCoordinator.reportAutoSaveFailure(key.relativePath, error)
         }
-        _workspaceTransitionError.value = message
+        workspaceSessionCoordinator.reportError(message)
         return message
     }
 
@@ -3027,62 +3136,211 @@ class MainViewModel internal constructor(
         }
 
         val oldKey = projectFile.key
-        val renamed = runCatching { fileManager.renameFile(projectFile, newName) }.getOrNull()
-        if (renamed == null) {
+        val result = try {
+            fileManager.renameFileWithReferences(projectFile, newName)
+        } catch (error: FileRenameRollbackException) {
+            return quarantinePathChanges(error.affectedPaths, error)
+        }
+        if (result == null) {
+            // A SAF rollback can return a new handle even when the original name is restored.
+            runCatching { fileManager.findProjectFile(oldKey) }.getOrNull()?.let { restored ->
+                replaceProjectFileHandle(restored)
+                saveCoordinator.cancel(oldKey)?.let { pending ->
+                    saveCoordinator.schedule(oldKey, pending.copy(projectFile = restored))
+                }
+            }
             return "파일 이름을 변경하지 못했습니다. 이름과 폴더 접근 권한을 확인해 주세요."
         }
-        val renamedModified = fileManager.lastModified(renamed)
-        val newKey = oldKey.rename(renamed.name)
-        folderFileSelectionMemory.renameFile(oldKey, newKey)
-        moveEditorSessionKey(oldKey, newKey)
-        val renamedProjectFile = ProjectFile(newKey, renamed)
-        knownProjectFiles.remove(oldKey)
-        knownProjectFiles[newKey] = renamedProjectFile
-        // 다시 읽지 않고 캐시를 옮긴다. rename I/O 중 들어온 최신 pending도 함께 이동한다.
-        val cached = loadedNote(oldKey)
-        val pendingToMove = saveCoordinator.cancel(oldKey)
-        if (cached != null) {
-            _fileLoadStates.value = _fileLoadStates.value.toMutableMap().also {
-                it.remove(oldKey)
-                it[newKey] = FileLoadUiState.Loaded(cached)
+        return WorkspaceLoadDiagnostics.measure("file-rename.post-provider") {
+            val renamed = result.renamedFile.platformFile
+            pageLoadJobs.remove(oldKey)?.cancel()
+            val (targetSourceUpdated, targetModified) = WorkspaceLoadDiagnostics.measure("file-rename.target-metadata") {
+                val updated = result.sourceUpdates.any { it.path == workspaceLinkPath(projectFile) }
+                updated to if (updated) null else fileManager.lastModified(renamed)
+            }
+            synchronizeRenamedReferences(result.references)
+            val (newKey, renamedProjectFile) = WorkspaceLoadDiagnostics.measure("file-rename.state-remap") {
+                val renamedModified = if (targetSourceUpdated) knownModified[oldKey] else targetModified
+                val newKey = oldKey.rename(renamed.name)
+                folderFileSelectionMemory.renameFile(oldKey, newKey)
+                moveEditorSessionKey(oldKey, newKey)
+                val renamedProjectFile = ProjectFile(newKey, renamed)
+                knownProjectFiles.remove(oldKey)
+                knownProjectFiles[newKey] = renamedProjectFile
+                // 다시 읽지 않고 캐시를 옮긴다. rename I/O 중 들어온 최신 pending도 함께 이동한다.
+                val cached = loadedNote(oldKey)
+                val pendingToMove = saveCoordinator.cancel(oldKey)
+                if (cached != null) {
+                    _fileLoadStates.value = _fileLoadStates.value.toMutableMap().also {
+                        it.remove(oldKey)
+                        it[newKey] = FileLoadUiState.Loaded(cached)
+                    }
+                }
+                if (pendingToMove != null) {
+                    saveCoordinator.schedule(newKey, pendingToMove.copy(projectFile = renamedProjectFile))
+                }
+                knownModified.remove(oldKey)
+                renamedModified?.let { knownModified[newKey] = it }
+                newKey to renamedProjectFile
+            }
+
+            // cache와 editor session을 유지하고 목록·선택만 새 key로 바꾼다.
+            val (nextHierarchy, preferredKey) = WorkspaceLoadDiagnostics.measure("file-rename.hierarchy-prepare") {
+                val current = _hierarchyState.value
+                val selectedKey = current.selectedFileKey
+                val replacedFiles = current.fileList.map { candidate ->
+                    if (candidate.key == oldKey) renamedProjectFile else candidate
+                }
+                val config = folderConfig(oldKey.folder)
+                val plotEntries = if (config.isPlot) {
+                    current.plotFileEntries
+                        .map { entry ->
+                            if (entry.projectFile.key == oldKey) entry.copy(projectFile = renamedProjectFile) else entry
+                        }
+                        .sortedForPlot()
+                } else {
+                    emptyList()
+                }
+                val orderedFiles = if (plotEntries.isNotEmpty()) {
+                    plotEntries.map(PlotFileEntry::projectFile)
+                } else {
+                    replacedFiles.sortedFor(config)
+                }
+                current.copy(
+                    folderContents = current.folderContents +
+                        (oldKey.folder to HierarchyFolderContent(orderedFiles, plotEntries)),
+                ) to if (selectedKey == oldKey) newKey else selectedKey
+            }
+            WorkspaceLoadDiagnostics.measure("file-rename.hierarchy-publish") {
+                publishHierarchy(next = nextHierarchy, preferredKey = preferredKey)
+            }
+            WorkspaceLoadDiagnostics.measure("file-rename.bookmark") {
+                runCatching { fileManager.pickFile(renamedProjectFile) }
+            }
+            null
+        }
+    }
+
+    private fun quarantinePathChanges(paths: Set<WorkspaceLinkPath>, error: Exception): String {
+        val workspace = bookmarks.value.projectData
+        val keys = paths.filter {
+            it.workspaceName == workspace?.name && it.workspaceKind == bookmarks.value.workspaceKind
+        }.mapTo(mutableSetOf()) { FileKey.of(it.relativePath) }
+        val message = error.message ?: "경로 변경 복구 상태를 확인해 주세요."
+        keys.forEach { key ->
+            saveCoordinator.cancel(key)
+            pageLoadJobs.remove(key)?.cancel()
+            knownModified.remove(key)
+        }
+        _documentConflicts.value += keys.associateWith { message }
+        workspaceSessionCoordinator.reportError(message)
+        return message
+    }
+
+    private suspend fun restoreOrderHandles(keys: List<FileKey>): Boolean {
+        keys.forEach { key ->
+            runCatching { fileManager.findProjectFile(key) }.getOrNull()?.let { restored ->
+                replaceProjectFileHandle(restored)
+                saveCoordinator.cancel(key)?.let { pending ->
+                    saveCoordinator.schedule(key, pending.copy(projectFile = restored))
+                }
             }
         }
-        if (pendingToMove != null) {
-            saveCoordinator.schedule(newKey, pendingToMove.copy(projectFile = renamedProjectFile))
-        }
-        knownModified.remove(oldKey)
-        renamedModified?.let { knownModified[newKey] = it }
+        return false
+    }
 
-        // cache와 editor session을 유지하고 목록·선택만 새 key로 바꾼다.
-        val current = _hierarchyState.value
-        val selectedKey = current.selectedFileKey
-        val replacedFiles = current.fileList.map { candidate ->
-            if (candidate.key == oldKey) renamedProjectFile else candidate
-        }
-        val config = folderConfig(oldKey.folder)
-        val plotEntries = if (config.isPlot) {
-            current.plotFileEntries
-                .map { entry ->
-                    if (entry.projectFile.key == oldKey) entry.copy(projectFile = renamedProjectFile) else entry
+    private suspend fun synchronizeRenamedReferences(
+        result: WorkspaceLinkRewriteReceipt,
+        excludedKeys: Set<FileKey> = emptySet(),
+    ) {
+        val trace = WorkspaceLoadDiagnostics.start("references.synchronize")
+        var workspaceNameQueries = 0
+        try {
+            WorkspaceLoadDiagnostics.within(trace) {
+                val context = currentWorkspaceReadContext()
+                val workspace = bookmarks.value.projectData ?: return@within
+                // One provider name query per reconciliation, only when a path actually needs it.
+                val workspaceName by lazy(LazyThreadSafetyMode.NONE) {
+                    workspaceNameQueries++
+                    readWorkspaceName(workspace)
                 }
-                .sortedForPlot()
-        } else {
-            emptyList()
+                val updates = result.sourceUpdates.filter {
+                    it.path.workspaceName == workspaceName && it.path.workspaceKind == context.workspaceKind &&
+                        FileKey.of(it.path.relativePath) !in excludedKeys
+                }.associateBy { it.path }
+                // The provider may change a source while the post-rename index is rebuilding.
+                val observed = WorkspaceLoadDiagnostics.measure("references.observe-sources") {
+                    updates.mapValues { (_, update) ->
+                        try {
+                            val modified = fileManager.lastModified(update.file)
+                            fileManager.readMarkdown(update.file) to modified
+                        } catch (cancellation: CancellationException) {
+                            throw cancellation
+                        } catch (_: Exception) {
+                            null
+                        }
+                    }
+                }
+                WorkspaceLoadDiagnostics.measure("references.publish-loaded-sources") {
+                    updates.values.forEach { update ->
+                        val key = FileKey.of(update.path.relativePath)
+                        pageLoadJobs.remove(key)?.cancel()
+                        if (_fileLoadStates.value[key] is FileLoadUiState.Loading) {
+                            putLoadedNote(key, observed[update.path]?.first ?: NoteFile.parse(update.after))
+                            knownProjectFiles[key] = ProjectFile(key, update.file)
+                        }
+                    }
+                }
+                // All provider reads finish before draining pending values: typing during I/O stays intact.
+                WorkspaceLoadDiagnostics.measure("references.rebase-loop") {
+                    knownProjectFiles.values.toList().forEach { file ->
+                        if (file.key in excludedKeys) return@forEach
+                        val name = workspaceName
+                        val path = runCatching {
+                            WorkspaceLinkPath(context.workspaceKind, name, file.key.relativePath)
+                        }.getOrNull() ?: return@forEach
+                        val update = updates[path]
+                        val pending = saveCoordinator.cancel(file.key)
+                        val original = pending?.noteFile ?: loadedNote(file.key) ?: return@forEach
+                        val disk = update?.let { observed[path]?.first ?: NoteFile.parse(it.after) }
+                        val modified = observed[path]?.second
+                        if (update != null && (disk?.inject() != NoteFile.parse(update.after).inject() ||
+                            pending != null && pending.expectedDisk.inject() != NoteFile.parse(update.before).inject())
+                        ) {
+                            // External edits win, as in acceptExternalDocument; only incomplete rollback quarantines writes.
+                            pageLoadJobs.remove(file.key)?.cancel()
+                            editorSessionKeys.remove(file.key)
+                            putLoadedNote(file.key, checkNotNull(disk))
+                            knownProjectFiles[file.key] = ProjectFile(file.key, update.file)
+                            knownModified.remove(file.key)
+                            modified?.let { knownModified[file.key] = it }
+                            return@forEach
+                        }
+                        val raw = original.inject()
+                        val rewritten = if (pending == null && disk != null) disk else {
+                            val replacement = result.rewriteSource(path, raw)
+                            if (replacement == raw) original else NoteFile.parse(replacement)
+                        }
+                        if (loadedNote(file.key) != null) putLoadedNote(file.key, rewritten)
+                        val authoritative = update?.let { ProjectFile(file.key, it.file) } ?: file
+                        knownProjectFiles[file.key] = authoritative
+                        if (update != null) knownModified.remove(file.key)
+                        modified?.let { knownModified[file.key] = it }
+                        if (pending != null) {
+                            saveCoordinator.schedule(file.key, pending.copy(
+                                projectFile = authoritative,
+                                noteFile = rewritten,
+                                expectedDisk = disk ?: pending.expectedDisk,
+                            ))
+                        }
+                    }
+                }
+            }
+            trace.complete("workspaceNameQueries=$workspaceNameQueries")
+        } catch (error: Throwable) {
+            trace.fail(error)
+            throw error
         }
-        val orderedFiles = if (plotEntries.isNotEmpty()) {
-            plotEntries.map(PlotFileEntry::projectFile)
-        } else {
-            replacedFiles.sortedFor(config)
-        }
-        publishHierarchy(
-            next = current.copy(
-                folderContents = current.folderContents +
-                    (oldKey.folder to HierarchyFolderContent(orderedFiles, plotEntries)),
-            ),
-            preferredKey = if (selectedKey == oldKey) newKey else selectedKey,
-        )
-        runCatching { fileManager.pickFile(renamedProjectFile) }
-        return null
     }
 
     private suspend fun refreshFoldersAndFiles(
@@ -3090,32 +3348,20 @@ class MainViewModel internal constructor(
         preferredKey: FileKey?,
         cancelRemoved: Boolean,
         preferredFolderKey: FolderKey? = null,
-        refreshGeneralSources: Boolean = true,
-        refreshProjectPlotMetadata: Boolean = true,
+        refreshGeneralSources: Boolean = false,
+        refreshProjectPlotMetadata: Boolean = false,
         useInitialProjectIndexSnapshot: Boolean = false,
     ) {
         val context = currentWorkspaceReadContext()
         if (context.projectLocation != project.toString() || !isCurrentWorkspace(context)) return
-        val trace = WorkspaceLoadDiagnostics.begin(
-            "hierarchy-refresh",
-            "kind=${context.workspaceKind}|generation=${context.generation}",
-        )
-        try {
         val previous = _hierarchyState.value
         val indexedHierarchy = if (useInitialProjectIndexSnapshot) {
             initialProjectHierarchySnapshot(project, context)
         } else {
             null
         }
-        if (!isCurrentWorkspace(context)) {
-            trace.complete("discarded=true|phase=index-snapshot")
-            return
-        }
+        if (!isCurrentWorkspace(context)) return
         val folders = indexedHierarchy?.folders ?: fileManager.listFolders(project)
-        WorkspaceLoadDiagnostics.event(
-            "hierarchy-refresh.folders-ready",
-            "generation=${context.generation}|count=${folders.size}|indexed=${indexedHierarchy != null}",
-        )
         val config = indexedHierarchy?.projectConfig ?: projectConfig.value
         val contents = loadHierarchyFolderContents(
             folders,
@@ -3124,10 +3370,7 @@ class MainViewModel internal constructor(
             refreshProjectPlotMetadata,
             indexedHierarchy?.filesByFolder,
         )
-        if (!isCurrentWorkspace(context)) {
-            trace.complete("discarded=true|phase=contents")
-            return
-        }
+        if (!isCurrentWorkspace(context)) return
         val hierarchyFilesChanged = previous.folderContents.values
             .flatMap { content -> content.files }
             .map { file -> file.key to file.platformFile.toString() }
@@ -3161,16 +3404,11 @@ class MainViewModel internal constructor(
             ),
             preferredKey = preferredKey ?: rememberedKey,
             cancelRemoved = cancelRemoved,
+            diagnosticReason = WorkspaceLoadDiagnostics.reason(),
+            diagnosticTriggerOp = WorkspaceLoadDiagnostics.operationId(),
         )
         if (context.workspaceKind == WorkspaceKind.PROJECT) appliedHierarchyConfig = config
-        if (indexedHierarchy != null && focusSignalRevision == workspaceActivationFocusRevision) {
-            skipInitialActiveHierarchyRefresh = context
-        }
-        val fileCount = contents.values.sumOf { it.files.size }
-        WorkspaceLoadDiagnostics.event(
-            "hierarchy-refresh.published",
-            "generation=${context.generation}|folders=${folders.size}|files=$fileCount",
-        )
+        if (indexedHierarchy != null) workspaceSessionCoordinator.markIndexedHierarchyPublished(context)
 
         // File names are useful without source grouping. Publish the hierarchy first so a General
         // workspace with hundreds of files never waits for frontmatter indexing before it appears.
@@ -3179,7 +3417,8 @@ class MainViewModel internal constructor(
                 scheduleGeneralSourceRefresh(
                     project = project,
                     context = context,
-                    files = contents.values.flatMap(HierarchyFolderContent::files),
+                      files = contents.values.flatMap(HierarchyFolderContent::files),
+                      refreshMetadata = refreshGeneralSources || useInitialProjectIndexSnapshot,
                 )
             }
         } else {
@@ -3187,11 +3426,6 @@ class MainViewModel internal constructor(
             generalSourceRefreshJob = null
             pendingGeneralSourceRefresh = null
             _generalSourceState.value = null
-        }
-        trace.complete("folders=${folders.size}|files=$fileCount")
-        } catch (error: Exception) {
-            trace.fail(error)
-            throw error
         }
     }
 
@@ -3209,19 +3443,15 @@ class MainViewModel internal constructor(
             }
     }
 
-    private fun consumeInitialActiveHierarchyRefreshSkip(): Boolean {
-        val pending = skipInitialActiveHierarchyRefresh
-        skipInitialActiveHierarchyRefresh = null
-        return pending != null && isCurrentWorkspace(pending)
-    }
-
     private fun scheduleGeneralSourceRefresh(
         project: PlatformFile,
         context: WorkspaceReadContext,
         files: List<ProjectFile>,
+        refreshMetadata: Boolean,
     ) {
         if (generalSourceRefreshJob?.isActive == true) {
-            pendingGeneralSourceRefresh = PendingGeneralSourceRefresh(project, context, files)
+            pendingGeneralSourceRefresh = PendingGeneralSourceRefresh(project, context, files,
+                refreshMetadata || pendingGeneralSourceRefresh?.refreshMetadata == true)
             WorkspaceLoadDiagnostics.event(
                 "general-source-refresh.queued",
                 "generation=${context.generation}|files=${files.size}",
@@ -3234,7 +3464,7 @@ class MainViewModel internal constructor(
                 "generation=${context.generation}|files=${files.size}",
             )
             try {
-                val sources = fileManager.generalSources.load(project, files)
+                val sources = fileManager.generalSources.load(project, files, refreshMetadata)
                 if (isCurrentWorkspace(context)) {
                     _generalSourceState.value = sources.withFiles(currentHierarchyFiles())
                     trace.complete(
@@ -3249,8 +3479,9 @@ class MainViewModel internal constructor(
             } catch (error: Exception) {
                 trace.fail(error)
                 if (isCurrentWorkspace(context)) {
-                    _workspaceTransitionError.value =
-                        error.message ?: "General 구분 정보를 불러오지 못했습니다."
+                    workspaceSessionCoordinator.reportError(
+                        error.message ?: "General 구분 정보를 불러오지 못했습니다.",
+                    )
                 }
             } finally {
                 val running = currentCoroutineContext().job
@@ -3259,7 +3490,7 @@ class MainViewModel internal constructor(
                     val pending = pendingGeneralSourceRefresh
                     pendingGeneralSourceRefresh = null
                     if (pending != null && isCurrentWorkspace(pending.context)) {
-                        scheduleGeneralSourceRefresh(pending.project, pending.context, pending.files)
+                        scheduleGeneralSourceRefresh(pending.project, pending.context, pending.files, pending.refreshMetadata)
                     }
                 }
             }
@@ -3297,6 +3528,8 @@ class MainViewModel internal constructor(
         next: HierarchyUiState,
         preferredKey: FileKey? = next.selectedFileKey,
         cancelRemoved: Boolean = false,
+        diagnosticReason: String = "hierarchy-change",
+        diagnosticTriggerOp: Long? = null,
     ) {
         if (cancelRemoved) {
             val previousKeys = _hierarchyState.value.folderContents.values
@@ -3330,6 +3563,54 @@ class MainViewModel internal constructor(
         )
     }
 
+    private fun scheduleWorkspaceLinkIndexRefresh(vault: PlatformFile, reason: String = "vault-change", triggerOp: Long? = null) {
+        val identity = vault.toString()
+        if (workspaceLinkIndexRefreshJob?.isActive == true && workspaceLinkIndexRefreshVault == identity) {
+            workspaceLinkIndexRefreshPendingVault = identity
+            return
+        }
+        val generation = ++workspaceLinkIndexRefreshGeneration
+        workspaceLinkIndexRefreshJob?.cancel()
+        workspaceLinkIndexRefreshVault = identity
+        workspaceLinkIndexRefreshPendingVault = null
+        val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            try {
+                val refreshTrace = WorkspaceLoadDiagnostics.begin("link-index-refresh", "reason=$reason|triggerOp=${triggerOp ?: 0}")
+                WorkspaceLoadDiagnostics.within(refreshTrace, reason) {
+                    try {
+                        fileReconciliationMutex.withLock {
+                            if (generation != workspaceLinkIndexRefreshGeneration ||
+                                bookmarks.value.vaultData?.toString() != identity) return@withLock
+                            fileManager.rebuildWorkspaceLinkIndex(vault)
+                        }
+                        refreshTrace.complete()
+                    } catch (error: Throwable) { refreshTrace.fail(error); throw error }
+                }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                if (generation != workspaceLinkIndexRefreshGeneration ||
+                    bookmarks.value.vaultData?.toString() != identity) return@launch
+                WorkspaceLoadDiagnostics.event(
+                    "workspace-link-index.failed",
+                    "error=${error::class.simpleName}",
+                )
+            } finally {
+                if (workspaceLinkIndexRefreshJob === currentCoroutineContext().job &&
+                    generation == workspaceLinkIndexRefreshGeneration
+                ) {
+                    val rerun = workspaceLinkIndexRefreshPendingVault == identity
+                    workspaceLinkIndexRefreshPendingVault = null
+                    workspaceLinkIndexRefreshJob = null
+                    workspaceLinkIndexRefreshVault = null
+                    if (rerun) scheduleWorkspaceLinkIndexRefresh(vault, "coalesced", triggerOp)
+                }
+            }
+        }
+        workspaceLinkIndexRefreshJob = job
+        job.start()
+    }
+
     private fun selectedKeyFor(folderKey: FolderKey): FileKey? {
         if (_hierarchyState.value.currentFolderKey == folderKey) {
             return _hierarchyState.value.currentFile?.key
@@ -3345,10 +3626,22 @@ class MainViewModel internal constructor(
         folder: ProjectFolder,
         updates: List<OrderStateUpdate>,
         selectedOldKey: FileKey?,
+        references: WorkspaceLinkRewriteReceipt,
     ) {
         val keyChanges = updates.associate { it.oldKey to it.projectFile.key }
         val oldKeys = keyChanges.keys
+        oldKeys.forEach { pageLoadJobs.remove(it)?.cancel() }
+        synchronizeRenamedReferences(references)
+        // Finish every provider read before draining input or publishing keys that may be exchanged.
+        val pendingByOldKey = oldKeys.mapNotNull { key -> saveCoordinator.cancel(key)?.let { key to it } }.toMap()
+        val updatedReferenceKeys = references.sourceUpdates.filter {
+            it.path.workspaceName == bookmarks.value.projectData?.name &&
+                it.path.workspaceKind == bookmarks.value.workspaceKind
+        }.mapTo(mutableSetOf()) { FileKey.of(it.path.relativePath) }
+        // A renamed handle's latest mtime cannot certify an old cached body.
+        val modified = oldKeys.associateWith { key -> knownModified[key] }
         val selectedNewKey = selectedOldKey?.let { keyChanges[it] ?: it }
+        folderFileSelectionMemory.renameFiles(keyChanges)
         if (selectedNewKey != null) {
             folderFileSelectionMemory.remember(selectedNewKey)
         }
@@ -3369,26 +3662,59 @@ class MainViewModel internal constructor(
         _fileLoadStates.value = _fileLoadStates.value.toMutableMap().apply {
             oldKeys.forEach { oldKey -> remove(oldKey) }
             updates.forEach { update ->
-                val nextState = update.noteFile
-                    ?.let(FileLoadUiState::Loaded)
-                    ?: previousLoadStates[update.oldKey]
+                val previous = previousLoadStates[update.oldKey]
+                val latest = pendingByOldKey[update.oldKey]?.noteFile
+                    ?: (previous as? FileLoadUiState.Loaded)?.noteFile
+                val note = latest?.let { current ->
+                    if (update.noteFile != null && update.oldKey !in updatedReferenceKeys)
+                        current.withPlotStage(update.noteFile.plotStage) else current
+                } ?: update.noteFile
+                val nextState = note?.let(FileLoadUiState::Loaded)
+                    ?: if (previous is FileLoadUiState.Loading) {
+                        FileLoadUiState.Error("파일 경로가 변경되었습니다. 문서를 다시 열어 주세요.")
+                    } else previous
                 if (nextState != null) this[update.projectFile.key] = nextState
             }
         }
         oldKeys.forEach { oldKey ->
-            saveCoordinator.cancel(oldKey)
             knownProjectFiles.remove(oldKey)
             knownModified.remove(oldKey)
         }
         updates.forEach { update ->
             knownProjectFiles[update.projectFile.key] = update.projectFile
-            fileManager.lastModified(update.projectFile.platformFile)?.let { modified ->
-                knownModified[update.projectFile.key] = modified
+            val pending = pendingByOldKey[update.oldKey]
+            if (pending != null) {
+                val note = if (update.noteFile != null && update.oldKey !in updatedReferenceKeys)
+                    pending.noteFile.withPlotStage(update.noteFile.plotStage)
+                    else pending.noteFile
+                saveCoordinator.schedule(update.projectFile.key, pending.copy(
+                    projectFile = update.projectFile,
+                    noteFile = note,
+                    expectedDisk = if (update.oldKey in updatedReferenceKeys) pending.expectedDisk
+                        else update.noteFile ?: pending.expectedDisk,
+                ))
+            } else modified[update.oldKey]?.let { value ->
+                knownModified[update.projectFile.key] = value
             }
         }
 
-        val content = loadFolderContent(folder)
         val current = _hierarchyState.value
+        val files = current.folderContents[folder.key]?.files.orEmpty().filterNot { it.key in oldKeys } +
+            updates.map(OrderStateUpdate::projectFile)
+        val config = folderConfig(folder.key)
+        val content = if (config.isPlot) {
+            val entries = files.map { file ->
+                val loaded = loadedNote(file.key)
+                val update = updates.firstOrNull { it.projectFile.key == file.key }
+                val stage = when {
+                    loaded != null -> loaded.plotStage
+                    update != null -> update.noteFile?.plotStage
+                    else -> current.folderContents[folder.key]?.plotEntries?.firstOrNull { it.projectFile.key == file.key }?.stage
+                }
+                PlotFileEntry(file, stage, file.plotOrder())
+            }.sortedForPlot()
+            HierarchyFolderContent(entries.map(PlotFileEntry::projectFile), entries)
+        } else HierarchyFolderContent(files.sortedFor(config))
         publishHierarchy(
             next = current.copy(folderContents = current.folderContents + (folder.key to content)),
             preferredKey = if (current.currentFolderKey == folder.key) selectedNewKey else current.selectedFileKey,
@@ -3397,9 +3723,8 @@ class MainViewModel internal constructor(
 
     private fun clearProjectState(preserveBaseline: Boolean = false) {
         initialHierarchySnapshotAttempt = null
-        skipInitialActiveHierarchyRefresh = null
         appliedHierarchyConfig = null
-        workspaceActivationFocusRevision = focusSignalRevision
+        workspaceSessionCoordinator.onProjectStateCleared()
         _documentConflicts.value = emptyMap()
         pendingPropertyDefinitionSyncs.clear()
         latestPropertyTypeRevision.clear()
@@ -3410,12 +3735,7 @@ class MainViewModel internal constructor(
         committedFolderSettings = null
         incompleteCreation = null
         _canRetryCreation.value = false
-        cancelCommitRequests()
-        if (!preserveBaseline) {
-            projectBaselineJob?.cancel()
-            projectBaselineJob = null
-            _projectBaselineUiState.value = ProjectBaselineUiState.Idle
-        }
+        commitSessionCoordinator.clear(preserveBaseline)
         saveCoordinator.cancelAll()
         pageLoadJobs.values.forEach(Job::cancel)
         pageLoadJobs.clear()
@@ -3431,15 +3751,13 @@ class MainViewModel internal constructor(
         knownProjectFiles.clear()
         editorSessionKeys.clear()
         folderFileSelectionMemory.clear()
-        _commitCreateUiState.value = CommitCreateUiState()
-        _commitHistoryUiState.value = CommitHistoryUiState()
     }
 
     private suspend fun loadHierarchyFolderContents(
         folders: List<ProjectFolder>,
         config: ProjectConfig?,
         context: WorkspaceReadContext,
-        refreshProjectPlotMetadata: Boolean = true,
+        refreshProjectPlotMetadata: Boolean = false,
         filesByFolder: Map<FolderKey, List<ProjectFile>>? = null,
     ): Map<FolderKey, HierarchyFolderContent> = folders.associate { folder ->
         folder.key to loadFolderContent(
@@ -3455,7 +3773,7 @@ class MainViewModel internal constructor(
         folder: ProjectFolder,
         config: ProjectConfig? = projectConfig.value,
         context: WorkspaceReadContext = currentWorkspaceReadContext(),
-        refreshProjectPlotMetadata: Boolean = true,
+        refreshProjectPlotMetadata: Boolean = false,
         indexedFiles: List<ProjectFile>? = null,
     ): HierarchyFolderContent {
         val folderConfig = folderConfig(folder.key, config, context)
@@ -3498,7 +3816,8 @@ class MainViewModel internal constructor(
                     permits.withPermit {
                         currentCoroutineContext().ensureActive()
                         val previous = cached[projectFile.key]
-                        val modifiedAt = if (refreshMetadata || previous == null) {
+                        val modifiedAt = if (refreshMetadata || previous == null ||
+                            previous.file.platformFile.toString() != projectFile.platformFile.toString()) {
                             fileManager.lastModified(projectFile.platformFile)
                         } else {
                             previous.modifiedAt
@@ -3506,9 +3825,10 @@ class MainViewModel internal constructor(
                         val pending = saveCoordinator.pendingValue(projectFile.key)?.noteFile
                         val loaded = loadedNote(projectFile.key)
                         val hasPendingWrite = saveCoordinator.hasPending(projectFile.key)
-                        val loadedMatchesDisk = !refreshMetadata ||
+                        val loadedMatchesDisk = knownProjectFiles[projectFile.key]?.platformFile?.toString() ==
+                            projectFile.platformFile.toString() && (!refreshMetadata ||
                             modifiedAt == null || modifiedAt <= 0L ||
-                            knownModified[projectFile.key] == modifiedAt
+                            (previous?.modifiedAtVerified != false && knownModified[projectFile.key] == modifiedAt))
                         val cachedPlot = previous
                             ?.takeIf { item ->
                                 if (refreshMetadata) item.isFresh(projectFile, modifiedAt)
@@ -3549,11 +3869,18 @@ class MainViewModel internal constructor(
                                 file = projectFile,
                                 modifiedAt = if (hasPendingWrite && !loadedMatchesDisk) {
                                     previous?.modifiedAt
+                                } else if (freshPrevious != null) {
+                                    freshPrevious.modifiedAt
                                 } else {
                                     modifiedAt
                                 },
                                 source = freshPrevious?.source,
                                 plot = IndexedPlot(stage, readSucceeded),
+                                noteFile = refreshedLoadedNote ?: freshPrevious?.noteFile,
+                                projectMetadataVerified = refreshedLoadedNote == null &&
+                                    freshPrevious?.projectMetadataVerified == true,
+                                modifiedAtVerified = if (refreshedLoadedNote != null) true
+                                    else freshPrevious?.modifiedAtVerified ?: true,
                             ),
                             entry = PlotFileEntry(
                                 projectFile = projectFile,
@@ -3614,7 +3941,7 @@ class MainViewModel internal constructor(
     }
 
     private fun setFileLoadState(fileKey: FileKey, state: FileLoadUiState) {
-        _fileLoadStates.value += fileKey to state
+        _fileLoadStates.update { it + (fileKey to state) }
     }
 
     private suspend fun updateWorkspaceMetadataIndex(
@@ -3622,6 +3949,7 @@ class MainViewModel internal constructor(
         noteFile: NoteFile,
         modifiedAt: Long?,
         context: WorkspaceReadContext,
+        expectedIdentity: com.ninetag.machum.external.WorkspaceMetadataIdentity? = null,
     ) {
         if (!isCurrentWorkspace(context)) return
         val workspace = bookmarks.value
@@ -3638,7 +3966,8 @@ class MainViewModel internal constructor(
         fileManager.workspaceMetadataIndex.put(
             root,
             context.workspaceKind,
-            WorkspaceFileMetadata(projectFile, modifiedAt, source, plot),
+            WorkspaceFileMetadata(projectFile, modifiedAt, source, plot, noteFile),
+            expectedIdentity,
         )
     }
 
@@ -3667,25 +3996,11 @@ class MainViewModel internal constructor(
         editorSessionKeys[newKey] = sessionKey
     }
 
-    private fun currentWorkspaceReadContext(): WorkspaceReadContext {
-        val snapshot = bookmarks.value
-        return WorkspaceReadContext(
-            projectLocation = snapshot.projectData?.toString(),
-            workspaceKind = snapshot.workspaceKind,
-            vaultLocation = snapshot.vaultData?.toString(),
-            generation = workspaceUiGeneration,
-        )
-    }
+    private fun currentWorkspaceReadContext(): WorkspaceReadContext =
+        workspaceSessionCoordinator.currentContext(bookmarks.value)
 
-    private fun isCurrentWorkspace(context: WorkspaceReadContext): Boolean {
-        val current = bookmarks.value
-        return activeProjectLocation == context.projectLocation &&
-            context.generation == workspaceUiGeneration &&
-            current.vaultData?.toString() == context.vaultLocation &&
-            activeWorkspaceKind == context.workspaceKind &&
-            current.projectData?.toString() == context.projectLocation &&
-            current.workspaceKind == context.workspaceKind
-    }
+    private fun isCurrentWorkspace(context: WorkspaceReadContext): Boolean =
+        workspaceSessionCoordinator.isCurrentWorkspace(bookmarks.value, context)
 
     private fun isCurrentProjectFile(projectFile: ProjectFile, context: WorkspaceReadContext): Boolean {
         if (!isCurrentWorkspace(context)) return false
@@ -3718,33 +4033,6 @@ class MainViewModel internal constructor(
         return projectConfig.value?.effectiveAutoTags(folderKey.relativePath).orEmpty()
     }
 
-    private fun launchWorkspaceTransition(action: suspend () -> Unit) {
-        if (workspaceInputBlocked || workspaceOperationBusy()) return
-        val generation = workspaceUiGeneration
-        val vault = bookmarks.value.vaultData?.toString()
-        openingWorkspaceSelection = true
-        navigationGate.newRequest()
-        viewModelScope.launch {
-            try {
-                fileReconciliationMutex.withLock {
-                    workspaceSaveCoordinator.runAfterFlush {
-                        check(!workspaceOperationBusy()) { "진행 중인 작업이 끝난 뒤 다시 시도해 주세요." }
-                        check(generation == workspaceUiGeneration && vault == bookmarks.value.vaultData?.toString()) {
-                            "작업 공간이 변경되었습니다."
-                        }
-                        action()
-                    }.onFailure { error ->
-                        if (workspaceSaveCoordinator.lastErrorMessage.value == null) {
-                            _workspaceTransitionError.value = error.message ?: "작업 공간을 전환하지 못했습니다."
-                        }
-                    }
-                }
-            } finally {
-                openingWorkspaceSelection = false
-            }
-        }
-    }
-
     /** 요청 대상은 호출 시 고정하고, 전환과 같은 순서로 저장 완료 후 변경한다. */
     private fun launchWorkspaceMutation(
         onFinished: () -> Unit = {},
@@ -3758,6 +4046,46 @@ class MainViewModel internal constructor(
         }
     }
 
+    /** The refresh owns this same lock, so joining it must happen before entering the lock. */
+    private suspend fun <T> withMutationIndexGate(
+        context: WorkspaceReadContext,
+        fallback: T,
+        action: suspend () -> T,
+    ): T {
+        try {
+            while (isCurrentWorkspace(context)) {
+                val vault = bookmarks.value.vaultData
+                if (vault == null) return fileReconciliationMutex.withLock {
+                    if (isCurrentWorkspace(context)) action() else fallback
+                }
+                while (true) {
+                    val refresh = workspaceLinkIndexRefreshJob
+                        ?.takeIf { workspaceLinkIndexRefreshVault == vault.toString() }
+                    refresh?.join()
+                    if (!isCurrentWorkspace(context)) return fallback
+                    if (refresh === workspaceLinkIndexRefreshJob || workspaceLinkIndexRefreshJob == null) break
+                }
+                val prepared = fileManager.awaitWorkspaceLinkIndexPreparation(vault)
+                var entered = false
+                val result = fileReconciliationMutex.withLock {
+                    if (!isCurrentWorkspace(context) || !fileManager.workspaceLinkIndex.isCurrent(prepared)) fallback
+                    else {
+                        entered = true
+                        action()
+                    }
+                }
+                if (entered) return result
+            }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            if (isCurrentWorkspace(context)) workspaceSessionCoordinator.reportError(
+                error.message ?: "링크 인덱스를 준비하지 못해 파일 작업을 중단했습니다.",
+            )
+        }
+        return fallback
+    }
+
     private suspend fun runWorkspaceMutation(
         project: PlatformFile? = bookmarks.value.projectData,
         context: WorkspaceReadContext = currentWorkspaceReadContext(),
@@ -3765,13 +4093,20 @@ class MainViewModel internal constructor(
         action: suspend (PlatformFile, WorkspaceReadContext) -> Unit,
     ) {
         if (workspaceInputBlocked || project == null) return
-        fileReconciliationMutex.withLock {
+        withMutationIndexGate(context, Unit) withLock@ {
             if (!isCurrentWorkspace(context)) return@withLock
             workspaceSaveCoordinator.runAfterFlush {
-                if (isCurrentWorkspace(context)) action(project, context)
+                if (isCurrentWorkspace(context)) {
+                    bookmarks.value.vaultData?.let { vault ->
+                        check(fileManager.workspaceLinkIndex.readyPreparation(vault.toString()) != null) {
+                            "저장 후 링크 인덱스를 확인하지 못해 파일 작업을 중단했습니다."
+                        }
+                    }
+                    action(project, context)
+                }
             }.onFailure { error ->
                 if (reportErrors && isCurrentWorkspace(context) && workspaceSaveCoordinator.lastErrorMessage.value == null) {
-                    _workspaceTransitionError.value = error.message ?: "파일 작업을 완료하지 못했습니다."
+                    workspaceSessionCoordinator.reportError(error.message ?: "파일 작업을 완료하지 못했습니다.")
                 }
             }
         }
@@ -3779,15 +4114,18 @@ class MainViewModel internal constructor(
 
     private fun launchNavigation(action: suspend (isLatest: () -> Boolean) -> Unit) {
         if (workspaceInputBlocked) return
-        val generation = workspaceUiGeneration
+        val generation = workspaceSessionCoordinator.captureGeneration()
         val request = navigationGate.newRequest()
         viewModelScope.launch {
             // 파일 선택 bookmark와 순서 변경 rename이 서로의 오래된 경로를 덮어쓰지 않도록
             // 탐색도 외부 변경·rename과 같은 임계 구역에서 직렬화한다.
             fileReconciliationMutex.withLock {
-                if (workspaceInputBlocked || generation != workspaceUiGeneration) return@withLock
+                if (workspaceInputBlocked || !workspaceSessionCoordinator.isCurrentGeneration(generation)) return@withLock
                 navigationGate.run(request) { latest ->
-                    action { latest() && !workspaceInputBlocked && generation == workspaceUiGeneration }
+                    action {
+                        latest() && !workspaceInputBlocked &&
+                            workspaceSessionCoordinator.isCurrentGeneration(generation)
+                    }
                 }
             }
         }
@@ -3795,13 +4133,11 @@ class MainViewModel internal constructor(
 
     companion object {
         // Phase 2 폴링 주기. 활성(포커스) 상태에서만 동작.
-        private const val POLL_INTERVAL_MS = 1500L
-        private const val HIERARCHY_POLL_TICKS = 10
         private const val SAVE_DEBOUNCE_MS = 500L
     }
 }
 
-private data class WorkspaceReadContext(
+internal data class WorkspaceReadContext(
     val projectLocation: String?,
     val workspaceKind: WorkspaceKind,
     val vaultLocation: String?,
@@ -3809,11 +4145,6 @@ private data class WorkspaceReadContext(
 ) {
     fun matches(other: WorkspaceReadContext): Boolean = this == other
 }
-
-private data class WindowFocusSignal(
-    val focused: Boolean,
-    val revision: Long,
-)
 
 private data class PendingPropertyDefinitionSync(
     val context: WorkspaceReadContext,
@@ -3830,7 +4161,7 @@ private data class VersionedPropertyDefinitionChange(
 private fun String.toFileKeyOrNull(): FileKey? =
     runCatching { FileKey.of(this) }.getOrNull()
 
-private data class PendingWrite(
+internal data class PendingWrite(
     val projectFile: ProjectFile,
     val noteFile: NoteFile,
     val expectedDisk: NoteFile,
@@ -3850,6 +4181,7 @@ private data class PendingGeneralSourceRefresh(
     val project: PlatformFile,
     val context: WorkspaceReadContext,
     val files: List<ProjectFile>,
+    val refreshMetadata: Boolean,
 )
 
 private fun GeneralSourceState.withFiles(currentFiles: List<ProjectFile>): GeneralSourceState {
@@ -3956,18 +4288,17 @@ internal fun projectFileMoveNamePlan(
     } else if (sourceConfig.type == FolderType.DEFAULT) {
         val startAt = if (source.key.folder == FolderKey.Base) 0 else 1
         sourceContent.files
-            .asSequence()
-            .filter { file -> file.key != source.key && file.numberedPrefix() != null }
-            .sortedWith(compareBy<ProjectFile> { it.numberedPrefix() ?: Int.MAX_VALUE }
-                .thenBy { it.key.fileName.lowercase() })
+            .filter { file -> file.key != source.key && file.defaultOrderPrefix() != null }
+            .sortedFor(sourceConfig)
             .forEachIndexed { index, file ->
-                assign(file, source.key.folder, "${startAt + index}. ${file.plotTitle()}")
+                assign(file, source.key.folder, "${startAt + index}. ${file.defaultOrderTitle()}")
             }
     }
 
     val sourceBaseName = source.platformFile.nameWithoutExtension
     val movedTitle = if (sourceConfig.type == FolderType.DEFAULT && (!sourceConfig.isPlot || sourcePlotStage != null)) {
-        source.plotTitle()
+        if (!sourceConfig.isPlot) source.defaultOrderTitle()
+        else source.plotTitle()
     } else {
         sourceBaseName
     }
@@ -3996,13 +4327,11 @@ internal fun projectFileMoveNamePlan(
         targetConfig.type == FolderType.DEFAULT -> {
             val startAt = if (targetFolder == FolderKey.Base) 0 else 1
             val targetFiles = targetContent.files
-                .asSequence()
-                .filter { file -> file.key != source.key && file.numberedPrefix() != null }
-                .sortedWith(compareBy<ProjectFile> { it.numberedPrefix() ?: Int.MAX_VALUE }
-                    .thenBy { it.key.fileName.lowercase() })
+                .filter { file -> file.key != source.key && file.defaultOrderPrefix() != null }
+                .sortedFor(targetConfig)
                 .toList()
             targetFiles.forEachIndexed { index, file ->
-                assign(file, targetFolder, "${startAt + index}. ${file.plotTitle()}")
+                assign(file, targetFolder, "${startAt + index}. ${file.defaultOrderTitle()}")
             }
             assign(source, targetFolder, "${startAt + targetFiles.size}. $movedTitle")
         }
@@ -4041,6 +4370,7 @@ data class CommitCreateUiState(
     val isOpen: Boolean = false,
     val isLoading: Boolean = false,
     val isCommitting: Boolean = false,
+    val isCompleted: Boolean = false,
     val message: String = "",
     val preview: CommitPreview? = null,
     val diff: CommitDiffUiState? = null,
@@ -4055,6 +4385,15 @@ data class CommitHistoryUiState(
     val selectedCommitId: String? = null,
     val diff: CommitDiffUiState? = null,
     val restore: CommitRestoreUiState? = null,
+    val messageEdit: CommitMessageEditUiState? = null,
+    val errorMessage: String? = null,
+)
+
+data class CommitMessageEditUiState(
+    val commitId: String,
+    val message: String,
+    val originalMessage: String,
+    val isSaving: Boolean = false,
     val errorMessage: String? = null,
 )
 
@@ -4116,3 +4455,39 @@ sealed interface ProjectBaselineUiState {
         val message: String,
     ) : ProjectBaselineUiState
 }
+
+internal fun resolveInternalDocumentLink(
+    hierarchy: HierarchyUiState,
+    rawTarget: String,
+): FileKey? {
+    val target = rawTarget
+        .substringBefore('#')
+        .substringBefore('|')
+        .trim()
+        .replace('\\', '/')
+        .removePrefix("./")
+        .removePrefix("/")
+        .removeMarkdownExtension()
+    if (target.isEmpty() || target.split('/').any { it == ".." }) return null
+
+    val files = hierarchy.folderContents.values.flatMap(HierarchyFolderContent::files)
+    if ('/' in target) {
+        return files.firstOrNull { file ->
+            file.key.relativePath.removeMarkdownExtension().equals(target, ignoreCase = true)
+        }?.key
+    }
+
+    val sourceFolder = hierarchy.selectedFileKey?.folder ?: hierarchy.currentFolderKey
+    return files
+        .asSequence()
+        .filter { file -> file.key.fileName.removeMarkdownExtension().equals(target, ignoreCase = true) }
+        .sortedWith(
+            compareByDescending<ProjectFile> { it.key.folder == sourceFolder }
+                .thenBy { it.key.relativePath.lowercase() },
+        )
+        .firstOrNull()
+        ?.key
+}
+
+private fun String.removeMarkdownExtension(): String =
+    if (endsWith(".md", ignoreCase = true)) dropLast(3) else this

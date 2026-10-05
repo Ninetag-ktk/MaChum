@@ -93,7 +93,7 @@ class CommitBackupPlanSource(
             baseCommitId = baseCommitId,
             targetCommitId = targetCommit.id,
             immutableObjects = blobs + trees + commits,
-            metadata = projectMetadata(project, repositoryIdentity),
+            metadata = projectMetadata(project, repositoryIdentity, store),
             workspace = workspace,
             head = MutableBackupObject(
                 relativePath = "history/HEAD.json",
@@ -103,9 +103,17 @@ class CommitBackupPlanSource(
         )
     }
 
+    internal suspend fun metadata(
+        project: PlatformFile,
+        repositoryIdentity: ProjectRepositoryIdentity,
+    ): List<MutableBackupObject> = withContext(Dispatchers.IO) {
+        projectMetadata(project, repositoryIdentity, FileCommitStore(fileManager, project))
+    }
+
     private suspend fun projectMetadata(
         project: PlatformFile,
         repositoryIdentity: ProjectRepositoryIdentity,
+        store: FileCommitStore,
     ): List<MutableBackupObject> {
         val repositoryContent = ProjectRepositoryIdentityStore(fileManager).encode(repositoryIdentity)
         val result = mutableListOf(
@@ -122,6 +130,13 @@ class CommitBackupPlanSource(
             val content = config.readString()
             result += MutableBackupObject(
                 relativePath = "metadata/project-config.json",
+                content = content,
+                contentHash = sha256Utf8(content),
+            )
+        }
+        store.encodeMessageOverridesForBackup()?.let { content ->
+            result += MutableBackupObject(
+                relativePath = "metadata/commit-messages.json",
                 content = content,
                 contentHash = sha256Utf8(content),
             )
